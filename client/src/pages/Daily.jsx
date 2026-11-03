@@ -12,9 +12,13 @@ export default function Daily() {
   const [group, setGroup] = useState('status');
   const [filters, setFilters] = useState({});
   const [creating, setCreating] = useState(false);
+  const [showLate, setShowLate] = useState(false);
   const changeView = (v) => { setView(v); try { localStorage.setItem('dailyView', v); } catch { /* */ } };
   const range = view === 'calendar' ? { from: monthStart(date), to: monthEnd(date) } : { from: date, to: date };
   const { data } = useData(`/tasks?${qs({ kind: view === 'calendar' ? '' : 'daily', ...range, ...filters })}`);
+  // atividades diárias atrasadas de dias anteriores (rotinas não são transferidas para hoje)
+  const late = useData(`/tasks?${qs({ kind: 'daily', status: 'overdue', to: addDays(me.today, -1), ...filters, status: 'overdue' })}`);
+  const lateList = (late.data || []).filter((t) => t.due_date < me.today);
   const tasks = data || [];
   const valid = tasks.filter((t) => t.status !== 'cancelled');
   const done = valid.filter((t) => t.status === 'done').length;
@@ -48,6 +52,17 @@ export default function Daily() {
         )}
         <TaskFilters filters={filters} setFilters={setFilters} />
       </div>
+
+      {lateList.length > 0 && view !== 'calendar' && (
+        <div className="late-banner">
+          <Icon name="alert" size={18} />
+          <span className="grow"><b>{lateList.length} atividade(s) atrasada(s)</b> de dias anteriores ainda não concluída(s)</span>
+          <button className="btn sm" onClick={() => setShowLate(!showLate)}>{showLate ? 'Ocultar' : 'Ver atrasadas'}</button>
+        </div>
+      )}
+      {showLate && lateList.length > 0 && view !== 'calendar' && (
+        <div className="late-list"><TaskTable tasks={lateList} groupBy="assignee" showDate /></div>
+      )}
 
       {view !== 'calendar' && data && (
         <div className="summary-strip">

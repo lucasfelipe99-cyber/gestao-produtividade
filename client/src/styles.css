@@ -350,3 +350,6 @@ td.c-biz { padding: 4px 6px; overflow: hidden; }
 .rb-ex[open] { width: 100%; }
 .rb-preview { background: #f0f6ff; border: 1px solid #cfe2fc; border-radius: 8px; padding: 10px 12px; font-size: 13.5px; display: flex; flex-direction: column; gap: 3px; }
 @media (max-width: 600px) { .rb-row { flex-direction: column; } .rb-row > select { width: 100%; } }
+
+.late-banner { display: flex; align-items: center; gap: 10px; background: #fde4e8; border: 1px solid #f2b8c1; color: #8f1f33; border-radius: var(--radius); padding: 10px 14px; }
+.late-list { background: #fff6f7; border: 1px dashed #f2b8c1; border-radius: var(--radius); padding: 12px; }

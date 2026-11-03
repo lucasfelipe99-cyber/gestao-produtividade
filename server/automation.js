@@ -74,11 +74,21 @@ export async function runAutomationForCompany(companyId, { force = false } = {})
       'SELECT * FROM recurrences WHERE company_id=$1 AND active AND next_date <= $2', [companyId, addDays(today, RECURRENCE_HORIZON_DAYS)])).rows;
     for (const r of recs) changes += await generateRecurrence(db, companyId, r, today);
 
-    // 2) Diárias não concluídas -> próximo dia útil (histórico original preservado em planned_date)
+    // 2) Diárias avulsas não concluídas -> próximo dia útil (histórico original preservado em planned_date)
+    //    Diárias de rotina (recorrentes) NÃO são transferidas: ficam atrasadas no próprio dia,
+    //    pois a ocorrência do novo dia já existe (evita acumular tarefas repetidas).
     const target = nextBusinessDayOnOrAfter(today);
+    const lateRoutine = (await db.query(
+      `UPDATE tasks SET status='late', updated_at=now()
+       WHERE company_id=$1 AND kind='daily' AND recurrence_id IS NOT NULL AND due_date < $2 AND status='not_started'
+       RETURNING id, title`, [companyId, today])).rows;
+    for (const t of lateRoutine) {
+      await logEvent(db, { companyId, taskId: t.id, taskTitle: t.title, action: 'marked_late', details: { routine: true } });
+      changes++;
+    }
     const stale = (await db.query(
       `SELECT id, title, due_date, status FROM tasks
-       WHERE company_id=$1 AND kind='daily' AND due_date < $2 AND status NOT IN ('done','cancelled')`,
+       WHERE company_id=$1 AND kind='daily' AND recurrence_id IS NULL AND due_date < $2 AND status NOT IN ('done','cancelled')`,
       [companyId, today])).rows;
     for (const t of stale) {
       const newStatus = t.status === 'not_started' ? 'late' : t.status;

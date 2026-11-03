@@ -13,7 +13,7 @@ Sistema SaaS de gestão de tarefas e produtividade para equipes de e-commerce, i
 - **Linha do tempo da jornada** (08:00–17:30 com almoço 12:00–13:00, configuráveis; trabalho no almoço conta como hora extra): blocos de trabalho por colaborador, atraso da primeira atividade, hora extra (antes do início ou após o fim), tempo sem apontamento e resumo dos últimos 7 dias.
 - **Controle de tempo**: botões Iniciar / Pausar / Retomar / Finalizar com cronômetro em tempo real, lançamento manual de horários (com verificação de sobreposição) e **bloqueio de dois cronômetros simultâneos** por colaborador (garantido no banco por índice único).
 - **Automações** (executadas a cada 5 minutos e a cada acesso):
-  - diárias não concluídas são transferidas para o próximo dia útil (a data planejada original é preservada);
+  - diárias avulsas não concluídas são transferidas para o próximo dia útil (a data planejada original é preservada); diárias de rotina (recorrentes) não são transferidas — ficam atrasadas no próprio dia, pois a ocorrência do dia seguinte já existe;
   - semanais não concluídas continuam visíveis nas semanas seguintes como "Pendência anterior";
   - tarefas vencidas são marcadas como atrasadas;
   - recorrência diária (dias úteis), semanal ou mensal, com as ocorrências dos próximos 3 meses já criadas no calendário (horizonte estendido automaticamente; edição pode ser aplicada às próximas ocorrências; encerrar remove as futuras não iniciadas);
