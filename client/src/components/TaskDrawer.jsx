@@ -21,7 +21,7 @@ export default function TaskDrawer({ id, onClose }) {
 
   const secs = liveSeconds(task);
   const estSecs = task.estimated_minutes * 60;
-  const canStatus = isAdmin || task.assignee_id === me.id || task.shared || !task.assignee_id;
+  const canStatus = isAdmin || task.assignee_id === me.id;
   const userName = (uid) => users.find((u) => u.id === Number(uid))?.name || '—';
   const catName = (cid) => categories.find((c) => c.id === Number(cid))?.name || '—';
 
@@ -70,7 +70,7 @@ export default function TaskDrawer({ id, onClose }) {
               <dt>{task.kind === 'daily' ? 'Data de execução' : 'Prazo'}</dt><dd>{fmtDateFull(task.due_date)} {task.scheduled_time && `às ${fmtTime(task.scheduled_time)}`}</dd>
               <dt>Data planejada original</dt><dd>{fmtDateFull(task.planned_date)}{task.rollover_count > 0 && <span className="tag warn"> transferida {task.rollover_count}x</span>}</dd>
               <dt>Categoria</dt><dd>{task.category_name ? <span className="cat"><i style={{ background: task.category_color }} />{task.category_name}</span> : '—'}</dd>
-              <dt>Equipe</dt><dd>{task.team_name || '—'}{task.shared && ' · compartilhada'}</dd>
+              <dt>Equipe</dt><dd>{task.team_name || '—'}</dd>
               <dt>Tempo estimado</dt><dd>{task.estimated_minutes ? fmtMin(task.estimated_minutes) : '—'}</dd>
               <dt>Início</dt><dd>{fmtDateTime(task.started_at)}</dd>
               <dt>Conclusão</dt><dd>{fmtDateTime(task.completed_at)}</dd>

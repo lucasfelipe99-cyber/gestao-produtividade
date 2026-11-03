@@ -24,7 +24,7 @@ export default function Goals() {
         {isAdmin && <button className="btn primary" onClick={() => setEditing({ user_id: '', period: 'weekly', target_percent: 90 })}><Icon name="plus" /> Definir meta individual</button>}
       </div>
 
-      <h2 className="section">Atingimento geral da equipe</h2>
+      <h2 className="section">{isAdmin ? 'Atingimento geral da equipe' : 'Seu atingimento'}</h2>
       <div className="kpis">
         <GoalKpi label={`Hoje (${fmtDate(data.today)})`} a={data.team.day} target={teamDayGoal} onEdit={isAdmin && (() => setEditing({ ...goalFor(null, 'daily'), user_id: null }))} />
         <GoalKpi label={`Semana (${fmtDate(data.week.from)} a ${fmtDate(data.week.to)})`} a={data.team.week} target={teamWeekGoal} onEdit={isAdmin && (() => setEditing({ ...goalFor(null, 'weekly'), user_id: null }))} />
@@ -35,7 +35,7 @@ export default function Goals() {
           color={prev && last.percent >= prev.percent ? '#00c875' : '#e2445c'} icon="chart" sub={prev ? `${prev.percent}% → ${last.percent}%` : null} />
       </div>
 
-      <Card title="Comparativo entre semanas">
+      <Card title={isAdmin ? 'Comparativo entre semanas' : 'Seu comparativo entre semanas'}>
         <ResponsiveContainer width="100%" height={280}>
           <ComposedChart data={weeks}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e6e9ef" />
@@ -53,7 +53,7 @@ export default function Goals() {
         </ResponsiveContainer>
       </Card>
 
-      <h2 className="section">Atingimento individual</h2>
+      {isAdmin && <h2 className="section">Atingimento individual</h2>}
       <Card>
         <div className="table-scroll">
           <table className="simple">

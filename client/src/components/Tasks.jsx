@@ -63,7 +63,6 @@ function Badges({ task }) {
       {task.rollover_count > 0 && <span className="tag warn" title={`Planejada para ${fmtDate(task.planned_date)}`}>Transferida {task.rollover_count}x</span>}
       {task.overdue && !task.carried && !task.rollover_count && <span className="tag danger">Vencida</span>}
       {task.recurrence_id && <span className="tag" title="Tarefa recorrente"><Icon name="repeat" size={12} /></span>}
-      {task.shared && <span className="tag" title="Compartilhada com a equipe"><Icon name="share" size={12} /></span>}
     </span>
   );
 }
@@ -115,7 +114,7 @@ export function TaskTable({ tasks, groupBy = 'status', showDate = false }) {
                   </thead>
                   <tbody>
                     {g.items.map((t) => {
-                      const canStatus = isAdmin || t.assignee_id === me.id || t.shared || !t.assignee_id;
+                      const canStatus = isAdmin || t.assignee_id === me.id;
                       return (
                         <tr key={t.id} onClick={() => openTask(t.id)} className={t.status === 'done' ? 'is-done' : ''}>
                           <td className="c-title"><span className="title-text">{t.title}</span><Badges task={t} /></td>
@@ -249,12 +248,6 @@ export function TaskFilters({ filters, setFilters, extra }) {
           <option value="">Todos os colaboradores</option>
           <option value="none">Sem responsável</option>
           {activeUsers.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-        </select>
-      )}
-      {!isAdmin && (
-        <select value={filters.mine || ''} onChange={set('mine')}>
-          <option value="">Minhas + compartilhadas</option>
-          <option value="1">Somente minhas</option>
         </select>
       )}
       <select value={filters.status || ''} onChange={set('status')}>

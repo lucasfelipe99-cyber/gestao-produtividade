@@ -125,7 +125,8 @@ export async function dashboard({ companyId, tz, from, to, userId }) {
   const daily = await dailySeries({ companyId, tz, from: seriesFrom, to, userId });
   const weekly = await weeklySeries({ companyId, tz, weeks: 8, userId, endDate: to });
   const goal = await one(
-    `SELECT * FROM goals WHERE company_id=$1 AND period='weekly' AND user_id ${userId ? '= $2' : 'IS NULL'}`,
+    `SELECT * FROM goals WHERE company_id=$1 AND period='weekly' AND (user_id IS NULL ${userId ? 'OR user_id = $2' : ''})
+     ORDER BY user_id NULLS LAST LIMIT 1`,
     userId ? [companyId, userId] : [companyId]);
   const actualMinutes = Math.round(time.seconds / 60);
   return {

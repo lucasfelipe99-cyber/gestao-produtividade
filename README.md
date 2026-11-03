@@ -5,7 +5,7 @@ Sistema SaaS de gestão de tarefas e produtividade para equipes de e-commerce, i
 ## Funcionalidades
 
 - **Multiempresa**: cada empresa tem seus dados isolados. Quem cria a conta da empresa vira administrador.
-- **Perfis**: Administrador (gestão completa) e Colaborador (suas tarefas + compartilhadas, iniciar/pausar/finalizar, observações, desempenho próprio).
+- **Perfis**: Administrador vê e gerencia todas as tarefas, tempos e indicadores. Colaborador acessa **somente as próprias tarefas, registros de tempo, metas, relatórios e histórico** (iniciar/pausar/finalizar, observações, desempenho próprio).
 - **Tarefas diárias e semanais**: visualização em tabela agrupada (status, colaborador ou equipe), Kanban com arrastar e soltar, e calendário mensal.
 - **Controle de tempo**: botões Iniciar / Pausar / Retomar / Finalizar com cronômetro em tempo real, lançamento manual de horários (com verificação de sobreposição) e **bloqueio de dois cronômetros simultâneos** por colaborador (garantido no banco por índice único).
 - **Automações** (executadas a cada 5 minutos e a cada acesso):

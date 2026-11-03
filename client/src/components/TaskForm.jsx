@@ -46,7 +46,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
         <Field label="Descrição detalhada" ><textarea rows={3} value={f.description} onChange={set('description')} /></Field>
         <Field label="Responsável">
           <select value={f.assignee_id || ''} onChange={set('assignee_id')}>
-            <option value="">— Sem responsável (equipe) —</option>
+            <option value="">— Sem responsável (só administradores veem) —</option>
             {activeUsers.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
         </Field>
@@ -81,7 +81,6 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
             </select>
           </Field>
         )}
-        <label className="check"><input type="checkbox" checked={f.shared} onChange={set('shared')} /> Compartilhada com toda a equipe (visível a todos)</label>
         {!editing && <Field label="Observações"><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>}
       </div>
     </Modal>

@@ -59,8 +59,8 @@ const adminOnly = (req, _res, next) => (isAdmin(req.user) ? next() : next(new Ht
 function visibilitySql(user, alias = 't', startIdx) {
   if (isAdmin(user)) return { sql: 'TRUE', params: [] };
   return {
-    sql: `(${alias}.assignee_id=$${startIdx} OR ${alias}.shared OR (${alias}.assignee_id IS NULL AND ${alias}.team_id IS NOT DISTINCT FROM $${startIdx + 1}::int))`,
-    params: [user.id, user.team_id],
+    sql: `${alias}.assignee_id=$${startIdx}`,
+    params: [user.id],
   };
 }
 
@@ -68,7 +68,7 @@ async function loadTask(db, req, id, { forUpdate = false } = {}) {
   const t = (await db.query(`SELECT * FROM tasks WHERE id=$1 AND company_id=$2 ${forUpdate ? 'FOR UPDATE' : ''}`, [id, req.user.company_id])).rows[0];
   if (!t) throw new HttpError(404, 'Tarefa não encontrada');
   const u = req.user;
-  if (!isAdmin(u) && !(t.assignee_id === u.id || t.shared || (t.assignee_id == null && t.team_id === u.team_id))) {
+  if (!isAdmin(u) && t.assignee_id !== u.id) {
     throw new HttpError(403, 'Sem acesso a esta tarefa');
   }
   return t;
@@ -189,7 +189,8 @@ app.get('/api/stream', (req, res) => {
 app.get('/api/users', wrap(async (req, res) => {
   res.json(await many(
     `SELECT u.id, u.name, u.email, u.role, u.active, u.team_id, t.name AS team_name, u.created_at
-     FROM users u LEFT JOIN teams t ON t.id=u.team_id WHERE u.company_id=$1 ORDER BY u.active DESC, u.name`, [req.user.company_id]));
+     FROM users u LEFT JOIN teams t ON t.id=u.team_id WHERE u.company_id=$1 ${isAdmin(req.user) ? '' : 'AND u.id=$2'}
+     ORDER BY u.active DESC, u.name`, isAdmin(req.user) ? [req.user.company_id] : [req.user.company_id, req.user.id]));
 }));
 
 app.post('/api/users', adminOnly, wrap(async (req, res) => {
@@ -572,7 +573,7 @@ app.get('/api/events', wrap(async (req, res) => {
   const limit = Math.min(500, parseInt(req.query.limit, 10) || 100);
   const params = [u.company_id];
   let w = 'ev.company_id=$1';
-  if (!isAdmin(u)) { params.push(u.id); w += ` AND (ev.user_id=$2 OR ev.task_id IN (SELECT id FROM tasks WHERE assignee_id=$2))`; }
+  if (!isAdmin(u)) { params.push(u.id); w += ` AND ev.task_id IN (SELECT id FROM tasks WHERE assignee_id=$2)`; }
   if (req.query.user && isAdmin(u)) { params.push(parseInt(req.query.user, 10)); w += ` AND ev.user_id=$${params.length}`; }
   params.push(limit);
   res.json(await many(
@@ -627,11 +628,11 @@ app.get('/api/goals', wrap(async (req, res) => {
      WHERE g.company_id=$1 ${isAdmin(u) ? '' : 'AND (g.user_id IS NULL OR g.user_id=$2)'} ORDER BY g.user_id NULLS FIRST, g.period`,
     isAdmin(u) ? [u.company_id] : [u.company_id, u.id]);
   const scope = isAdmin(u) ? null : u.id;
-  const teamDay = await attainment({ companyId: u.company_id, tz, from: today, to: today });
-  const teamWeek = await attainment({ companyId: u.company_id, tz, from: ws, to: we });
+  const teamDay = await attainment({ companyId: u.company_id, tz, from: today, to: today, userId: scope });
+  const teamWeek = await attainment({ companyId: u.company_id, tz, from: ws, to: we, userId: scope });
   const usersDay = await perUser({ companyId: u.company_id, tz, from: today, to: today, userId: scope });
   const usersWeek = await perUser({ companyId: u.company_id, tz, from: ws, to: we, userId: scope });
-  const weeks = await weeklySeries({ companyId: u.company_id, tz, weeks: 8 });
+  const weeks = await weeklySeries({ companyId: u.company_id, tz, weeks: 8, userId: scope });
   res.json({ today, week: { from: ws, to: we }, goals, team: { day: teamDay, week: teamWeek }, usersDay, usersWeek, weeks });
 }));
 
