@@ -1,0 +1,683 @@
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import compression from 'compression';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import path from 'node:path';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { pool, q, one, many, tx, migrate, logEvent, subscribe, broadcast } from './db.js';
+import { runAutomationForCompany, startAutomationLoop, ensureAutomation, insertTaskFromTemplate } from './automation.js';
+import { dashboard, report, attainment, perUser, weeklySeries } from './metrics.js';
+import { todayIn, addDays, weekStart, isDate, isBusinessDay, addMonths } from './dates.js';
+import { buildWorkbook } from './export.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || (() => {
+  console.warn('[aviso] JWT_SECRET não definido; usando segredo temporário.');
+  return crypto.randomBytes(32).toString('hex');
+})();
+const isProd = process.env.NODE_ENV === 'production';
+
+app.set('trust proxy', 1);
+app.use(compression());
+app.use(express.json({ limit: '1mb' }));
+app.use(cookieParser());
+
+// ---------- utilidades ----------
+class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+const isAdmin = (u) => u.role === 'admin';
+const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
+const STATUSES = ['not_started', 'in_progress', 'paused', 'done', 'late', 'cancelled'];
+const changed = (req, extra) => broadcast(req.user.company_id, extra);
+
+function setSession(res, user) {
+  const token = jwt.sign({ uid: user.id }, JWT_SECRET, { expiresIn: '30d' });
+  res.cookie('sid', token, { httpOnly: true, sameSite: 'lax', secure: isProd, maxAge: 30 * 24 * 3600 * 1000 });
+}
+
+async function auth(req, _res, next) {
+  try {
+    const token = req.cookies.sid;
+    if (!token) throw new HttpError(401, 'Não autenticado');
+    const { uid } = jwt.verify(token, JWT_SECRET);
+    const u = await one(
+      `SELECT u.id, u.company_id, u.team_id, u.name, u.email, u.role, u.active, c.name AS company_name, c.timezone
+       FROM users u JOIN companies c ON c.id=u.company_id WHERE u.id=$1`, [uid]);
+    if (!u || !u.active) throw new HttpError(401, 'Sessão inválida');
+    req.user = u;
+    next();
+  } catch (e) { next(e.status ? e : new HttpError(401, 'Sessão inválida')); }
+}
+const adminOnly = (req, _res, next) => (isAdmin(req.user) ? next() : next(new HttpError(403, 'Apenas administradores')));
+
+// Visibilidade de tarefas para colaboradores: próprias, compartilhadas ou da equipe sem responsável
+function visibilitySql(user, alias = 't', startIdx) {
+  if (isAdmin(user)) return { sql: 'TRUE', params: [] };
+  return {
+    sql: `(${alias}.assignee_id=$${startIdx} OR ${alias}.shared OR (${alias}.assignee_id IS NULL AND ${alias}.team_id IS NOT DISTINCT FROM $${startIdx + 1}::int))`,
+    params: [user.id, user.team_id],
+  };
+}
+
+async function loadTask(db, req, id, { forUpdate = false } = {}) {
+  const t = (await db.query(`SELECT * FROM tasks WHERE id=$1 AND company_id=$2 ${forUpdate ? 'FOR UPDATE' : ''}`, [id, req.user.company_id])).rows[0];
+  if (!t) throw new HttpError(404, 'Tarefa não encontrada');
+  const u = req.user;
+  if (!isAdmin(u) && !(t.assignee_id === u.id || t.shared || (t.assignee_id == null && t.team_id === u.team_id))) {
+    throw new HttpError(403, 'Sem acesso a esta tarefa');
+  }
+  return t;
+}
+
+const TASK_SELECT = `
+  SELECT t.*, u.name AS assignee_name, c.name AS category_name, c.color AS category_color, tm.name AS team_name,
+    cb.name AS created_by_name,
+    a.user_id AS active_user_id, au.name AS active_user_name, a.started_at AS active_started_at,
+    (t.status NOT IN ('done','cancelled') AND ((t.kind='daily' AND t.planned_date < $TODAY) OR (t.kind='weekly' AND t.due_date < $TODAY))) AS overdue
+  FROM tasks t
+  LEFT JOIN users u ON u.id=t.assignee_id
+  LEFT JOIN users cb ON cb.id=t.created_by
+  LEFT JOIN categories c ON c.id=t.category_id
+  LEFT JOIN teams tm ON tm.id=t.team_id
+  LEFT JOIN LATERAL (SELECT user_id, started_at FROM time_entries e WHERE e.task_id=t.id AND e.ended_at IS NULL LIMIT 1) a ON TRUE
+  LEFT JOIN users au ON au.id=a.user_id`;
+
+async function fetchTask(id, req) {
+  const today = todayIn(req.user.timezone);
+  return one(TASK_SELECT.replaceAll('$TODAY', '$2') + ' WHERE t.id=$1', [id, today]);
+}
+
+// Validação de dados de tarefa
+function cleanTask(body, { partial = false } = {}) {
+  const out = {};
+  const has = (k) => Object.prototype.hasOwnProperty.call(body, k);
+  if (!partial || has('title')) {
+    const title = String(body.title || '').trim();
+    if (!title) throw new HttpError(400, 'Informe o nome da tarefa');
+    out.title = title.slice(0, 300);
+  }
+  if (has('description')) out.description = String(body.description || '').slice(0, 10000);
+  if (has('notes')) out.notes = String(body.notes || '').slice(0, 10000);
+  if (has('kind')) { if (!['daily', 'weekly'].includes(body.kind)) throw new HttpError(400, 'Tipo inválido'); out.kind = body.kind; }
+  if (has('priority')) { if (!PRIORITIES.includes(body.priority)) throw new HttpError(400, 'Prioridade inválida'); out.priority = body.priority; }
+  if (has('status')) { if (!STATUSES.includes(body.status)) throw new HttpError(400, 'Status inválido'); out.status = body.status; }
+  if (has('due_date')) { if (!isDate(body.due_date)) throw new HttpError(400, 'Data inválida'); out.due_date = body.due_date; }
+  else if (!partial) throw new HttpError(400, 'Informe a data');
+  if (has('scheduled_time')) {
+    const v = body.scheduled_time || null;
+    if (v && !/^\d{2}:\d{2}(:\d{2})?$/.test(v)) throw new HttpError(400, 'Horário inválido');
+    out.scheduled_time = v;
+  }
+  if (has('estimated_minutes')) out.estimated_minutes = Math.max(0, Math.min(100000, parseInt(body.estimated_minutes, 10) || 0));
+  for (const k of ['assignee_id', 'team_id', 'category_id']) if (has(k)) out[k] = body[k] ? parseInt(body[k], 10) : null;
+  if (has('shared')) out.shared = !!body.shared;
+  return out;
+}
+
+async function assertRefs(db, companyId, data) {
+  const checks = [['assignee_id', 'users'], ['team_id', 'teams'], ['category_id', 'categories']];
+  for (const [k, table] of checks) {
+    if (data[k]) {
+      const r = await db.query(`SELECT 1 FROM ${table} WHERE id=$1 AND company_id=$2`, [data[k], companyId]);
+      if (!r.rowCount) throw new HttpError(400, `Referência inválida: ${k}`);
+    }
+  }
+}
+
+// ---------- autenticação ----------
+app.post('/api/auth/signup', wrap(async (req, res) => {
+  const { company, name, email, password } = req.body || {};
+  if (!company?.trim() || !name?.trim() || !email?.trim()) throw new HttpError(400, 'Preencha empresa, nome e e-mail');
+  if (!password || password.length < 6) throw new HttpError(400, 'A senha precisa ter ao menos 6 caracteres');
+  const exists = await one('SELECT 1 FROM users WHERE lower(email)=lower($1)', [email.trim()]);
+  if (exists) throw new HttpError(409, 'E-mail já cadastrado');
+  const hash = await bcrypt.hash(password, 10);
+  const user = await tx(async (db) => {
+    const c = (await db.query('INSERT INTO companies (name) VALUES ($1) RETURNING id', [company.trim()])).rows[0];
+    const u = (await db.query(
+      `INSERT INTO users (company_id, name, email, password_hash, role) VALUES ($1,$2,$3,$4,'admin') RETURNING id`,
+      [c.id, name.trim(), email.trim().toLowerCase(), hash])).rows[0];
+    await db.query(`INSERT INTO goals (company_id, user_id, period, target_percent) VALUES ($1,NULL,'daily',90),($1,NULL,'weekly',90)`, [c.id]);
+    return u;
+  });
+  setSession(res, user);
+  res.json({ ok: true });
+}));
+
+app.post('/api/auth/login', wrap(async (req, res) => {
+  const { email, password } = req.body || {};
+  const u = await one('SELECT * FROM users WHERE lower(email)=lower($1)', [String(email || '').trim()]);
+  if (!u || !(await bcrypt.compare(String(password || ''), u.password_hash))) throw new HttpError(401, 'E-mail ou senha incorretos');
+  if (!u.active) throw new HttpError(403, 'Usuário desativado. Fale com o administrador.');
+  setSession(res, u);
+  res.json({ ok: true });
+}));
+
+app.post('/api/auth/logout', (_req, res) => { res.clearCookie('sid'); res.json({ ok: true }); });
+
+app.use('/api', auth, ensureAutomation);
+
+app.get('/api/me', wrap(async (req, res) => {
+  res.json({ ...req.user, today: todayIn(req.user.timezone) });
+}));
+
+app.post('/api/me/password', wrap(async (req, res) => {
+  const { current, next: nw } = req.body || {};
+  const u = await one('SELECT password_hash FROM users WHERE id=$1', [req.user.id]);
+  if (!(await bcrypt.compare(String(current || ''), u.password_hash))) throw new HttpError(400, 'Senha atual incorreta');
+  if (!nw || nw.length < 6) throw new HttpError(400, 'A nova senha precisa ter ao menos 6 caracteres');
+  await q('UPDATE users SET password_hash=$1 WHERE id=$2', [await bcrypt.hash(nw, 10), req.user.id]);
+  res.json({ ok: true });
+}));
+
+// ---------- tempo real ----------
+app.get('/api/stream', (req, res) => {
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.flushHeaders();
+  res.write('retry: 5000\n\n');
+  const unsub = subscribe(req.user.company_id, res);
+  const ping = setInterval(() => res.write(': ping\n\n'), 25000);
+  req.on('close', () => { clearInterval(ping); unsub(); });
+});
+
+// ---------- cadastros: usuários, equipes, categorias ----------
+app.get('/api/users', wrap(async (req, res) => {
+  res.json(await many(
+    `SELECT u.id, u.name, u.email, u.role, u.active, u.team_id, t.name AS team_name, u.created_at
+     FROM users u LEFT JOIN teams t ON t.id=u.team_id WHERE u.company_id=$1 ORDER BY u.active DESC, u.name`, [req.user.company_id]));
+}));
+
+app.post('/api/users', adminOnly, wrap(async (req, res) => {
+  const { name, email, password, role = 'member', team_id } = req.body || {};
+  if (!name?.trim() || !email?.trim()) throw new HttpError(400, 'Informe nome e e-mail');
+  if (!password || password.length < 6) throw new HttpError(400, 'A senha precisa ter ao menos 6 caracteres');
+  if (!['admin', 'member'].includes(role)) throw new HttpError(400, 'Perfil inválido');
+  if (await one('SELECT 1 FROM users WHERE lower(email)=lower($1)', [email.trim()])) throw new HttpError(409, 'E-mail já cadastrado');
+  await assertRefs(pool, req.user.company_id, { team_id });
+  const u = await one(
+    `INSERT INTO users (company_id, name, email, password_hash, role, team_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [req.user.company_id, name.trim(), email.trim().toLowerCase(), await bcrypt.hash(password, 10), role, team_id || null]);
+  changed(req);
+  res.json(u);
+}));
+
+app.patch('/api/users/:id', adminOnly, wrap(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const target = await one('SELECT * FROM users WHERE id=$1 AND company_id=$2', [id, req.user.company_id]);
+  if (!target) throw new HttpError(404, 'Usuário não encontrado');
+  const b = req.body || {};
+  const sets = []; const params = [];
+  const add = (col, v) => { params.push(v); sets.push(`${col}=$${params.length}`); };
+  if (b.name !== undefined) add('name', String(b.name).trim());
+  if (b.email !== undefined) {
+    const dup = await one('SELECT 1 FROM users WHERE lower(email)=lower($1) AND id<>$2', [b.email.trim(), id]);
+    if (dup) throw new HttpError(409, 'E-mail já cadastrado');
+    add('email', b.email.trim().toLowerCase());
+  }
+  if (b.role !== undefined) {
+    if (!['admin', 'member'].includes(b.role)) throw new HttpError(400, 'Perfil inválido');
+    if (id === req.user.id && b.role !== 'admin') throw new HttpError(400, 'Você não pode remover seu próprio acesso de administrador');
+    add('role', b.role);
+  }
+  if (b.team_id !== undefined) { await assertRefs(pool, req.user.company_id, { team_id: b.team_id }); add('team_id', b.team_id || null); }
+  if (b.active !== undefined) {
+    if (id === req.user.id && !b.active) throw new HttpError(400, 'Você não pode desativar seu próprio usuário');
+    add('active', !!b.active);
+  }
+  if (b.password) { if (b.password.length < 6) throw new HttpError(400, 'Senha muito curta'); add('password_hash', await bcrypt.hash(b.password, 10)); }
+  if (sets.length) { params.push(id); await q(`UPDATE users SET ${sets.join(',')} WHERE id=$${params.length}`, params); }
+  changed(req);
+  res.json({ ok: true });
+}));
+
+for (const [route, table] of [['teams', 'teams'], ['categories', 'categories']]) {
+  app.get(`/api/${route}`, wrap(async (req, res) => {
+    res.json(await many(`SELECT * FROM ${table} WHERE company_id=$1 ORDER BY name`, [req.user.company_id]));
+  }));
+  app.post(`/api/${route}`, adminOnly, wrap(async (req, res) => {
+    const name = String(req.body?.name || '').trim();
+    if (!name) throw new HttpError(400, 'Informe o nome');
+    const row = table === 'categories'
+      ? await one('INSERT INTO categories (company_id, name, color) VALUES ($1,$2,$3) RETURNING *', [req.user.company_id, name, req.body.color || '#579bfc'])
+      : await one('INSERT INTO teams (company_id, name) VALUES ($1,$2) RETURNING *', [req.user.company_id, name]);
+    changed(req);
+    res.json(row);
+  }));
+  app.patch(`/api/${route}/:id`, adminOnly, wrap(async (req, res) => {
+    const name = String(req.body?.name || '').trim();
+    if (!name) throw new HttpError(400, 'Informe o nome');
+    if (table === 'categories') await q('UPDATE categories SET name=$1, color=COALESCE($2,color) WHERE id=$3 AND company_id=$4', [name, req.body.color || null, req.params.id, req.user.company_id]);
+    else await q('UPDATE teams SET name=$1 WHERE id=$2 AND company_id=$3', [name, req.params.id, req.user.company_id]);
+    changed(req);
+    res.json({ ok: true });
+  }));
+  app.delete(`/api/${route}/:id`, adminOnly, wrap(async (req, res) => {
+    await q(`DELETE FROM ${table} WHERE id=$1 AND company_id=$2`, [req.params.id, req.user.company_id]);
+    changed(req);
+    res.json({ ok: true });
+  }));
+}
+
+// ---------- tarefas ----------
+app.get('/api/tasks', wrap(async (req, res) => {
+  const u = req.user;
+  const today = todayIn(u.timezone);
+  const { kind, from, to, week, assignee, status, category, team, mine } = req.query;
+  const params = [u.company_id, today];
+  const w = ['t.company_id=$1'];
+  const vis = visibilitySql(u, 't', params.length + 1);
+  params.push(...vis.params); w.push(vis.sql);
+  let carriedExpr = 'FALSE';
+  if (kind) { params.push(kind); w.push(`t.kind=$${params.length}`); }
+  if (week && isDate(week)) {
+    const ws = weekStart(week);
+    params.push(ws);
+    const i = params.length;
+    // semana atual + pendências de semanas anteriores
+    w.push(`(t.week_start=$${i} OR (t.week_start < $${i} AND t.status NOT IN ('done','cancelled')))`);
+    carriedExpr = `(t.week_start < $${i})`;
+  } else {
+    if (from && isDate(from)) { params.push(from); w.push(`t.due_date >= $${params.length}`); }
+    if (to && isDate(to)) { params.push(to); w.push(`t.due_date <= $${params.length}`); }
+  }
+  if (assignee) { if (assignee === 'none') w.push('t.assignee_id IS NULL'); else { params.push(parseInt(assignee, 10)); w.push(`t.assignee_id=$${params.length}`); } }
+  if (mine === '1') { params.push(u.id); w.push(`t.assignee_id=$${params.length}`); }
+  if (status) {
+    if (status === 'overdue') w.push(`(t.status NOT IN ('done','cancelled') AND ((t.kind='daily' AND t.planned_date < $2) OR (t.kind='weekly' AND t.due_date < $2)))`);
+    else { params.push(status); w.push(`t.status=$${params.length}`); }
+  }
+  if (category) { params.push(parseInt(category, 10)); w.push(`t.category_id=$${params.length}`); }
+  if (team) { params.push(parseInt(team, 10)); w.push(`t.team_id=$${params.length}`); }
+  const sql = TASK_SELECT.replaceAll('$TODAY', '$2').replace('SELECT t.*,', `SELECT t.*, ${carriedExpr} AS carried,`) +
+    ` WHERE ${w.join(' AND ')}
+      ORDER BY t.due_date, CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, t.scheduled_time NULLS LAST, t.id
+      LIMIT 2000`;
+  res.json(await many(sql, params));
+}));
+
+app.get('/api/tasks/:id', wrap(async (req, res) => {
+  await loadTask(pool, req, req.params.id);
+  const task = await fetchTask(req.params.id, req);
+  const entries = await many(
+    `SELECT e.*, u.name AS user_name FROM time_entries e JOIN users u ON u.id=e.user_id WHERE e.task_id=$1 ORDER BY e.started_at DESC`, [task.id]);
+  const notes = await many(
+    `SELECT n.*, u.name AS user_name FROM task_notes n LEFT JOIN users u ON u.id=n.user_id WHERE n.task_id=$1 ORDER BY n.created_at DESC`, [task.id]);
+  const events = await many(
+    `SELECT ev.*, u.name AS user_name FROM task_events ev LEFT JOIN users u ON u.id=ev.user_id WHERE ev.task_id=$1 AND ev.company_id=$2 ORDER BY ev.created_at DESC, ev.id DESC`,
+    [task.id, req.user.company_id]);
+  const recurrence = task.recurrence_id ? await one('SELECT id, frequency, next_date, active FROM recurrences WHERE id=$1', [task.recurrence_id]) : null;
+  res.json({ task, entries, notes, events, recurrence });
+}));
+
+app.post('/api/tasks', adminOnly, wrap(async (req, res) => {
+  const data = cleanTask(req.body || {});
+  data.kind = data.kind || 'daily';
+  const recurrence = req.body.recurrence;
+  if (recurrence && !['daily', 'weekly', 'monthly'].includes(recurrence)) throw new HttpError(400, 'Recorrência inválida');
+  const task = await tx(async (db) => {
+    await assertRefs(db, req.user.company_id, data);
+    let recId = null;
+    if (recurrence) {
+      let next = recurrence === 'daily' ? addDays(data.due_date, 1) : recurrence === 'weekly' ? addDays(data.due_date, 7) : addMonths(data.due_date, 1);
+      if (recurrence === 'daily') while (!isBusinessDay(next)) next = addDays(next, 1);
+      const r = (await db.query(
+        `INSERT INTO recurrences (company_id, frequency, template, next_date, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        [req.user.company_id, recurrence, JSON.stringify(data), next, req.user.id])).rows[0];
+      recId = r.id;
+    }
+    const t = await insertTaskFromTemplate(db, req.user.company_id, data, data.due_date, recId, req.user.id);
+    await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'created', details: { recurrence: recurrence || null } });
+    return t;
+  });
+  changed(req);
+  res.json(await fetchTask(task.id, req));
+}));
+
+const FIELD_LABELS = {
+  title: 'nome', description: 'descrição', assignee_id: 'responsável', team_id: 'equipe', category_id: 'categoria', shared: 'compartilhada',
+  priority: 'prioridade', status: 'status', due_date: 'data', scheduled_time: 'horário', estimated_minutes: 'tempo estimado', notes: 'observações', kind: 'tipo',
+};
+
+app.patch('/api/tasks/:id', wrap(async (req, res) => {
+  const u = req.user;
+  let data = cleanTask(req.body || {}, { partial: true });
+  if (!isAdmin(u)) {
+    // colaborador: pode atualizar andamento (status) e observações
+    const allowed = {};
+    if ('notes' in data) allowed.notes = data.notes;
+    if ('status' in data) {
+      if (!['not_started', 'paused', 'in_progress', 'done'].includes(data.status)) throw new HttpError(403, 'Status não permitido');
+      allowed.status = data.status;
+    }
+    data = allowed;
+  }
+  if (!Object.keys(data).length) throw new HttpError(400, 'Nada para atualizar');
+  await tx(async (db) => {
+    const t = await loadTask(db, req, req.params.id, { forUpdate: true });
+    await assertRefs(db, u.company_id, data);
+    if (data.due_date && data.due_date !== t.due_date) {
+      data.week_start = weekStart(data.due_date);
+      // remarcação manual pelo administrador redefine a data planejada (histórico guarda a anterior)
+      data.planned_date = data.due_date;
+    }
+    if (data.status && data.status !== t.status) {
+      if (data.status === 'done') data.completed_at = new Date();
+      else if (t.status === 'done') data.completed_at = null;
+      if (['done', 'paused', 'cancelled', 'not_started'].includes(data.status)) await closeOpenEntries(db, t);
+    }
+    const diff = {};
+    for (const [k, v] of Object.entries(data)) {
+      const old = t[k] instanceof Date ? t[k].toISOString() : t[k];
+      const nv = v instanceof Date ? v.toISOString() : v;
+      if (String(old ?? '') !== String(nv ?? '') && FIELD_LABELS[k]) diff[k] = { from: old ?? null, to: nv ?? null };
+    }
+    const keys = Object.keys(data);
+    if (keys.length) {
+      const sets = keys.map((k, i) => `${k}=$${i + 1}`);
+      await db.query(`UPDATE tasks SET ${sets.join(',')}, updated_at=now() WHERE id=$${keys.length + 1}`, [...keys.map((k) => data[k]), t.id]);
+    }
+    if (Object.keys(diff).length) {
+      await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: data.title || t.title, userId: u.id,
+        action: diff.status ? (data.status === 'cancelled' ? 'cancelled' : 'status_changed') : 'updated', details: diff });
+    }
+  });
+  changed(req);
+  res.json(await fetchTask(req.params.id, req));
+}));
+
+app.delete('/api/tasks/:id', adminOnly, wrap(async (req, res) => {
+  await tx(async (db) => {
+    const t = await loadTask(db, req, req.params.id, { forUpdate: true });
+    await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'deleted',
+      details: { planned_date: t.planned_date, assignee_id: t.assignee_id, tracked_seconds: t.tracked_seconds } });
+    await db.query('DELETE FROM tasks WHERE id=$1', [t.id]);
+  });
+  changed(req);
+  res.json({ ok: true });
+}));
+
+app.post('/api/recurrences/:id/stop', adminOnly, wrap(async (req, res) => {
+  await q('UPDATE recurrences SET active=false WHERE id=$1 AND company_id=$2', [req.params.id, req.user.company_id]);
+  changed(req);
+  res.json({ ok: true });
+}));
+
+// ---------- controle de tempo ----------
+async function closeOpenEntries(db, task) {
+  const open = (await db.query(
+    `UPDATE time_entries SET ended_at=now(), seconds=GREATEST(1, EXTRACT(EPOCH FROM (now()-started_at))::int)
+     WHERE task_id=$1 AND ended_at IS NULL RETURNING seconds`, [task.id])).rows;
+  const add = open.reduce((s, r) => s + r.seconds, 0);
+  if (add) await db.query('UPDATE tasks SET tracked_seconds=tracked_seconds+$1 WHERE id=$2', [add, task.id]);
+  return add;
+}
+
+app.get('/api/timer/active', wrap(async (req, res) => {
+  const e = await one(
+    `SELECT e.id, e.task_id, e.started_at, t.title, t.tracked_seconds FROM time_entries e JOIN tasks t ON t.id=e.task_id
+     WHERE e.user_id=$1 AND e.ended_at IS NULL`, [req.user.id]);
+  res.json(e || null);
+}));
+
+app.post('/api/tasks/:id/start', wrap(async (req, res) => {
+  const u = req.user;
+  await tx(async (db) => {
+    const t = await loadTask(db, req, req.params.id, { forUpdate: true });
+    if (t.status === 'cancelled') throw new HttpError(400, 'Tarefa cancelada');
+    const running = (await db.query(
+      `SELECT e.task_id, tk.title FROM time_entries e JOIN tasks tk ON tk.id=e.task_id WHERE e.user_id=$1 AND e.ended_at IS NULL`, [u.id])).rows[0];
+    if (running) {
+      throw new HttpError(409, running.task_id === t.id
+        ? 'O cronômetro desta tarefa já está rodando'
+        : `Você já tem um cronômetro ativo em "${running.title}". Pause ou finalize antes de iniciar outra tarefa.`);
+    }
+    const otherUser = (await db.query('SELECT 1 FROM time_entries WHERE task_id=$1 AND ended_at IS NULL', [t.id])).rowCount;
+    if (otherUser) throw new HttpError(409, 'Outro colaborador está com o cronômetro desta tarefa ativo');
+    await db.query(`INSERT INTO time_entries (company_id, task_id, user_id, started_at, source) VALUES ($1,$2,$3,now(),'timer')`, [u.company_id, t.id, u.id]);
+    const wasDone = t.status === 'done';
+    await db.query(
+      `UPDATE tasks SET status='in_progress', started_at=COALESCE(started_at, now()), completed_at=NULL, updated_at=now() WHERE id=$1`, [t.id]);
+    const action = wasDone ? 'reopened' : t.status === 'paused' ? 'resumed' : 'started';
+    await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: t.title, userId: u.id, action, details: { previous_status: t.status } });
+  });
+  changed(req);
+  res.json(await fetchTask(req.params.id, req));
+}));
+
+app.post('/api/tasks/:id/pause', wrap(async (req, res) => {
+  const u = req.user;
+  await tx(async (db) => {
+    const t = await loadTask(db, req, req.params.id, { forUpdate: true });
+    const open = (await db.query('SELECT user_id FROM time_entries WHERE task_id=$1 AND ended_at IS NULL', [t.id])).rows[0];
+    if (!open) throw new HttpError(400, 'Não há cronômetro ativo nesta tarefa');
+    if (open.user_id !== u.id && !isAdmin(u)) throw new HttpError(403, 'Apenas quem iniciou (ou um administrador) pode pausar');
+    const secs = await closeOpenEntries(db, t);
+    await db.query(`UPDATE tasks SET status='paused', updated_at=now() WHERE id=$1`, [t.id]);
+    await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: t.title, userId: u.id, action: 'paused', details: { seconds: secs } });
+  });
+  changed(req);
+  res.json(await fetchTask(req.params.id, req));
+}));
+
+app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
+  const u = req.user;
+  await tx(async (db) => {
+    const t = await loadTask(db, req, req.params.id, { forUpdate: true });
+    if (t.status === 'done') throw new HttpError(400, 'Tarefa já concluída');
+    if (t.status === 'cancelled') throw new HttpError(400, 'Tarefa cancelada');
+    const open = (await db.query('SELECT user_id FROM time_entries WHERE task_id=$1 AND ended_at IS NULL', [t.id])).rows[0];
+    if (open && open.user_id !== u.id && !isAdmin(u)) throw new HttpError(403, 'Outro colaborador está com o cronômetro ativo nesta tarefa');
+    const secs = await closeOpenEntries(db, t);
+    const r = (await db.query(
+      `UPDATE tasks SET status='done', completed_at=now(), updated_at=now() WHERE id=$1 RETURNING tracked_seconds`, [t.id])).rows[0];
+    await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: t.title, userId: u.id, action: 'finished',
+      details: { last_period_seconds: secs, total_seconds: r.tracked_seconds } });
+  });
+  changed(req);
+  res.json(await fetchTask(req.params.id, req));
+}));
+
+// Lançamento manual de horário (início e fim)
+app.post('/api/tasks/:id/manual-time', wrap(async (req, res) => {
+  const u = req.user;
+  const { started_at, ended_at, finish, user_id } = req.body || {};
+  const s = new Date(started_at), e = new Date(ended_at);
+  if (isNaN(s) || isNaN(e)) throw new HttpError(400, 'Informe data e horário de início e de finalização');
+  if (e <= s) throw new HttpError(400, 'O horário de finalização deve ser posterior ao início');
+  if (e - s > 24 * 3600 * 1000) throw new HttpError(400, 'Período maior que 24 horas. Divida em lançamentos menores.');
+  if (e > new Date(Date.now() + 5 * 60 * 1000)) throw new HttpError(400, 'Não é possível lançar horários no futuro');
+  const who = isAdmin(u) && user_id ? parseInt(user_id, 10) : u.id;
+  await tx(async (db) => {
+    const t = await loadTask(db, req, req.params.id, { forUpdate: true });
+    if (t.status === 'cancelled') throw new HttpError(400, 'Tarefa cancelada');
+    await assertRefs(db, u.company_id, { assignee_id: who });
+    const overlap = (await db.query(
+      `SELECT 1 FROM time_entries WHERE user_id=$1 AND tstzrange(started_at, COALESCE(ended_at, now())) && tstzrange($2,$3)`, [who, s, e])).rowCount;
+    if (overlap) throw new HttpError(409, 'Esse período se sobrepõe a outro registro de tempo do colaborador');
+    const secs = Math.round((e - s) / 1000);
+    await db.query(
+      `INSERT INTO time_entries (company_id, task_id, user_id, started_at, ended_at, seconds, source) VALUES ($1,$2,$3,$4,$5,$6,'manual')`,
+      [u.company_id, t.id, who, s, e, secs]);
+    const sets = ['tracked_seconds=tracked_seconds+$1', 'started_at=LEAST(COALESCE(started_at,$2),$2)', 'updated_at=now()'];
+    const params = [secs, s];
+    if (finish) {
+      await closeOpenEntries(db, t);
+      params.push(e); sets.push(`status='done'`, `completed_at=$${params.length}`);
+    } else if (t.status === 'not_started' || t.status === 'late') sets.push(`status='paused'`);
+    params.push(t.id);
+    await db.query(`UPDATE tasks SET ${sets.join(',')} WHERE id=$${params.length}`, params);
+    await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: t.title, userId: u.id, action: 'manual_time',
+      details: { started_at: s.toISOString(), ended_at: e.toISOString(), seconds: secs, for_user: who, finished: !!finish } });
+  });
+  changed(req);
+  res.json(await fetchTask(req.params.id, req));
+}));
+
+app.delete('/api/time-entries/:id', adminOnly, wrap(async (req, res) => {
+  await tx(async (db) => {
+    const e = (await db.query('SELECT * FROM time_entries WHERE id=$1 AND company_id=$2', [req.params.id, req.user.company_id])).rows[0];
+    if (!e) throw new HttpError(404, 'Registro não encontrado');
+    if (!e.ended_at) throw new HttpError(400, 'Pause o cronômetro antes de excluir o registro');
+    await db.query('DELETE FROM time_entries WHERE id=$1', [e.id]);
+    const t = (await db.query('UPDATE tasks SET tracked_seconds=GREATEST(0,tracked_seconds-$1) WHERE id=$2 RETURNING title', [e.seconds, e.task_id])).rows[0];
+    await logEvent(db, { companyId: req.user.company_id, taskId: e.task_id, taskTitle: t?.title, userId: req.user.id, action: 'time_removed',
+      details: { seconds: e.seconds, started_at: e.started_at, ended_at: e.ended_at } });
+  });
+  changed(req);
+  res.json({ ok: true });
+}));
+
+// Observações / dificuldades / andamento
+app.post('/api/tasks/:id/notes', wrap(async (req, res) => {
+  const body = String(req.body?.body || '').trim();
+  const kind = ['note', 'difficulty', 'progress'].includes(req.body?.kind) ? req.body.kind : 'note';
+  if (!body) throw new HttpError(400, 'Escreva a observação');
+  await tx(async (db) => {
+    const t = await loadTask(db, req, req.params.id);
+    await db.query('INSERT INTO task_notes (company_id, task_id, user_id, kind, body) VALUES ($1,$2,$3,$4,$5)', [req.user.company_id, t.id, req.user.id, kind, body.slice(0, 5000)]);
+    await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'note_added', details: { kind } });
+  });
+  changed(req);
+  res.json({ ok: true });
+}));
+
+// ---------- alertas ----------
+app.get('/api/alerts', wrap(async (req, res) => {
+  const u = req.user;
+  const today = todayIn(u.timezone);
+  const tomorrow = addDays(today, 1);
+  const params = [u.company_id, today, tomorrow];
+  const vis = isAdmin(u) ? 'TRUE' : `t.assignee_id=$4`;
+  if (!isAdmin(u)) params.push(u.id);
+  const rows = await many(
+    `SELECT t.id, t.title, t.kind, t.due_date, t.planned_date, t.scheduled_time, t.priority, t.status, u.name AS assignee_name,
+       CASE WHEN (t.kind='daily' AND t.planned_date < $2) OR (t.kind='weekly' AND t.due_date < $2) THEN 'overdue'
+            WHEN t.due_date = $2 THEN 'today' ELSE 'tomorrow' END AS level
+     FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id
+     WHERE t.company_id=$1 AND ${vis} AND t.status NOT IN ('done','cancelled')
+       AND ( (t.kind='daily' AND t.planned_date < $2) OR (t.kind='weekly' AND t.due_date <= $3) OR (t.kind='daily' AND t.due_date=$2 AND t.priority IN ('high','urgent')) )
+     ORDER BY CASE WHEN (t.kind='daily' AND t.planned_date < $2) OR (t.kind='weekly' AND t.due_date < $2) THEN 0 WHEN t.due_date=$2 THEN 1 ELSE 2 END, t.due_date
+     LIMIT 50`, params);
+  res.json(rows);
+}));
+
+// ---------- histórico ----------
+app.get('/api/events', wrap(async (req, res) => {
+  const u = req.user;
+  const limit = Math.min(500, parseInt(req.query.limit, 10) || 100);
+  const params = [u.company_id];
+  let w = 'ev.company_id=$1';
+  if (!isAdmin(u)) { params.push(u.id); w += ` AND (ev.user_id=$2 OR ev.task_id IN (SELECT id FROM tasks WHERE assignee_id=$2))`; }
+  if (req.query.user && isAdmin(u)) { params.push(parseInt(req.query.user, 10)); w += ` AND ev.user_id=$${params.length}`; }
+  params.push(limit);
+  res.json(await many(
+    `SELECT ev.*, u.name AS user_name FROM task_events ev LEFT JOIN users u ON u.id=ev.user_id WHERE ${w} ORDER BY ev.created_at DESC, ev.id DESC LIMIT $${params.length}`, params));
+}));
+
+// ---------- métricas ----------
+function periodFromQuery(req) {
+  const today = todayIn(req.user.timezone);
+  let { from, to, period } = req.query;
+  if (!isDate(from) || !isDate(to)) {
+    if (period === 'today') { from = today; to = today; }
+    else if (period === 'month') { from = today.slice(0, 8) + '01'; to = addDays(addMonths(from, 1), -1); }
+    else { from = weekStart(today); to = addDays(from, 6); }
+  }
+  if (from > to) [from, to] = [to, from];
+  if (addDays(from, 366) < to) throw new HttpError(400, 'Período máximo de 1 ano');
+  return { from, to };
+}
+const scopeUser = (req) => (isAdmin(req.user) ? (req.query.user ? parseInt(req.query.user, 10) : null) : req.user.id);
+
+app.get('/api/dashboard', wrap(async (req, res) => {
+  const { from, to } = periodFromQuery(req);
+  res.json(await dashboard({ companyId: req.user.company_id, tz: req.user.timezone, from, to, userId: scopeUser(req) }));
+}));
+
+app.get('/api/reports', wrap(async (req, res) => {
+  const { from, to } = periodFromQuery(req);
+  res.json(await report({ companyId: req.user.company_id, tz: req.user.timezone, from, to, userId: scopeUser(req),
+    categoryId: req.query.category ? parseInt(req.query.category, 10) : null, status: req.query.status || null }));
+}));
+
+app.get('/api/reports/export.xlsx', wrap(async (req, res) => {
+  const { from, to } = periodFromQuery(req);
+  const data = await report({ companyId: req.user.company_id, tz: req.user.timezone, from, to, userId: scopeUser(req),
+    categoryId: req.query.category ? parseInt(req.query.category, 10) : null, status: req.query.status || null });
+  const wb = buildWorkbook(data, { from, to, company: req.user.company_name });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="relatorio_${from}_${to}.xlsx"`);
+  await wb.xlsx.write(res);
+  res.end();
+}));
+
+// ---------- metas ----------
+app.get('/api/goals', wrap(async (req, res) => {
+  const u = req.user;
+  const tz = u.timezone;
+  const today = todayIn(tz);
+  const ws = weekStart(today), we = addDays(ws, 6);
+  const goals = await many(
+    `SELECT g.*, us.name AS user_name FROM goals g LEFT JOIN users us ON us.id=g.user_id
+     WHERE g.company_id=$1 ${isAdmin(u) ? '' : 'AND (g.user_id IS NULL OR g.user_id=$2)'} ORDER BY g.user_id NULLS FIRST, g.period`,
+    isAdmin(u) ? [u.company_id] : [u.company_id, u.id]);
+  const scope = isAdmin(u) ? null : u.id;
+  const teamDay = await attainment({ companyId: u.company_id, tz, from: today, to: today });
+  const teamWeek = await attainment({ companyId: u.company_id, tz, from: ws, to: we });
+  const usersDay = await perUser({ companyId: u.company_id, tz, from: today, to: today, userId: scope });
+  const usersWeek = await perUser({ companyId: u.company_id, tz, from: ws, to: we, userId: scope });
+  const weeks = await weeklySeries({ companyId: u.company_id, tz, weeks: 8 });
+  res.json({ today, week: { from: ws, to: we }, goals, team: { day: teamDay, week: teamWeek }, usersDay, usersWeek, weeks });
+}));
+
+app.put('/api/goals', adminOnly, wrap(async (req, res) => {
+  const { user_id, period, target_percent, target_tasks, target_minutes } = req.body || {};
+  if (!['daily', 'weekly'].includes(period)) throw new HttpError(400, 'Período inválido');
+  const tp = parseInt(target_percent, 10);
+  if (!(tp >= 1 && tp <= 100)) throw new HttpError(400, 'Meta de atingimento deve estar entre 1 e 100%');
+  if (user_id) await assertRefs(pool, req.user.company_id, { assignee_id: user_id });
+  await q(
+    `INSERT INTO goals (company_id, user_id, period, target_percent, target_tasks, target_minutes) VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (company_id, COALESCE(user_id,0), period) DO UPDATE SET target_percent=EXCLUDED.target_percent,
+       target_tasks=EXCLUDED.target_tasks, target_minutes=EXCLUDED.target_minutes`,
+    [req.user.company_id, user_id || null, period, tp, target_tasks ? parseInt(target_tasks, 10) : null, target_minutes ? parseInt(target_minutes, 10) : null]);
+  changed(req);
+  res.json({ ok: true });
+}));
+
+app.delete('/api/goals/:id', adminOnly, wrap(async (req, res) => {
+  await q('DELETE FROM goals WHERE id=$1 AND company_id=$2 AND user_id IS NOT NULL', [req.params.id, req.user.company_id]);
+  changed(req);
+  res.json({ ok: true });
+}));
+
+app.post('/api/automation/run', adminOnly, wrap(async (req, res) => {
+  res.json(await runAutomationForCompany(req.user.company_id, { force: true }));
+}));
+
+// ---------- erros e frontend ----------
+app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Rota não encontrada')));
+app.use((err, _req, res, _next) => {
+  if (err.code === '23505' && /one_active_timer/.test(err.constraint || '')) {
+    return res.status(409).json({ error: 'Você já tem um cronômetro ativo. Pause ou finalize antes de iniciar outra tarefa.' });
+  }
+  if (!err.status) console.error(err);
+  res.status(err.status || 500).json({ error: err.status ? err.message : 'Erro interno do servidor' });
+});
+
+app.get('/healthz', (_req, res) => res.send('ok'));
+
+const dist = path.join(__dirname, '..', 'client', 'dist');
+if (fs.existsSync(dist)) {
+  app.use(express.static(dist, { maxAge: '1h', index: false }));
+  app.use((req, res, next) => (req.method === 'GET' ? res.sendFile(path.join(dist, 'index.html')) : next()));
+}
+
+await migrate();
+startAutomationLoop();
+app.listen(PORT, () => console.log(`Servidor ouvindo na porta ${PORT}`));

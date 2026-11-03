@@ -1,0 +1,258 @@
+import React, { useState } from 'react';
+import { api, toast, emitLocal, useData, useTick, STATUS, PRIORITY, ACTIONS, FIELD, fmtDateFull, fmtDateTime, fmtDur, fmtClock, fmtMin, fmtTime,
+  liveSeconds, toLocalInput } from '../lib.js';
+import { Icon, Avatar, StatusPill, PriorityPill, Loading, Progress, Field } from '../ui.jsx';
+import { useApp } from '../App.jsx';
+import { taskAction, setStatus, TaskButtons } from './Tasks.jsx';
+import TaskForm from './TaskForm.jsx';
+
+const NOTE_KIND = { note: ['Observação', '#579bfc'], difficulty: ['Dificuldade', '#e2445c'], progress: ['Andamento', '#00c875'] };
+
+export default function TaskDrawer({ id, onClose }) {
+  const { isAdmin, me, users, categories } = useApp();
+  const { data, error } = useData(`/tasks/${id}`, [id]);
+  const [tab, setTab] = useState('details');
+  const [edit, setEdit] = useState(false);
+  const task = data?.task;
+  useTick(1000, !!task?.active_started_at);
+
+  if (error) return <Shell onClose={onClose}><p className="pad">{error}</p></Shell>;
+  if (!data) return <Shell onClose={onClose}><Loading /></Shell>;
+
+  const secs = liveSeconds(task);
+  const estSecs = task.estimated_minutes * 60;
+  const canStatus = isAdmin || task.assignee_id === me.id || task.shared || !task.assignee_id;
+  const userName = (uid) => users.find((u) => u.id === Number(uid))?.name || '—';
+  const catName = (cid) => categories.find((c) => c.id === Number(cid))?.name || '—';
+
+  const del = async () => {
+    if (!confirm('Excluir esta tarefa? O histórico de auditoria será mantido.')) return;
+    try { await api(`/tasks/${id}`, { method: 'DELETE' }); emitLocal(); toast('Tarefa excluída'); onClose(); } catch (e) { toast(e.message, 'error'); }
+  };
+  const stopRec = async () => {
+    if (!confirm('Encerrar a recorrência? As tarefas já criadas serão mantidas.')) return;
+    try { await api(`/recurrences/${data.recurrence.id}/stop`, { method: 'POST' }); emitLocal(); toast('Recorrência encerrada'); } catch (e) { toast(e.message, 'error'); }
+  };
+
+  return (
+    <Shell onClose={onClose}>
+      <div className="drawer-head">
+        <div className="row gap-s wrap">
+          <StatusPill status={task.status} onChange={canStatus ? (s) => setStatus(task, s) : null}
+            options={isAdmin ? undefined : ['not_started', 'in_progress', 'paused', 'done']} />
+          <PriorityPill priority={task.priority} />
+          <span className="tag">{task.kind === 'daily' ? 'Diária' : 'Semanal'}</span>
+          {task.overdue && <span className="tag danger">Vencida</span>}
+        </div>
+        <h2>{task.title}</h2>
+        <div className="timer-box">
+          <div>
+            <small>Tempo utilizado</small>
+            <div className={'big-timer mono' + (task.active_started_at ? ' running' : '')}>{fmtClock(secs)}</div>
+            {estSecs > 0 && <Progress value={(secs / estSecs) * 100} color={secs > estSecs ? '#e2445c' : '#0073ea'} label={`${fmtMin(task.estimated_minutes)} estimado`} />}
+            {task.active_started_at && <small className="muted">Cronômetro ativo com {task.active_user_name} desde {fmtDateTime(task.active_started_at)}</small>}
+          </div>
+          <TaskButtons task={task} />
+        </div>
+      </div>
+
+      <div className="tabs">
+        {[['details', 'Detalhes'], ['time', `Tempo (${data.entries.length})`], ['notes', `Observações (${data.notes.length})`], ['history', 'Histórico']].map(([k, l]) => (
+          <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>
+        ))}
+      </div>
+
+      <div className="drawer-body">
+        {tab === 'details' && (
+          <>
+            <dl className="details">
+              <dt>Responsável</dt><dd className="row gap-s"><Avatar name={task.assignee_name} id={task.assignee_id} size={22} />{task.assignee_name || 'Sem responsável'}</dd>
+              <dt>{task.kind === 'daily' ? 'Data de execução' : 'Prazo'}</dt><dd>{fmtDateFull(task.due_date)} {task.scheduled_time && `às ${fmtTime(task.scheduled_time)}`}</dd>
+              <dt>Data planejada original</dt><dd>{fmtDateFull(task.planned_date)}{task.rollover_count > 0 && <span className="tag warn"> transferida {task.rollover_count}x</span>}</dd>
+              <dt>Categoria</dt><dd>{task.category_name ? <span className="cat"><i style={{ background: task.category_color }} />{task.category_name}</span> : '—'}</dd>
+              <dt>Equipe</dt><dd>{task.team_name || '—'}{task.shared && ' · compartilhada'}</dd>
+              <dt>Tempo estimado</dt><dd>{task.estimated_minutes ? fmtMin(task.estimated_minutes) : '—'}</dd>
+              <dt>Início</dt><dd>{fmtDateTime(task.started_at)}</dd>
+              <dt>Conclusão</dt><dd>{fmtDateTime(task.completed_at)}</dd>
+              <dt>Criada por</dt><dd>{task.created_by_name || 'Automação'} em {fmtDateTime(task.created_at)}</dd>
+              {data.recurrence && <><dt>Recorrência</dt><dd>{{ daily: 'Diária', weekly: 'Semanal', monthly: 'Mensal' }[data.recurrence.frequency]}
+                {data.recurrence.active ? <> · próxima {fmtDateFull(data.recurrence.next_date)} {isAdmin && <button className="link danger" onClick={stopRec}>encerrar</button>}</> : ' · encerrada'}</dd></>}
+            </dl>
+            <h4>Descrição</h4>
+            <p className="pre">{task.description || <span className="muted">Sem descrição.</span>}</p>
+            <NotesField task={task} />
+            {isAdmin && (
+              <div className="row gap wrap mt">
+                <button className="btn" onClick={() => setEdit(true)}><Icon name="edit" size={15} /> Editar</button>
+                {task.status !== 'cancelled' && <button className="btn" onClick={() => setStatus(task, 'cancelled')}><Icon name="stop" size={15} /> Cancelar tarefa</button>}
+                <button className="btn danger" onClick={del}><Icon name="trash" size={15} /> Excluir</button>
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === 'time' && <TimeTab task={task} entries={data.entries} />}
+
+        {tab === 'notes' && <NotesTab task={task} notes={data.notes} />}
+
+        {tab === 'history' && (
+          <ul className="timeline">
+            {data.events.map((e) => (
+              <li key={e.id}>
+                <span className="tl-dot" />
+                <div>
+                  <b>{e.user_name || 'Automação'}</b> {ACTIONS[e.action] ? ACTIONS[e.action].charAt(0).toLowerCase() + ACTIONS[e.action].slice(1) : e.action}
+                  <small className="muted"> · {fmtDateTime(e.created_at)}</small>
+                  <EventDetails e={e} userName={userName} catName={catName} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {edit && <TaskForm initial={task} onClose={() => setEdit(false)} />}
+    </Shell>
+  );
+}
+
+function Shell({ children, onClose }) {
+  return (
+    <div className="drawer-wrap" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <aside className="drawer">
+        <button className="icon-btn drawer-close" onClick={onClose}><Icon name="x" /></button>
+        {children}
+      </aside>
+    </div>
+  );
+}
+
+function NotesField({ task }) {
+  const [v, setV] = useState(task.notes);
+  const [dirty, setDirty] = useState(false);
+  const save = async () => {
+    try { await api(`/tasks/${task.id}`, { method: 'PATCH', body: { notes: v } }); setDirty(false); emitLocal(); toast('Observações salvas', 'success'); } catch (e) { toast(e.message, 'error'); }
+  };
+  return (
+    <>
+      <h4>Observações gerais</h4>
+      <textarea rows={3} value={v} onChange={(e) => { setV(e.target.value); setDirty(true); }} placeholder="Anotações sobre a tarefa" />
+      {dirty && <button className="btn sm primary mt-s" onClick={save}>Salvar observações</button>}
+    </>
+  );
+}
+
+function TimeTab({ task, entries }) {
+  const { isAdmin, activeUsers, me } = useApp();
+  const now = new Date();
+  const [f, setF] = useState({ start: toLocalInput(new Date(now - 3600e3)), end: toLocalInput(now), finish: false, user_id: '' });
+  const secs = f.start && f.end ? (new Date(f.end) - new Date(f.start)) / 1000 : 0;
+  const submit = async () => {
+    try {
+      await api(`/tasks/${task.id}/manual-time`, { method: 'POST', body: {
+        started_at: new Date(f.start).toISOString(), ended_at: new Date(f.end).toISOString(), finish: f.finish, user_id: f.user_id || undefined } });
+      emitLocal(); toast('Horário lançado', 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  };
+  const remove = async (eid) => {
+    if (!confirm('Remover este registro de tempo?')) return;
+    try { await api(`/time-entries/${eid}`, { method: 'DELETE' }); emitLocal(); } catch (e) { toast(e.message, 'error'); }
+  };
+  return (
+    <>
+      {task.status !== 'cancelled' && (
+        <div className="manual-box">
+          <h4>Lançamento manual de horário</h4>
+          <p className="muted small">Use quando não tiver usado os botões Iniciar/Finalizar. O tempo é calculado automaticamente.</p>
+          <div className="grid-2">
+            <Field label="Data e horário de início"><input type="datetime-local" value={f.start} onChange={(e) => setF({ ...f, start: e.target.value })} /></Field>
+            <Field label="Data e horário de finalização"><input type="datetime-local" value={f.end} onChange={(e) => setF({ ...f, end: e.target.value })} /></Field>
+          </div>
+          {isAdmin && (
+            <Field label="Colaborador">
+              <select value={f.user_id} onChange={(e) => setF({ ...f, user_id: e.target.value })}>
+                <option value="">{me.name} (eu)</option>
+                {activeUsers.filter((u) => u.id !== me.id).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </Field>
+          )}
+          <div className="row between wrap gap">
+            <label className="check"><input type="checkbox" checked={f.finish} onChange={(e) => setF({ ...f, finish: e.target.checked })} disabled={task.status === 'done'} /> Marcar tarefa como concluída</label>
+            <span>Tempo calculado: <b>{secs > 0 ? fmtDur(secs) : '—'}</b></span>
+          </div>
+          <button className="btn primary mt-s" disabled={secs <= 0} onClick={submit}>Lançar horário</button>
+        </div>
+      )}
+      <h4>Períodos registrados</h4>
+      {!entries.length && <p className="muted">Nenhum registro de tempo ainda.</p>}
+      <table className="simple">
+        <thead><tr><th>Colaborador</th><th>Início</th><th>Fim</th><th>Duração</th><th>Origem</th>{isAdmin && <th />}</tr></thead>
+        <tbody>
+          {entries.map((e) => (
+            <tr key={e.id}>
+              <td>{e.user_name}</td><td>{fmtDateTime(e.started_at)}</td><td>{e.ended_at ? fmtDateTime(e.ended_at) : <span className="tag ok">em andamento</span>}</td>
+              <td>{e.ended_at ? fmtDur(e.seconds) : '—'}</td><td>{e.source === 'manual' ? 'Manual' : 'Cronômetro'}</td>
+              {isAdmin && <td>{e.ended_at && <button className="icon-btn sm" onClick={() => remove(e.id)} title="Remover"><Icon name="trash" size={14} /></button>}</td>}
+            </tr>
+          ))}
+        </tbody>
+        {entries.length > 0 && <tfoot><tr><td colSpan={3}><b>Total</b></td><td><b>{fmtDur(task.tracked_seconds)}</b></td><td colSpan={2} /></tr></tfoot>}
+      </table>
+    </>
+  );
+}
+
+function NotesTab({ task, notes }) {
+  const [body, setBody] = useState('');
+  const [kind, setKind] = useState('progress');
+  const send = async () => {
+    if (!body.trim()) return;
+    try { await api(`/tasks/${task.id}/notes`, { method: 'POST', body: { body, kind } }); setBody(''); emitLocal(); } catch (e) { toast(e.message, 'error'); }
+  };
+  return (
+    <>
+      <div className="note-form">
+        <div className="segmented sm">
+          {Object.entries(NOTE_KIND).map(([k, [l]]) => <button key={k} className={kind === k ? 'on' : ''} onClick={() => setKind(k)}>{l}</button>)}
+        </div>
+        <textarea rows={3} value={body} onChange={(e) => setBody(e.target.value)}
+          placeholder={kind === 'difficulty' ? 'Descreva a dificuldade ou impedimento encontrado' : kind === 'progress' ? 'Atualize o andamento da atividade' : 'Escreva uma observação'} />
+        <button className="btn primary sm" onClick={send}>Registrar</button>
+      </div>
+      <ul className="notes">
+        {notes.map((n) => (
+          <li key={n.id} style={{ borderLeftColor: NOTE_KIND[n.kind][1] }}>
+            <div className="row between"><b>{n.user_name}</b><small className="muted">{NOTE_KIND[n.kind][0]} · {fmtDateTime(n.created_at)}</small></div>
+            <p className="pre">{n.body}</p>
+          </li>
+        ))}
+        {!notes.length && <p className="muted">Nenhum registro ainda.</p>}
+      </ul>
+    </>
+  );
+}
+
+function EventDetails({ e, userName, catName }) {
+  const d = e.details || {};
+  const fmtVal = (k, v) => {
+    if (v == null || v === '') return '—';
+    if (k === 'status') return STATUS[v]?.label || v;
+    if (k === 'priority') return PRIORITY[v]?.label || v;
+    if (k === 'assignee_id') return userName(v);
+    if (k === 'category_id') return catName(v);
+    if (k === 'due_date') return fmtDateFull(v);
+    if (k === 'estimated_minutes') return fmtMin(v);
+    if (k === 'shared') return v === true || v === 'true' ? 'sim' : 'não';
+    if (k === 'description' || k === 'notes') return String(v).slice(0, 60) + (String(v).length > 60 ? '…' : '');
+    return String(v);
+  };
+  if (['updated', 'status_changed', 'cancelled'].includes(e.action)) {
+    return <ul className="diff">{Object.entries(d).map(([k, v]) => <li key={k}>{FIELD[k] || k}: <s>{fmtVal(k, v.from)}</s> → <b>{fmtVal(k, v.to)}</b></li>)}</ul>;
+  }
+  if (e.action === 'rolled_over') return <div className="small muted">De {fmtDateFull(d.from)} para {fmtDateFull(d.to)}</div>;
+  if (e.action === 'manual_time') return <div className="small muted">{fmtDateTime(d.started_at)} → {fmtDateTime(d.ended_at)} ({fmtDur(d.seconds)}){d.for_user && d.for_user !== e.user_id ? ` para ${userName(d.for_user)}` : ''}{d.finished ? ' · concluída' : ''}</div>;
+  if (e.action === 'paused') return <div className="small muted">Período: {fmtDur(d.seconds)}</div>;
+  if (e.action === 'finished') return <div className="small muted">Tempo total: {fmtDur(d.total_seconds)}</div>;
+  if (e.action === 'time_removed') return <div className="small muted">{fmtDur(d.seconds)} removidos</div>;
+  if (e.action === 'note_added') return <div className="small muted">{NOTE_KIND[d.kind]?.[0]}</div>;
+  return null;
+}
