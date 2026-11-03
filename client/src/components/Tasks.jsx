@@ -69,6 +69,17 @@ function Badges({ task }) {
   );
 }
 
+export function BizChannel({ task: t, inline, withCategory }) {
+  if (!t.business_name && !t.channel_name && !(withCategory && t.category_name)) return <span className="muted">—</span>;
+  return (
+    <span className={'biz' + (inline ? ' inline' : '')}>
+      {t.business_name && <span className="biz-name" style={{ '--c': t.business_color }}>{t.business_name}</span>}
+      {t.channel_name && <span className="chan" style={{ background: t.channel_color }}>{t.channel_name}</span>}
+      {withCategory && t.category_name && <span className="cat small muted"><i style={{ background: t.category_color }} />{t.category_name}</span>}
+    </span>
+  );
+}
+
 // Tabela agrupada por status (estilo Monday)
 export function TaskTable({ tasks, groupBy = 'status', showDate = false }) {
   const { openTask, isAdmin, me } = useApp();
@@ -80,8 +91,12 @@ export function TaskTable({ tasks, groupBy = 'status', showDate = false }) {
   } else {
     const map = new Map();
     for (const t of tasks) {
-      const k = groupBy === 'assignee' ? (t.assignee_id || 0) : (t.team_id || 0);
-      const label = groupBy === 'assignee' ? (t.assignee_name || 'Sem responsável') : (t.team_name || 'Sem equipe');
+      const G = {
+        assignee: [t.assignee_id, t.assignee_name, 'Sem responsável'], team: [t.team_id, t.team_name, 'Sem equipe'],
+        business: [t.business_id, t.business_name, 'Sem empresa'], channel: [t.channel_id, t.channel_name, 'Sem canal'],
+      }[groupBy];
+      const k = G[0] || 0;
+      const label = G[1] || G[2];
       if (!map.has(k)) map.set(k, { key: k, label, items: [] });
       map.get(k).items.push(t);
     }
@@ -106,12 +121,12 @@ export function TaskTable({ tasks, groupBy = 'status', showDate = false }) {
             {!collapsed[g.key] && (
               <div className="table-scroll">
                 <table className="tasks desktop-only">
-                  <colgroup><col /><col style={{ width: 110 }} /><col style={{ width: 128 }} /><col style={{ width: 100 }} /><col style={{ width: showDate ? 95 : 72 }} />
-                    <col style={{ width: 120 }} /><col style={{ width: 80 }} /><col style={{ width: 95 }} /><col style={{ width: 188 }} /></colgroup>
+                  <colgroup><col /><col style={{ width: 150 }} />{isAdmin && <col style={{ width: 105 }} />}<col style={{ width: 122 }} /><col style={{ width: 92 }} />
+                    <col style={{ width: showDate ? 92 : 66 }} /><col style={{ width: 78 }} /><col style={{ width: 92 }} /><col style={{ width: 182 }} /></colgroup>
                   <thead>
                     <tr>
-                      <th className="c-title">Tarefa</th><th>Responsável</th><th>Status</th><th>Prioridade</th>
-                      <th>{showDate ? 'Prazo' : 'Horário'}</th><th>Categoria</th><th>Estimado</th><th>Tempo</th><th className="c-actions">Ações</th>
+                      <th className="c-title">Tarefa</th><th>Empresa · Canal</th>{isAdmin && <th>Responsável</th>}<th>Status</th><th>Prioridade</th>
+                      <th>{showDate ? 'Prazo' : 'Horário'}</th><th>Estimado</th><th>Tempo</th><th className="c-actions">Ações</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -120,12 +135,12 @@ export function TaskTable({ tasks, groupBy = 'status', showDate = false }) {
                       return (
                         <tr key={t.id} onClick={() => openTask(t.id)} className={t.status === 'done' ? 'is-done' : ''}>
                           <td className="c-title"><span className="title-text">{t.title}</span><Badges task={t} /></td>
-                          <td><span className="row gap-s"><Avatar name={t.assignee_name} id={t.assignee_id} size={24} /><span className="hide-sm">{t.assignee_name?.split(' ')[0]}</span></span></td>
+                          <td className="c-biz"><BizChannel task={t} withCategory /></td>
+                          {isAdmin && <td><span className="row gap-s"><Avatar name={t.assignee_name} id={t.assignee_id} size={24} /><span className="hide-sm">{t.assignee_name?.split(' ')[0]}</span></span></td>}
                           <td className="c-pill"><StatusPill status={t.status} onChange={canStatus ? (s) => setStatus(t, s) : null}
                             options={isAdmin ? undefined : ['not_started', 'in_progress', 'paused', 'done']} /></td>
                           <td className="c-pill"><PriorityPill priority={t.priority} /></td>
                           <td className="nowrap">{showDate ? <>{fmtWeekday(t.due_date)} {fmtDate(t.due_date)}</> : (fmtTime(t.scheduled_time) || <span className="muted">—</span>)}</td>
-                          <td>{t.category_name ? <span className="cat"><i style={{ background: t.category_color }} />{t.category_name}</span> : <span className="muted">—</span>}</td>
                           <td className="nowrap">{t.estimated_minutes ? fmtMin(t.estimated_minutes) : <span className="muted">—</span>}</td>
                           <td className="nowrap"><TimerCell task={t} /></td>
                           <td className="c-actions"><TaskButtons task={t} /></td>
@@ -147,6 +162,7 @@ export function TaskTable({ tasks, groupBy = 'status', showDate = false }) {
                       <Pill color={PRIORITY[t.priority].color} className="xs">{PRIORITY[t.priority].label}</Pill>
                       {t.category_name && <span className="cat small"><i style={{ background: t.category_color }} />{t.category_name}</span>}
                     </div>
+                    {(t.business_name || t.channel_name) && <BizChannel task={t} inline />}
                     <div className="row between">
                       <span className="row gap-s"><Avatar name={t.assignee_name} id={t.assignee_id} size={22} />
                         <small className="muted">{showDate ? fmtDate(t.due_date) : fmtTime(t.scheduled_time)}{t.estimated_minutes ? ' · est. ' + fmtMin(t.estimated_minutes) : ''}</small></span>
@@ -189,6 +205,7 @@ export function Kanban({ tasks }) {
                 <div key={t.id} className="kcard" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', t.id)} onClick={() => openTask(t.id)}>
                   <div className="row between"><Pill color={PRIORITY[t.priority].color} className="xs">{PRIORITY[t.priority].label}</Pill><TimerCell task={t} /></div>
                   <b className="kcard-title">{t.title}</b>
+                  {(t.business_name || t.channel_name) && <BizChannel task={t} inline />}
                   <Badges task={t} />
                   <div className="row between">
                     <span className="row gap-s"><Avatar name={t.assignee_name} id={t.assignee_id} size={22} />
@@ -240,7 +257,7 @@ export function CalendarView({ tasks, month, onPickDay }) {
 }
 
 export function TaskFilters({ filters, setFilters, extra }) {
-  const { isAdmin, activeUsers, categories, teams } = useApp();
+  const { isAdmin, activeUsers, categories, teams, businesses, channels } = useApp();
   const set = (k) => (e) => setFilters({ ...filters, [k]: e.target.value });
   return (
     <div className="filters">
@@ -250,6 +267,20 @@ export function TaskFilters({ filters, setFilters, extra }) {
           <option value="">Todos os colaboradores</option>
           <option value="none">Sem responsável</option>
           {activeUsers.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+      )}
+      {businesses.length > 0 && (
+        <select value={filters.business || ''} onChange={set('business')}>
+          <option value="">Todas as empresas</option>
+          {businesses.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+          <option value="none">Sem empresa</option>
+        </select>
+      )}
+      {channels.length > 0 && (
+        <select value={filters.channel || ''} onChange={set('channel')}>
+          <option value="">Todos os canais</option>
+          {channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          <option value="none">Sem canal</option>
         </select>
       )}
       <select value={filters.status || ''} onChange={set('status')}>

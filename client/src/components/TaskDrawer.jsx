@@ -9,7 +9,7 @@ import TaskForm from './TaskForm.jsx';
 const NOTE_KIND = { note: ['Observação', '#579bfc'], difficulty: ['Dificuldade', '#e2445c'], progress: ['Andamento', '#00c875'] };
 
 export default function TaskDrawer({ id, onClose }) {
-  const { isAdmin, me, users, categories } = useApp();
+  const { isAdmin, me, users, categories, businesses, channels } = useApp();
   const { data, error } = useData(`/tasks/${id}`, [id]);
   const [tab, setTab] = useState('details');
   const [edit, setEdit] = useState(false);
@@ -24,6 +24,7 @@ export default function TaskDrawer({ id, onClose }) {
   const canStatus = isAdmin || task.assignee_id === me.id;
   const userName = (uid) => users.find((u) => u.id === Number(uid))?.name || '—';
   const catName = (cid) => categories.find((c) => c.id === Number(cid))?.name || '—';
+  const refName = (list) => (id) => list.find((c) => c.id === Number(id))?.name || '—';
 
   const del = async () => {
     if (!confirm('Excluir esta tarefa? O histórico de auditoria será mantido.')) return;
@@ -71,6 +72,8 @@ export default function TaskDrawer({ id, onClose }) {
               <dt>Responsável</dt><dd className="row gap-s"><Avatar name={task.assignee_name} id={task.assignee_id} size={22} />{task.assignee_name || 'Sem responsável'}</dd>
               <dt>{task.kind === 'daily' ? 'Data de execução' : 'Prazo'}</dt><dd>{fmtDateFull(task.due_date)} {task.scheduled_time && `às ${fmtTime(task.scheduled_time)}`}</dd>
               <dt>Data planejada original</dt><dd>{fmtDateFull(task.planned_date)}{task.rollover_count > 0 && <span className="tag warn"> transferida {task.rollover_count}x</span>}</dd>
+              <dt>Empresa</dt><dd>{task.business_name ? <span className="cat"><i style={{ background: task.business_color }} />{task.business_name}</span> : '—'}</dd>
+              <dt>Canal</dt><dd>{task.channel_name ? <span className="chan" style={{ background: task.channel_color }}>{task.channel_name}</span> : '—'}</dd>
               <dt>Categoria</dt><dd>{task.category_name ? <span className="cat"><i style={{ background: task.category_color }} />{task.category_name}</span> : '—'}</dd>
               <dt>Equipe</dt><dd>{task.team_name || '—'}</dd>
               <dt>Tempo estimado</dt><dd>{task.estimated_minutes ? fmtMin(task.estimated_minutes) : '—'}</dd>
@@ -105,7 +108,7 @@ export default function TaskDrawer({ id, onClose }) {
                 <div>
                   <b>{e.user_name || 'Automação'}</b> {ACTIONS[e.action] ? ACTIONS[e.action].charAt(0).toLowerCase() + ACTIONS[e.action].slice(1) : e.action}
                   <small className="muted"> · {fmtDateTime(e.created_at)}</small>
-                  <EventDetails e={e} userName={userName} catName={catName} />
+                  <EventDetails e={e} userName={userName} catName={catName} bizName={refName(businesses)} chanName={refName(channels)} />
                 </div>
               </li>
             ))}
@@ -241,7 +244,7 @@ function NotesTab({ task, notes }) {
   );
 }
 
-function EventDetails({ e, userName, catName }) {
+function EventDetails({ e, userName, catName, bizName, chanName }) {
   const d = e.details || {};
   const fmtVal = (k, v) => {
     if (v == null || v === '') return '—';
@@ -249,6 +252,8 @@ function EventDetails({ e, userName, catName }) {
     if (k === 'priority') return PRIORITY[v]?.label || v;
     if (k === 'assignee_id') return userName(v);
     if (k === 'category_id') return catName(v);
+    if (k === 'business_id') return bizName(v);
+    if (k === 'channel_id') return chanName(v);
     if (k === 'due_date') return fmtDateFull(v);
     if (k === 'estimated_minutes') return fmtMin(v);
     if (k === 'shared') return v === true || v === 'true' ? 'sim' : 'não';

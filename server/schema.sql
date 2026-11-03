@@ -152,3 +152,26 @@ CREATE TABLE IF NOT EXISTS subtasks (
 CREATE INDEX IF NOT EXISTS subtasks_task ON subtasks (task_id);
 ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS subtask_id INT REFERENCES subtasks(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS tasks_recurrence ON tasks (recurrence_id, planned_date);
+
+-- ===== v3: empresas atendidas, canais, permissões, almoço =====
+CREATE TABLE IF NOT EXISTS businesses (
+  id          SERIAL PRIMARY KEY,
+  company_id  INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  color       TEXT NOT NULL DEFAULT '#0073ea',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS channels (
+  id          SERIAL PRIMARY KEY,
+  company_id  INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  color       TEXT NOT NULL DEFAULT '#fdab3d',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS business_id INT REFERENCES businesses(id) ON DELETE SET NULL;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS channel_id INT REFERENCES channels(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS tasks_business ON tasks (business_id);
+CREATE INDEX IF NOT EXISTS tasks_channel ON tasks (channel_id);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_tabs TEXT[];
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS lunch_start TIME NOT NULL DEFAULT '12:00';
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS lunch_end TIME NOT NULL DEFAULT '13:00';

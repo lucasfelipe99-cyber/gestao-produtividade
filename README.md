@@ -6,9 +6,11 @@ Sistema SaaS de gestão de tarefas e produtividade para equipes de e-commerce, i
 
 - **Multiempresa**: cada empresa tem seus dados isolados. Quem cria a conta da empresa vira administrador.
 - **Perfis**: Administrador vê e gerencia todas as tarefas, tempos e indicadores. Colaborador acessa **somente as próprias tarefas, registros de tempo, metas, relatórios e histórico** (iniciar/pausar/finalizar, observações, desempenho próprio).
+- **Empresas atendidas e canais de marketplace**: a mesma equipe pode trabalhar para várias empresas; cada tarefa pode ser vinculada a uma empresa e a um canal (Mercado Livre, Shopee, Amazon...), com filtros, agrupamento, indicadores e exportação por empresa e por canal.
+- **Permissão de abas**: o administrador escolhe quais abas cada colaborador acessa (bloqueado também na API).
 - **Tarefas diárias e semanais**: visualização em tabela agrupada (status, colaborador ou equipe), Kanban com arrastar e soltar, e calendário mensal.
 - **Subtarefas com tempo próprio**: cada tarefa pode ter subtarefas; o tempo de cada subtarefa compõe o tempo da tarefa principal. Se o cronômetro da tarefa está rodando e uma subtarefa é adicionada, o tempo passa a contar nela imediatamente; ao concluir a subtarefa o cronômetro segue na tarefa principal.
-- **Linha do tempo da jornada** (08:00–17:30, configurável): blocos de trabalho por colaborador, atraso da primeira atividade, hora extra (antes do início ou após o fim), tempo sem apontamento e resumo dos últimos 7 dias.
+- **Linha do tempo da jornada** (08:00–17:30 com almoço 12:00–13:00, configuráveis; trabalho no almoço conta como hora extra): blocos de trabalho por colaborador, atraso da primeira atividade, hora extra (antes do início ou após o fim), tempo sem apontamento e resumo dos últimos 7 dias.
 - **Controle de tempo**: botões Iniciar / Pausar / Retomar / Finalizar com cronômetro em tempo real, lançamento manual de horários (com verificação de sobreposição) e **bloqueio de dois cronômetros simultâneos** por colaborador (garantido no banco por índice único).
 - **Automações** (executadas a cada 5 minutos e a cada acesso):
   - diárias não concluídas são transferidas para o próximo dia útil (a data planejada original é preservada);

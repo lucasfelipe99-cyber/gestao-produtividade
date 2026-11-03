@@ -43,7 +43,7 @@ export default function Daily() {
         <Segmented value={view} onChange={changeView} options={[['table', 'Tabela', 'list'], ['kanban', 'Kanban', 'kanban'], ['calendar', 'Calendário', 'calendar']]} />
         {view === 'table' && (
           <select value={group} onChange={(e) => setGroup(e.target.value)} className="sm">
-            <option value="status">Agrupar por status</option><option value="assignee">Agrupar por colaborador</option><option value="team">Agrupar por equipe</option>
+            <option value="status">Agrupar por status</option><option value="assignee">Agrupar por colaborador</option><option value="team">Agrupar por equipe</option><option value="business">Agrupar por empresa</option><option value="channel">Agrupar por canal</option>
           </select>
         )}
         <TaskFilters filters={filters} setFilters={setFilters} />

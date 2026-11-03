@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom';
-import { api, connectLive, disconnectLive, useData, onToast, toast, useTick, fmtClock, fmtDate, STATUS, emitLocal } from './lib.js';
+import { api, connectLive, disconnectLive, useData, onToast, toast, useTick, fmtClock, fmtDate, STATUS, emitLocal, canTab } from './lib.js';
 import { Icon, Avatar, Modal, Field } from './ui.jsx';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
@@ -35,6 +35,8 @@ function Shell({ me, onLogout }) {
   const users = useData('/users');
   const categories = useData('/categories');
   const teams = useData('/teams');
+  const businesses = useData('/businesses');
+  const channels = useData('/channels');
   const [openTask, setOpenTask] = useState(null);
   const [menu, setMenu] = useState(false);
   const loc = useLocation();
@@ -44,19 +46,22 @@ function Shell({ me, onLogout }) {
     me, isAdmin,
     users: users.data || [], activeUsers: (users.data || []).filter((u) => u.active),
     categories: categories.data || [], teams: teams.data || [],
+    businesses: businesses.data || [], channels: channels.data || [],
     openTask: (id) => setOpenTask(id),
   };
   const logout = async () => { await api('/auth/logout', { method: 'POST' }); onLogout(); };
-  const nav = [
-    ['/', 'dashboard', isAdmin ? 'Dashboard' : 'Meu painel'],
-    ['/diarias', 'today', 'Tarefas diárias'],
-    ['/semanais', 'week', 'Tarefas semanais'],
-    ['/linha-do-tempo', 'timeline', 'Linha do tempo'],
-    ['/metas', 'target', 'Metas e atingimento'],
-    ['/relatorios', 'chart', 'Relatórios'],
-    ['/historico', 'history', 'Histórico'],
-    ...(isAdmin ? [['/equipe', 'users', 'Equipe e cadastros']] : []),
+  const ALL = [
+    ['/', 'dashboard', isAdmin ? 'Dashboard' : 'Meu painel', 'dashboard', <Dashboard />],
+    ['/diarias', 'today', 'Tarefas diárias', 'diarias', <Daily />],
+    ['/semanais', 'week', 'Tarefas semanais', 'semanais', <Weekly />],
+    ['/linha-do-tempo', 'timeline', 'Linha do tempo', 'linha-do-tempo', <Timeline />],
+    ['/metas', 'target', 'Metas e atingimento', 'metas', <Goals />],
+    ['/relatorios', 'chart', 'Relatórios', 'relatorios', <Reports />],
+    ['/historico', 'history', 'Histórico', 'historico', <History />],
+    ...(isAdmin ? [['/equipe', 'users', 'Equipe e cadastros', null, <Team />]] : []),
   ];
+  const nav = ALL.filter(([, , , tab]) => !tab || canTab(me, tab));
+  const home = nav[0]?.[0] || '/';
   return (
     <Ctx.Provider value={ctx}>
       <div className={'shell' + (menu ? ' menu-open' : '')}>
@@ -86,15 +91,8 @@ function Shell({ me, onLogout }) {
           </header>
           <div className="content">
             <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/diarias" element={<Daily />} />
-              <Route path="/semanais" element={<Weekly />} />
-              <Route path="/linha-do-tempo" element={<Timeline />} />
-              <Route path="/metas" element={<Goals />} />
-              <Route path="/relatorios" element={<Reports />} />
-              <Route path="/historico" element={<History />} />
-              {isAdmin && <Route path="/equipe" element={<Team />} />}
-              <Route path="*" element={<Navigate to="/" />} />
+              {nav.map(([to, , , , el]) => <Route key={to} path={to} element={el} />)}
+              <Route path="*" element={<Navigate to={home} />} />
             </Routes>
           </div>
         </main>

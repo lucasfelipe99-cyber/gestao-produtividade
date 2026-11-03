@@ -17,11 +17,11 @@ export async function insertTaskFromTemplate(db, companyId, t, dueDate, recurren
   const kind = t.kind === 'weekly' ? 'weekly' : 'daily';
   const { rows } = await db.query(
     `INSERT INTO tasks (company_id, kind, title, description, assignee_id, team_id, category_id, shared, priority,
-       due_date, planned_date, week_start, scheduled_time, estimated_minutes, notes, recurrence_id, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+       due_date, planned_date, week_start, scheduled_time, estimated_minutes, notes, recurrence_id, created_by, business_id, channel_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
     [companyId, kind, t.title, t.description || '', t.assignee_id || null, t.team_id || null, t.category_id || null,
      !!t.shared, t.priority || 'medium', dueDate, weekStart(dueDate), t.scheduled_time || null,
-     Number(t.estimated_minutes) || 0, t.notes || '', recurrenceId, userId || null]
+     Number(t.estimated_minutes) || 0, t.notes || '', recurrenceId, userId || null, t.business_id || null, t.channel_id || null]
   );
   return rows[0];
 }

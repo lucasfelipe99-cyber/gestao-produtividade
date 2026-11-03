@@ -94,6 +94,7 @@ export const ACTIONS = {
 };
 export const FIELD = {
   title: 'Nome', description: 'Descrição', assignee_id: 'Responsável', team_id: 'Equipe', category_id: 'Categoria', shared: 'Compartilhada',
+  business_id: 'Empresa', channel_id: 'Canal',
   priority: 'Prioridade', status: 'Status', due_date: 'Data', scheduled_time: 'Horário', estimated_minutes: 'Tempo estimado', notes: 'Observações', kind: 'Tipo',
 };
 export const PALETTE = ['#0073ea', '#00c875', '#fdab3d', '#e2445c', '#a25ddc', '#579bfc', '#ff642e', '#037f4c', '#ffcb00', '#bb3354', '#784bd1', '#66ccff'];
@@ -132,3 +133,14 @@ export const toLocalInput = (d) => `${toISODate(d)}T${pad(d.getHours())}:${pad(d
 export const initials = (name = '') => name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0].toUpperCase()).join('');
 export const colorFor = (id) => PALETTE[(id || 0) % PALETTE.length];
 export const pctColor = (p, target = 90) => (p >= target ? '#00c875' : p >= target * 0.7 ? '#fdab3d' : '#e2445c');
+
+// Abas que o administrador pode liberar para cada colaborador
+export const TABS = [
+  ['dashboard', 'Meu painel (dashboard)'], ['diarias', 'Tarefas diárias'], ['semanais', 'Tarefas semanais'],
+  ['linha-do-tempo', 'Linha do tempo'], ['metas', 'Metas e atingimento'], ['relatorios', 'Relatórios'], ['historico', 'Histórico'],
+];
+export const canTab = (me, tab) => me.role === 'admin' || !me.allowed_tabs || me.allowed_tabs.includes(tab);
+export const COMMON_CHANNELS = [
+  ['Mercado Livre', '#ffcb00'], ['Shopee', '#ff642e'], ['Amazon', '#232f3e'], ['Magalu', '#0086ff'], ['Americanas', '#e60014'],
+  ['Shein', '#222222'], ['TikTok Shop', '#fe2c55'], ['Loja própria', '#00c875'],
+];

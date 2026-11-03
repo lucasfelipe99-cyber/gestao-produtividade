@@ -4,15 +4,15 @@ import { useData, fmtDur, fmtDate, fmtMin, STATUS, pctColor } from '../lib.js';
 import { Card, Loading, Kpi, Icon, Empty, Progress, StatusPill } from '../ui.jsx';
 import { useApp } from '../App.jsx';
 import { qs } from '../components/Tasks.jsx';
-import { PeriodPicker, hoursTick } from './Dashboard.jsx';
+import { PeriodPicker, hoursTick, Breakdown } from './Dashboard.jsx';
 
 const tip = { contentStyle: { borderRadius: 8, fontSize: 13 } };
 
 export default function Reports() {
-  const { isAdmin, activeUsers, categories, me, openTask } = useApp();
+  const { isAdmin, activeUsers, categories, me, openTask, businesses, channels } = useApp();
   const [period, setPeriod] = useState('month');
   const [custom, setCustom] = useState({ from: me.today.slice(0, 8) + '01', to: me.today });
-  const [f, setF] = useState({ user: '', category: '', status: '' });
+  const [f, setF] = useState({ user: '', category: '', status: '', business: '', channel: '' });
   const params = qs({ ...(period === 'custom' ? custom : { period }), ...f });
   const { data } = useData(`/reports?${params}`);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -27,6 +27,8 @@ export default function Reports() {
         <PeriodPicker period={period} setPeriod={setPeriod} custom={custom} setCustom={setCustom} />
         <div className="filters">
           {isAdmin && <select value={f.user} onChange={set('user')}><option value="">Todos os colaboradores</option>{activeUsers.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</select>}
+          {businesses.length > 0 && <select value={f.business} onChange={set('business')}><option value="">Todas as empresas</option>{businesses.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}<option value="none">Sem empresa</option></select>}
+          {channels.length > 0 && <select value={f.channel} onChange={set('channel')}><option value="">Todos os canais</option>{channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}<option value="none">Sem canal</option></select>}
           <select value={f.category} onChange={set('category')}><option value="">Todas as categorias</option>{categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
           <select value={f.status} onChange={set('status')}><option value="">Todos os status</option>{Object.entries(STATUS).filter(([k]) => k !== 'cancelled').map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select>
         </div>
@@ -101,12 +103,17 @@ export default function Reports() {
           </div>
 
           <div className="grid-2 cards">
+            <Breakdown title="Produtividade por empresa" rows={data.byBusiness} />
+            <Breakdown title="Produtividade por canal" rows={data.byChannel} />
+          </div>
+
+          <div className="grid-2 cards">
             <Card title="Atividades que mais consomem tempo">
               <table className="simple">
-                <thead><tr><th>Atividade</th><th>Categoria</th><th>Vezes</th><th>Tempo total</th><th>Média</th></tr></thead>
+                <thead><tr><th>Atividade</th><th>Empresa / Canal</th><th>Vezes</th><th>Tempo total</th><th>Média</th></tr></thead>
                 <tbody>
                   {data.topActivities.map((a, i) => (
-                    <tr key={i}><td>{a.activity}</td><td>{a.category}</td><td>{a.occurrences}</td><td><b>{fmtDur(a.seconds)}</b></td><td>{fmtDur(a.seconds / a.occurrences)}</td></tr>
+                    <tr key={i}><td>{a.activity}<br /><small className="muted">{a.category}</small></td><td className="small">{a.business} · {a.channel}</td><td>{a.occurrences}</td><td><b>{fmtDur(a.seconds)}</b></td><td>{fmtDur(a.seconds / a.occurrences)}</td></tr>
                   ))}
                   {!data.topActivities.length && <tr><td colSpan={5} className="muted">Sem dados</td></tr>}
                 </tbody>
@@ -157,11 +164,11 @@ export default function Reports() {
           <Card title={`Tarefas do período (${data.tasks.length})`}>
             <div className="table-scroll" style={{ maxHeight: 480 }}>
               <table className="simple clickable">
-                <thead><tr><th>Tarefa</th><th>Tipo</th><th>Responsável</th><th>Categoria</th><th>Planejada</th><th>Status</th><th>Estimado</th><th>Realizado</th></tr></thead>
+                <thead><tr><th>Tarefa</th><th>Tipo</th><th>Responsável</th><th>Empresa</th><th>Canal</th><th>Categoria</th><th>Planejada</th><th>Status</th><th>Estimado</th><th>Realizado</th></tr></thead>
                 <tbody>
                   {data.tasks.map((t) => (
                     <tr key={t.id} onClick={() => openTask(t.id)}>
-                      <td>{t.title}</td><td>{t.kind === 'daily' ? 'Diária' : 'Semanal'}</td><td>{t.assignee || '—'}</td><td>{t.category || '—'}</td>
+                      <td>{t.title}</td><td>{t.kind === 'daily' ? 'Diária' : 'Semanal'}</td><td>{t.assignee || '—'}</td><td>{t.business || '—'}</td><td>{t.channel || '—'}</td><td>{t.category || '—'}</td>
                       <td>{fmtDate(t.planned_date)}</td><td><StatusPill status={t.status} /></td><td>{fmtMin(t.estimated_minutes)}</td><td>{fmtDur(t.tracked_seconds)}</td>
                     </tr>
                   ))}

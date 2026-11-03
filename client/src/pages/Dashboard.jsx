@@ -24,12 +24,14 @@ export function PeriodPicker({ period, setPeriod, custom, setCustom }) {
 }
 
 export default function Dashboard() {
-  const { isAdmin, activeUsers, me, openTask } = useApp();
+  const { isAdmin, activeUsers, me, openTask, businesses, channels } = useApp();
+  const [business, setBusiness] = useState('');
+  const [channel, setChannel] = useState('');
   const [period, setPeriod] = useState('week');
   const [custom, setCustom] = useState({ from: me.today, to: me.today });
   const [user, setUser] = useState('');
   const params = period === 'custom' ? { from: custom.from, to: custom.to } : { period };
-  const { data } = useData(`/dashboard?${qs({ ...params, user })}`);
+  const { data } = useData(`/dashboard?${qs({ ...params, user, business, channel })}`);
   const target = data?.weeklyTarget ?? 90;
 
   return (
@@ -44,6 +46,16 @@ export default function Dashboard() {
             <select value={user} onChange={(e) => setUser(e.target.value)}>
               <option value="">Toda a equipe</option>
               {activeUsers.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          )}
+          {businesses.length > 0 && (
+            <select value={business} onChange={(e) => setBusiness(e.target.value)}>
+              <option value="">Todas as empresas</option>{businesses.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          )}
+          {channels.length > 0 && (
+            <select value={channel} onChange={(e) => setChannel(e.target.value)}>
+              <option value="">Todos os canais</option>{channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           )}
           <PeriodPicker period={period} setPeriod={setPeriod} custom={custom} setCustom={setCustom} />
@@ -189,6 +201,11 @@ export default function Dashboard() {
             </Card>
           </div>
 
+          <div className="grid-2 cards">
+            <Breakdown title="Por empresa" rows={data.byBusiness} target={target} />
+            <Breakdown title="Por canal de marketplace" rows={data.byChannel} target={target} />
+          </div>
+
           <Card title="Atingimento individual detalhado">
             <div className="table-scroll">
               <table className="simple">
@@ -209,5 +226,31 @@ export default function Dashboard() {
         </>
       )}
     </div>
+  );
+}
+
+export function Breakdown({ title, rows, target = 90 }) {
+  const max = Math.max(1, ...rows.map((r) => r.seconds));
+  return (
+    <Card title={title}>
+      {!rows.length ? <Empty>Sem dados no período.</Empty> : (
+        <table className="simple">
+          <thead><tr><th>Nome</th><th>Tarefas</th><th>Atingimento</th><th>Tempo</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.name}>
+                <td><span className="cat"><i style={{ background: r.color }} />{r.name}</span></td>
+                <td>{r.done}/{r.planned}</td>
+                <td style={{ minWidth: 120 }}><Progress value={r.percent} color={pctColor(r.percent, target)} label={r.planned ? `${r.percent}%` : '—'} /></td>
+                <td style={{ minWidth: 140 }}>
+                  <div className="progress-row"><div className="progress" style={{ height: 8 }}><div style={{ width: (r.seconds / max) * 100 + '%', background: r.color }} /></div>
+                    <span className="progress-label">{fmtDur(r.seconds)}</span></div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
   );
 }

@@ -4,10 +4,10 @@ import { Modal, Field } from '../ui.jsx';
 import { useApp } from '../App.jsx';
 
 export default function TaskForm({ initial = {}, onClose, onSaved }) {
-  const { activeUsers, categories, teams, me } = useApp();
+  const { activeUsers, categories, teams, me, businesses, channels } = useApp();
   const editing = !!initial.id;
   const [f, setF] = useState({
-    title: '', description: '', kind: 'daily', assignee_id: '', team_id: '', category_id: '', priority: 'medium',
+    title: '', description: '', kind: 'daily', assignee_id: '', team_id: '', category_id: '', business_id: '', channel_id: '', priority: 'medium',
     due_date: me.today, scheduled_time: '', estimated_minutes: '', shared: false, recurrence: '', notes: '',
     ...initial,
     scheduled_time: initial.scheduled_time ? initial.scheduled_time.slice(0, 5) : '',
@@ -22,7 +22,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
     setBusy(true);
     const body = {
       title: f.title, description: f.description, kind: f.kind, assignee_id: f.assignee_id || null, team_id: f.team_id || null,
-      category_id: f.category_id || null, priority: f.priority, due_date: f.due_date, scheduled_time: f.scheduled_time || null,
+      category_id: f.category_id || null, business_id: f.business_id || null, channel_id: f.channel_id || null, priority: f.priority, due_date: f.due_date, scheduled_time: f.scheduled_time || null,
       estimated_minutes: (Number(estH) || 0) * 60 + (Number(estM) || 0), shared: f.shared,
     };
     if (!editing) { body.recurrence = f.recurrence || null; body.notes = f.notes; }
@@ -45,6 +45,18 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
           <select value={f.kind} onChange={set('kind')}><option value="daily">Diária</option><option value="weekly">Semanal</option></select>
         </Field>
         <Field label="Descrição detalhada" ><textarea rows={3} value={f.description} onChange={set('description')} /></Field>
+        <Field label="Empresa">
+          <select value={f.business_id || ''} onChange={set('business_id')}>
+            <option value="">—</option>
+            {businesses.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Canal de marketplace">
+          <select value={f.channel_id || ''} onChange={set('channel_id')}>
+            <option value="">—</option>
+            {channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </Field>
         <Field label="Responsável">
           <select value={f.assignee_id || ''} onChange={set('assignee_id')}>
             <option value="">— Sem responsável (só administradores veem) —</option>

@@ -38,7 +38,7 @@ export default function Timeline() {
       <div className="page-head">
         <div>
           <h1>Linha do tempo da jornada</h1>
-          <p className="muted">{fmtDateLong(date)}{isToday && ' · hoje'} · jornada {data.work_start} às {data.work_end}
+          <p className="muted">{fmtDateLong(date)}{isToday && ' · hoje'} · jornada {data.work_start} às {data.work_end} · almoço {data.lunch_start}–{data.lunch_end}
             {isAdmin && <> · <button className="link" onClick={() => setCfg(true)}>alterar horário</button></>}</p>
         </div>
         <div className="row gap wrap">
@@ -62,13 +62,15 @@ export default function Timeline() {
         <Kpi label="Atrasos na 1ª atividade" value={s.late_count} color={s.late_count ? '#e2445c' : '#00c875'} icon="alert" sub={`após ${data.work_start}`} />
         <Kpi label="Atraso médio" value={fmtMin(s.avg_delay_min)} color="#fdab3d" icon="clock" />
         <Kpi label="Horas trabalhadas" value={fmtMin(s.total_worked_min)} color="#0073ea" icon="clock" />
-        <Kpi label="Hora extra" value={fmtMin(s.total_overtime_min)} color="#a25ddc" icon="clock" sub={`fora de ${data.work_start}–${data.work_end}`} />
+        <Kpi label="Hora extra" value={fmtMin(s.total_overtime_min)} color="#a25ddc" icon="clock" sub={`fora de ${data.work_start}–${data.work_end} ou no almoço`} />
+        <Kpi label="Jornada esperada" value={fmtMin(data.expected_min)} color="#579bfc" icon="clock" sub={`descontando almoço ${data.lunch_start}–${data.lunch_end}`} />
       </div>
 
       <Card>
         <div className="tl-legend">
           <span><i className="lg-delay" /> Atraso até a 1ª atividade</span>
           <span><i className="lg-extra" /> Fora da jornada (hora extra)</span>
+          <span><i className="lg-lunch" /> Almoço (trabalho aqui conta como extra)</span>
           <span><i className="lg-plan" /> Horário previsto de tarefa</span>
           <span><i className="lg-run" /> Em andamento</span>
         </div>
@@ -91,6 +93,7 @@ export default function Timeline() {
                         Início <b>{hhmm(m.first_start)}</b>{' '}
                         {m.delay_min > 0 ? <span className="tag danger">+{fmtMin(m.delay_min)} atraso</span> : <span className="tag ok">no horário</span>}
                         <br />Trabalhado <b>{fmtMin(m.worked_min)}</b>{m.overtime_min > 0 && <> · extra <b className="purple">{fmtMin(m.overtime_min)}</b></>}
+                        {m.lunch_min > 0 && <><br /><span className="purple">{fmtMin(m.lunch_min)} no almoço</span></>}
                       </small>
                     ) : <small className="muted">Sem apontamento</small>}
                   </div>
@@ -98,6 +101,7 @@ export default function Timeline() {
                     {hours.map((h) => <span key={h} className="tl-grid" style={{ left: x(h) }} />)}
                     {axisStart < ws && <span className="tl-off" style={{ left: x(axisStart), width: w(axisStart, ws) }} />}
                     {axisEnd > we && <span className="tl-off" style={{ left: x(we), width: w(we, axisEnd) }} />}
+                    {data.ls != null && <span className="tl-lunch" style={{ left: x(data.ls), width: w(data.ls, data.le) }}><em>Almoço</em></span>}
                     <span className="tl-work-line" style={{ left: x(ws) }} />
                     <span className="tl-work-line end" style={{ left: x(we) }} />
                     {m.delay_min > 0 && <span className="tl-delay" style={{ left: x(ws), width: w(ws, m.first_start) }} title={`Atraso de ${fmtMin(m.delay_min)} até a primeira atividade`} />}
@@ -164,22 +168,24 @@ export default function Timeline() {
           </table>
         </div>
       </Card>
-      {cfg && <WorkHours start={data.work_start} end={data.work_end} onClose={() => setCfg(false)} />}
+      {cfg && <WorkHours start={data.work_start} end={data.work_end} lunchStart={data.lunch_start} lunchEnd={data.lunch_end} onClose={() => setCfg(false)} />}
     </div>
   );
 }
 
-export function WorkHours({ start, end, onClose }) {
-  const [f, setF] = useState({ work_start: start, work_end: end });
+export function WorkHours({ start, end, lunchStart, lunchEnd, onClose }) {
+  const [f, setF] = useState({ work_start: start, work_end: end, lunch_start: lunchStart, lunch_end: lunchEnd });
   const save = async () => {
     try { await api('/company', { method: 'PATCH', body: f }); emitLocal(); toast('Horário da jornada atualizado', 'success'); onClose(); } catch (e) { toast(e.message, 'error'); }
   };
   return (
     <Modal title="Horário da jornada" onClose={onClose} footer={<button className="btn primary" onClick={save}>Salvar</button>}>
-      <p className="muted small" style={{ margin: 0 }}>Usado para calcular o atraso da primeira atividade e a hora extra (tempo trabalhado antes do início ou depois do fim).</p>
+      <p className="muted small" style={{ margin: 0 }}>Usado para calcular o atraso da primeira atividade e a hora extra (tempo trabalhado antes do início, depois do fim ou durante o almoço).</p>
       <div className="grid-2">
         <Field label="Início da jornada"><input type="time" value={f.work_start} onChange={(e) => setF({ ...f, work_start: e.target.value })} /></Field>
         <Field label="Fim da jornada"><input type="time" value={f.work_end} onChange={(e) => setF({ ...f, work_end: e.target.value })} /></Field>
+        <Field label="Início do almoço"><input type="time" value={f.lunch_start} onChange={(e) => setF({ ...f, lunch_start: e.target.value })} /></Field>
+        <Field label="Fim do almoço"><input type="time" value={f.lunch_end} onChange={(e) => setF({ ...f, lunch_end: e.target.value })} /></Field>
       </div>
     </Modal>
   );

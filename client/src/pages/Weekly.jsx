@@ -56,7 +56,7 @@ export default function Weekly() {
         <Segmented value={view} onChange={setView} options={[['table', 'Tabela', 'list'], ['kanban', 'Kanban', 'kanban']]} />
         {view === 'table' && (
           <select value={group} onChange={(e) => setGroup(e.target.value)} className="sm">
-            <option value="assignee">Por colaborador</option><option value="team">Por equipe</option><option value="status">Por status</option>
+            <option value="assignee">Por colaborador</option><option value="team">Por equipe</option><option value="business">Por empresa</option><option value="channel">Por canal</option><option value="status">Por status</option>
           </select>
         )}
         <TaskFilters filters={filters} setFilters={setFilters} />

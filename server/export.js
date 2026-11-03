@@ -34,7 +34,11 @@ export function buildWorkbook(d, { from, to, company }) {
   sheet(wb, 'Por colaborador', [['Colaborador', 'name', 28], ['Planejadas', 'planned'], ['Concluídas', 'done'], ['Atrasadas', 'late'], ['Atingimento %', 'percent'], ['Horas', 'hours'], ['Tempo médio/tarefa (min)', 'avg', 24]],
     d.users.map((u) => ({ ...u, hours: hours(u.seconds), avg: Math.round(u.avg_seconds / 60) })));
   sheet(wb, 'Tempo por categoria', [['Categoria', 'category', 28], ['Tarefas', 'tasks'], ['Horas', 'hours']], d.byCategory.map((r) => ({ ...r, hours: hours(r.seconds) })));
-  sheet(wb, 'Atividades + tempo', [['Atividade', 'activity', 40], ['Categoria', 'category', 22], ['Ocorrências', 'occurrences'], ['Horas', 'hours'], ['Estimado médio (min)', 'avg_estimated_minutes', 20]],
+  sheet(wb, 'Por empresa', [['Empresa', 'name', 28], ['Planejadas', 'planned'], ['Concluídas', 'done'], ['Atingimento %', 'percent'], ['Tarefas c/ tempo', 'tasks', 16], ['Horas', 'hours']],
+    d.byBusiness.map((r) => ({ ...r, hours: hours(r.seconds) })));
+  sheet(wb, 'Por canal', [['Canal', 'name', 28], ['Planejadas', 'planned'], ['Concluídas', 'done'], ['Atingimento %', 'percent'], ['Tarefas c/ tempo', 'tasks', 16], ['Horas', 'hours']],
+    d.byChannel.map((r) => ({ ...r, hours: hours(r.seconds) })));
+  sheet(wb, 'Atividades + tempo', [['Atividade', 'activity', 40], ['Categoria', 'category', 22], ['Empresa', 'business', 20], ['Canal', 'channel', 18], ['Ocorrências', 'occurrences'], ['Horas', 'hours'], ['Estimado médio (min)', 'avg_estimated_minutes', 20]],
     d.topActivities.map((r) => ({ ...r, hours: hours(r.seconds) })));
   sheet(wb, 'Atrasos por categoria', [['Categoria', 'category', 28], ['Tarefas', 'tasks'], ['Com atraso', 'late'], ['Índice de atraso %', 'late_rate', 20]], d.lateByCategory);
   sheet(wb, 'Estimado x Realizado', [['Tarefa', 'title', 40], ['Responsável', 'assignee', 24], ['Estimado (min)', 'estimated_minutes'], ['Realizado (min)', 'actual_minutes'], ['Diferença (min)', 'diff']],
@@ -42,7 +46,7 @@ export function buildWorkbook(d, { from, to, company }) {
   sheet(wb, 'Evolução diária', [['Data', 'date', 14], ['Planejadas', 'planned'], ['Concluídas no dia', 'completed', 18], ['Atingimento %', 'percent'], ['Horas', 'hours']],
     d.evolution.map((r) => ({ ...r, hours: hours(r.seconds) })));
   sheet(wb, 'Tarefas', [
-    ['ID', 'id', 8], ['Tipo', 'kind', 10], ['Tarefa', 'title', 40], ['Responsável', 'assignee', 22], ['Categoria', 'category', 18], ['Prioridade', 'priority', 12],
+    ['ID', 'id', 8], ['Tipo', 'kind', 10], ['Tarefa', 'title', 40], ['Responsável', 'assignee', 22], ['Empresa', 'business', 20], ['Canal', 'channel', 18], ['Categoria', 'category', 18], ['Prioridade', 'priority', 12],
     ['Status', 'status', 14], ['Data planejada', 'planned_date', 15], ['Data atual/prazo', 'due_date', 16], ['Estimado (min)', 'estimated_minutes', 15],
     ['Realizado (min)', 'actual', 15], ['Transferências', 'rollover_count', 14], ['Início', 'started_at', 18], ['Conclusão', 'completed_at', 18], ['Observações', 'notes', 40],
   ], d.tasks.map((t) => ({ ...t, kind: t.kind === 'daily' ? 'Diária' : 'Semanal', status: STATUS[t.status], priority: PRIORITY[t.priority], actual: Math.round(t.tracked_seconds / 60) })));

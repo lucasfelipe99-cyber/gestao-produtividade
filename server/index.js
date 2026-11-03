@@ -47,7 +47,7 @@ async function auth(req, _res, next) {
     if (!token) throw new HttpError(401, 'Não autenticado');
     const { uid } = jwt.verify(token, JWT_SECRET);
     const u = await one(
-      `SELECT u.id, u.company_id, u.team_id, u.name, u.email, u.role, u.active, c.name AS company_name, c.timezone
+      `SELECT u.id, u.company_id, u.team_id, u.name, u.email, u.role, u.active, u.allowed_tabs, c.name AS company_name, c.timezone
        FROM users u JOIN companies c ON c.id=u.company_id WHERE u.id=$1`, [uid]);
     if (!u || !u.active) throw new HttpError(401, 'Sessão inválida');
     req.user = u;
@@ -55,6 +55,10 @@ async function auth(req, _res, next) {
   } catch (e) { next(e.status ? e : new HttpError(401, 'Sessão inválida')); }
 }
 const adminOnly = (req, _res, next) => (isAdmin(req.user) ? next() : next(new HttpError(403, 'Apenas administradores')));
+// Abas do sistema que o administrador pode liberar/bloquear por colaborador
+export const TABS = ['dashboard', 'diarias', 'semanais', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
+const canTab = (u, tab) => isAdmin(u) || !u.allowed_tabs || u.allowed_tabs.includes(tab);
+const requireTab = (tab) => (req, _res, next) => (canTab(req.user, tab) ? next() : next(new HttpError(403, 'Você não tem acesso a esta área')));
 
 // Visibilidade de tarefas para colaboradores: próprias, compartilhadas ou da equipe sem responsável
 function visibilitySql(user, alias = 't', startIdx) {
@@ -77,6 +81,7 @@ async function loadTask(db, req, id, { forUpdate = false } = {}) {
 
 const TASK_SELECT = `
   SELECT t.*, u.name AS assignee_name, c.name AS category_name, c.color AS category_color, tm.name AS team_name,
+    b.name AS business_name, b.color AS business_color, ch.name AS channel_name, ch.color AS channel_color,
     cb.name AS created_by_name,
     a.user_id AS active_user_id, au.name AS active_user_name, a.started_at AS active_started_at,
     a.subtask_id AS active_subtask_id, ast.title AS active_subtask_title,
@@ -87,6 +92,8 @@ const TASK_SELECT = `
   LEFT JOIN users cb ON cb.id=t.created_by
   LEFT JOIN categories c ON c.id=t.category_id
   LEFT JOIN teams tm ON tm.id=t.team_id
+  LEFT JOIN businesses b ON b.id=t.business_id
+  LEFT JOIN channels ch ON ch.id=t.channel_id
   LEFT JOIN LATERAL (SELECT user_id, started_at, subtask_id FROM time_entries e WHERE e.task_id=t.id AND e.ended_at IS NULL LIMIT 1) a ON TRUE
   LEFT JOIN users au ON au.id=a.user_id
   LEFT JOIN subtasks ast ON ast.id=a.subtask_id
@@ -119,19 +126,28 @@ function cleanTask(body, { partial = false } = {}) {
     out.scheduled_time = v;
   }
   if (has('estimated_minutes')) out.estimated_minutes = Math.max(0, Math.min(100000, parseInt(body.estimated_minutes, 10) || 0));
-  for (const k of ['assignee_id', 'team_id', 'category_id']) if (has(k)) out[k] = body[k] ? parseInt(body[k], 10) : null;
+  for (const k of ['assignee_id', 'team_id', 'category_id', 'business_id', 'channel_id']) if (has(k)) out[k] = body[k] ? parseInt(body[k], 10) : null;
   if (has('shared')) out.shared = !!body.shared;
   return out;
 }
 
 async function assertRefs(db, companyId, data) {
-  const checks = [['assignee_id', 'users'], ['team_id', 'teams'], ['category_id', 'categories']];
+  const checks = [['assignee_id', 'users'], ['team_id', 'teams'], ['category_id', 'categories'], ['business_id', 'businesses'], ['channel_id', 'channels']];
   for (const [k, table] of checks) {
     if (data[k]) {
       const r = await db.query(`SELECT 1 FROM ${table} WHERE id=$1 AND company_id=$2`, [data[k], companyId]);
       if (!r.rowCount) throw new HttpError(400, `Referência inválida: ${k}`);
     }
   }
+}
+
+// null = todas as abas; lista vazia não é permitida (precisa ao menos uma aba de tarefas)
+function cleanTabs(v) {
+  if (v == null) return null;
+  if (!Array.isArray(v)) throw new HttpError(400, 'Lista de abas inválida');
+  const list = [...new Set(v.filter((t) => TABS.includes(t)))];
+  if (!list.length) throw new HttpError(400, 'Libere ao menos uma aba para o colaborador');
+  return list.length === TABS.length ? null : list;
 }
 
 // ---------- autenticação ----------
@@ -193,21 +209,21 @@ app.get('/api/stream', (req, res) => {
 // ---------- cadastros: usuários, equipes, categorias ----------
 app.get('/api/users', wrap(async (req, res) => {
   res.json(await many(
-    `SELECT u.id, u.name, u.email, u.role, u.active, u.team_id, t.name AS team_name, u.created_at
+    `SELECT u.id, u.name, u.email, u.role, u.active, u.team_id, u.allowed_tabs, t.name AS team_name, u.created_at
      FROM users u LEFT JOIN teams t ON t.id=u.team_id WHERE u.company_id=$1 ${isAdmin(req.user) ? '' : 'AND u.id=$2'}
      ORDER BY u.active DESC, u.name`, isAdmin(req.user) ? [req.user.company_id] : [req.user.company_id, req.user.id]));
 }));
 
 app.post('/api/users', adminOnly, wrap(async (req, res) => {
-  const { name, email, password, role = 'member', team_id } = req.body || {};
+  const { name, email, password, role = 'member', team_id, allowed_tabs } = req.body || {};
   if (!name?.trim() || !email?.trim()) throw new HttpError(400, 'Informe nome e e-mail');
   if (!password || password.length < 6) throw new HttpError(400, 'A senha precisa ter ao menos 6 caracteres');
   if (!['admin', 'member'].includes(role)) throw new HttpError(400, 'Perfil inválido');
   if (await one('SELECT 1 FROM users WHERE lower(email)=lower($1)', [email.trim()])) throw new HttpError(409, 'E-mail já cadastrado');
   await assertRefs(pool, req.user.company_id, { team_id });
   const u = await one(
-    `INSERT INTO users (company_id, name, email, password_hash, role, team_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-    [req.user.company_id, name.trim(), email.trim().toLowerCase(), await bcrypt.hash(password, 10), role, team_id || null]);
+    `INSERT INTO users (company_id, name, email, password_hash, role, team_id, allowed_tabs) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    [req.user.company_id, name.trim(), email.trim().toLowerCase(), await bcrypt.hash(password, 10), role, team_id || null, cleanTabs(allowed_tabs)]);
   changed(req);
   res.json(u);
 }));
@@ -236,20 +252,22 @@ app.patch('/api/users/:id', adminOnly, wrap(async (req, res) => {
     add('active', !!b.active);
   }
   if (b.password) { if (b.password.length < 6) throw new HttpError(400, 'Senha muito curta'); add('password_hash', await bcrypt.hash(b.password, 10)); }
+  if (b.allowed_tabs !== undefined) add('allowed_tabs', cleanTabs(b.allowed_tabs));
   if (sets.length) { params.push(id); await q(`UPDATE users SET ${sets.join(',')} WHERE id=$${params.length}`, params); }
   changed(req);
   res.json({ ok: true });
 }));
 
-for (const [route, table] of [['teams', 'teams'], ['categories', 'categories']]) {
+const COLORED = ['categories', 'businesses', 'channels'];
+for (const [route, table] of [['teams', 'teams'], ['categories', 'categories'], ['businesses', 'businesses'], ['channels', 'channels']]) {
   app.get(`/api/${route}`, wrap(async (req, res) => {
     res.json(await many(`SELECT * FROM ${table} WHERE company_id=$1 ORDER BY name`, [req.user.company_id]));
   }));
   app.post(`/api/${route}`, adminOnly, wrap(async (req, res) => {
     const name = String(req.body?.name || '').trim();
     if (!name) throw new HttpError(400, 'Informe o nome');
-    const row = table === 'categories'
-      ? await one('INSERT INTO categories (company_id, name, color) VALUES ($1,$2,$3) RETURNING *', [req.user.company_id, name, req.body.color || '#579bfc'])
+    const row = COLORED.includes(table)
+      ? await one(`INSERT INTO ${table} (company_id, name, color) VALUES ($1,$2,$3) RETURNING *`, [req.user.company_id, name, req.body.color || '#579bfc'])
       : await one('INSERT INTO teams (company_id, name) VALUES ($1,$2) RETURNING *', [req.user.company_id, name]);
     changed(req);
     res.json(row);
@@ -257,7 +275,7 @@ for (const [route, table] of [['teams', 'teams'], ['categories', 'categories']])
   app.patch(`/api/${route}/:id`, adminOnly, wrap(async (req, res) => {
     const name = String(req.body?.name || '').trim();
     if (!name) throw new HttpError(400, 'Informe o nome');
-    if (table === 'categories') await q('UPDATE categories SET name=$1, color=COALESCE($2,color) WHERE id=$3 AND company_id=$4', [name, req.body.color || null, req.params.id, req.user.company_id]);
+    if (COLORED.includes(table)) await q(`UPDATE ${table} SET name=$1, color=COALESCE($2,color) WHERE id=$3 AND company_id=$4`, [name, req.body.color || null, req.params.id, req.user.company_id]);
     else await q('UPDATE teams SET name=$1 WHERE id=$2 AND company_id=$3', [name, req.params.id, req.user.company_id]);
     changed(req);
     res.json({ ok: true });
@@ -273,7 +291,12 @@ for (const [route, table] of [['teams', 'teams'], ['categories', 'categories']])
 app.get('/api/tasks', wrap(async (req, res) => {
   const u = req.user;
   const today = todayIn(u.timezone);
-  const { kind, from, to, week, assignee, status, category, team, mine } = req.query;
+  const { from, to, week, assignee, status, category, team, mine, business, channel } = req.query;
+  let { kind } = req.query;
+  // colaborador sem acesso a uma das abas de tarefas só recebe o outro tipo
+  if (!canTab(u, 'diarias') && !canTab(u, 'semanais')) throw new HttpError(403, 'Você não tem acesso às tarefas');
+  if (!canTab(u, 'diarias')) kind = 'weekly';
+  else if (!canTab(u, 'semanais')) kind = 'daily';
   const params = [u.company_id, today];
   const w = ['t.company_id=$1'];
   const vis = visibilitySql(u, 't', params.length + 1);
@@ -299,6 +322,10 @@ app.get('/api/tasks', wrap(async (req, res) => {
   }
   if (category) { params.push(parseInt(category, 10)); w.push(`t.category_id=$${params.length}`); }
   if (team) { params.push(parseInt(team, 10)); w.push(`t.team_id=$${params.length}`); }
+  for (const [val, col] of [[business, 'business_id'], [channel, 'channel_id']]) {
+    if (val === 'none') w.push(`t.${col} IS NULL`);
+    else if (val) { params.push(parseInt(val, 10)); w.push(`t.${col}=$${params.length}`); }
+  }
   const sql = TASK_SELECT.replaceAll('$TODAY', '$2').replace('SELECT t.*,', `SELECT t.*, ${carriedExpr} AS carried,`) +
     ` WHERE ${w.join(' AND ')}
       ORDER BY t.due_date, CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, t.scheduled_time NULLS LAST, t.id
@@ -359,6 +386,7 @@ app.post('/api/tasks', adminOnly, wrap(async (req, res) => {
 
 const FIELD_LABELS = {
   title: 'nome', description: 'descrição', assignee_id: 'responsável', team_id: 'equipe', category_id: 'categoria', shared: 'compartilhada',
+  business_id: 'empresa', channel_id: 'canal',
   priority: 'prioridade', status: 'status', due_date: 'data', scheduled_time: 'horário', estimated_minutes: 'tempo estimado', notes: 'observações', kind: 'tipo',
 };
 
@@ -407,7 +435,7 @@ app.patch('/api/tasks/:id', wrap(async (req, res) => {
     }
     // aplica nome/descrição/responsável/etc. às próximas ocorrências ainda não iniciadas
     if (applySeries && t.recurrence_id) {
-      const SERIES = ['title', 'description', 'assignee_id', 'team_id', 'category_id', 'priority', 'scheduled_time', 'estimated_minutes'];
+      const SERIES = ['title', 'description', 'assignee_id', 'team_id', 'category_id', 'business_id', 'channel_id', 'priority', 'scheduled_time', 'estimated_minutes'];
       const upd = Object.fromEntries(SERIES.filter((k) => k in data).map((k) => [k, data[k]]));
       if (Object.keys(upd).length) {
         await db.query(`UPDATE recurrences SET template = template || $1::jsonb WHERE id=$2`, [JSON.stringify(upd), t.recurrence_id]);
@@ -710,24 +738,29 @@ app.post('/api/subtasks/:id/reopen', wrap(async (req, res) => {
 }));
 
 // ---------- linha do tempo / jornada ----------
-app.get('/api/timeline', wrap(async (req, res) => {
+app.get('/api/timeline', requireTab('linha-do-tempo'), wrap(async (req, res) => {
   const today = todayIn(req.user.timezone);
   const date = isDate(req.query.date) ? req.query.date : today;
   res.json(await timeline({ companyId: req.user.company_id, date, today, userId: isAdmin(req.user) ? (req.query.user ? parseInt(req.query.user, 10) : null) : req.user.id }));
 }));
 
 app.get('/api/company', wrap(async (req, res) => {
-  res.json(await one(`SELECT id, name, timezone, to_char(work_start,'HH24:MI') AS work_start, to_char(work_end,'HH24:MI') AS work_end FROM companies WHERE id=$1`, [req.user.company_id]));
+  res.json(await one(`SELECT id, name, timezone, to_char(work_start,'HH24:MI') AS work_start, to_char(work_end,'HH24:MI') AS work_end,
+    to_char(lunch_start,'HH24:MI') AS lunch_start, to_char(lunch_end,'HH24:MI') AS lunch_end FROM companies WHERE id=$1`, [req.user.company_id]));
 }));
 
 app.patch('/api/company', adminOnly, wrap(async (req, res) => {
-  const { name, work_start, work_end } = req.body || {};
+  const { name, work_start, work_end, lunch_start, lunch_end } = req.body || {};
   const re = /^\d{2}:\d{2}$/;
   if (work_start && !re.test(work_start)) throw new HttpError(400, 'Horário de início inválido');
   if (work_end && !re.test(work_end)) throw new HttpError(400, 'Horário de término inválido');
   if (work_start && work_end && work_end <= work_start) throw new HttpError(400, 'O término da jornada deve ser depois do início');
-  await q(`UPDATE companies SET name=COALESCE($1,name), work_start=COALESCE($2::time,work_start), work_end=COALESCE($3::time,work_end) WHERE id=$4`,
-    [name?.trim() || null, work_start || null, work_end || null, req.user.company_id]);
+  for (const v of [lunch_start, lunch_end]) if (v && !re.test(v)) throw new HttpError(400, 'Horário de almoço inválido');
+  if (lunch_start && lunch_end && lunch_end <= lunch_start) throw new HttpError(400, 'O fim do almoço deve ser depois do início');
+  if (lunch_start && work_start && (lunch_start < work_start || lunch_end > work_end)) throw new HttpError(400, 'O almoço deve estar dentro da jornada');
+  await q(`UPDATE companies SET name=COALESCE($1,name), work_start=COALESCE($2::time,work_start), work_end=COALESCE($3::time,work_end),
+     lunch_start=COALESCE($5::time,lunch_start), lunch_end=COALESCE($6::time,lunch_end) WHERE id=$4`,
+    [name?.trim() || null, work_start || null, work_end || null, req.user.company_id, lunch_start || null, lunch_end || null]);
   changed(req);
   res.json({ ok: true });
 }));
@@ -753,7 +786,7 @@ app.get('/api/alerts', wrap(async (req, res) => {
 }));
 
 // ---------- histórico ----------
-app.get('/api/events', wrap(async (req, res) => {
+app.get('/api/events', requireTab('historico'), wrap(async (req, res) => {
   const u = req.user;
   const limit = Math.min(500, parseInt(req.query.limit, 10) || 100);
   const params = [u.company_id];
@@ -778,23 +811,24 @@ function periodFromQuery(req) {
   if (addDays(from, 366) < to) throw new HttpError(400, 'Período máximo de 1 ano');
   return { from, to };
 }
+const dimsFromQuery = (req) => ({ categoryId: req.query.category || null, businessId: req.query.business || null, channelId: req.query.channel || null });
 const scopeUser = (req) => (isAdmin(req.user) ? (req.query.user ? parseInt(req.query.user, 10) : null) : req.user.id);
 
-app.get('/api/dashboard', wrap(async (req, res) => {
+app.get('/api/dashboard', requireTab('dashboard'), wrap(async (req, res) => {
   const { from, to } = periodFromQuery(req);
-  res.json(await dashboard({ companyId: req.user.company_id, tz: req.user.timezone, from, to, userId: scopeUser(req) }));
+  res.json(await dashboard({ companyId: req.user.company_id, tz: req.user.timezone, from, to, userId: scopeUser(req), dims: dimsFromQuery(req) }));
 }));
 
-app.get('/api/reports', wrap(async (req, res) => {
+app.get('/api/reports', requireTab('relatorios'), wrap(async (req, res) => {
   const { from, to } = periodFromQuery(req);
   res.json(await report({ companyId: req.user.company_id, tz: req.user.timezone, from, to, userId: scopeUser(req),
-    categoryId: req.query.category ? parseInt(req.query.category, 10) : null, status: req.query.status || null }));
+    status: req.query.status || null, dims: dimsFromQuery(req) }));
 }));
 
-app.get('/api/reports/export.xlsx', wrap(async (req, res) => {
+app.get('/api/reports/export.xlsx', requireTab('relatorios'), wrap(async (req, res) => {
   const { from, to } = periodFromQuery(req);
   const data = await report({ companyId: req.user.company_id, tz: req.user.timezone, from, to, userId: scopeUser(req),
-    categoryId: req.query.category ? parseInt(req.query.category, 10) : null, status: req.query.status || null });
+    status: req.query.status || null, dims: dimsFromQuery(req) });
   const wb = buildWorkbook(data, { from, to, company: req.user.company_name });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="relatorio_${from}_${to}.xlsx"`);
@@ -803,7 +837,7 @@ app.get('/api/reports/export.xlsx', wrap(async (req, res) => {
 }));
 
 // ---------- metas ----------
-app.get('/api/goals', wrap(async (req, res) => {
+app.get('/api/goals', requireTab('metas'), wrap(async (req, res) => {
   const u = req.user;
   const tz = u.timezone;
   const today = todayIn(tz);

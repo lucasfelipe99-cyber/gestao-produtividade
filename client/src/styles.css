@@ -131,7 +131,7 @@ h2.section { margin-top: 6px; }
 .group-progress { width: 240px; margin-left: auto; }
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table { border-collapse: collapse; width: 100%; }
-table.tasks { min-width: 1060px; table-layout: fixed; background: #fff; border-left: 6px solid var(--g); border-radius: 6px; box-shadow: var(--shadow); }
+table.tasks { min-width: 1080px; table-layout: fixed; background: #fff; border-left: 6px solid var(--g); border-radius: 6px; box-shadow: var(--shadow); }
 table.tasks th { font-size: 12.5px; color: var(--muted); font-weight: 500; padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: center; white-space: nowrap; }
 table.tasks td { padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: center; font-size: 13.5px; }
 table.tasks th.c-title, table.tasks td.c-title { text-align: left; overflow: hidden; text-overflow: ellipsis; }
@@ -318,3 +318,15 @@ ul.feed { list-style: none; margin: 0; padding: 0; } ul.feed li { display: flex;
 .tl-now { position: absolute; top: 0; bottom: 0; border-left: 2px solid var(--danger); z-index: 4; }
 .tl-week td, .tl-week th { text-align: center; } .tl-week td:first-child, .tl-week th:first-child { text-align: left; }
 .tl-week .sel { background: #f0f6ff; }
+
+.biz { display: flex; flex-direction: column; gap: 3px; align-items: center; font-size: 12px; }
+.biz.inline { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
+.biz-name { font-weight: 600; color: var(--text); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.biz-name::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--c); flex-shrink: 0; }
+.chan { color: #fff; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 9px; white-space: nowrap; text-shadow: 0 0 2px rgba(0,0,0,.25); }
+td.c-biz { padding: 4px 6px; overflow: hidden; }
+.tabs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; padding: 4px 0; }
+.lg-lunch { background: #e6e9ef; }
+.tl-lunch { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, #eef0f4, #eef0f4 5px, #f5f6f8 5px, #f5f6f8 10px); border-left: 1px solid #d0d4e4; border-right: 1px solid #d0d4e4; }
+.tl-lunch em { position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); font-size: 10px; color: #9699a6; font-style: normal; white-space: nowrap; }
+.tl-axis .tl-lunch em { display: none; }
