@@ -11,6 +11,10 @@ pg.types.setTypeParser(1082, (v) => v);
 pg.types.setTypeParser(20, (v) => Number(v));
 pg.types.setTypeParser(1700, (v) => Number(v));
 
+if (!process.env.DATABASE_URL && process.env.NODE_ENV === 'production') {
+  console.error('[erro] Variável DATABASE_URL não configurada. Defina a URL do PostgreSQL nas variáveis de ambiente.');
+  process.exit(1);
+}
 const connectionString = process.env.DATABASE_URL || 'postgres://postgres@localhost:5432/gestao';
 const needsSsl = /render\.com|sslmode=require/.test(connectionString) || process.env.PGSSL === 'true';
 
