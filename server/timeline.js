@@ -6,10 +6,28 @@ const toMin = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h *
 // Métricas da jornada para um conjunto de períodos (minutos desde 00:00 do dia local)
 const overlap = (a1, a2, b1, b2) => Math.max(0, Math.min(a2, b2) - Math.max(a1, b1));
 
+// Almoço efetivo: começa no horário configurado, mas se uma atividade está em andamento nesse horário
+// ele é empurrado para quando ela (e as que emendam nela) terminar. A duração é sempre a configurada (ex.: 1h).
+export function effectiveLunch(entries, ls, le) {
+  if (ls == null || le == null || le <= ls) return null;
+  const dur = le - ls;
+  let start = ls, moved = true, guard = 0;
+  while (moved && guard++ < 50) {
+    moved = false;
+    for (const e of entries) {
+      // atividade cobrindo o início do almoço (tolerância de 1 min para segmentos emendados, ex.: troca de subtarefa)
+      if (e.start_min <= start + 1 && e.end_min > start + 0.01) { start = e.end_min; moved = true; }
+    }
+  }
+  return { from: Math.round(start * 10) / 10, to: Math.round((start + dur) * 10) / 10, delayed_min: Math.round(start - ls) };
+}
+
 // ls/le = almoço: trabalho no almoço conta como hora extra; almoço não conta como ociosidade
-export function dayMetrics(entries, ws, we, ls = null, le = null) {
+export function dayMetrics(entries, ws, we, ls0 = null, le0 = null) {
+  const lunchWin = effectiveLunch(entries, ls0, le0);
+  const ls = lunchWin?.from ?? null, le = lunchWin?.to ?? null;
   const hasLunch = ls != null && le != null && le > ls;
-  if (!entries.length) return { first_start: null, last_end: null, delay_min: 0, worked_min: 0, inside_min: 0, overtime_min: 0, before_min: 0, after_min: 0, lunch_min: 0, idle_min: 0 };
+  if (!entries.length) return { first_start: null, last_end: null, delay_min: 0, worked_min: 0, inside_min: 0, overtime_min: 0, before_min: 0, after_min: 0, lunch_min: 0, idle_min: 0, lunch_from: ls0, lunch_to: le0, lunch_delayed_min: 0 };
   const sorted = [...entries].sort((a, b) => a.start_min - b.start_min);
   const first = sorted[0].start_min;
   const last = Math.max(...sorted.map((e) => e.end_min));
@@ -33,6 +51,7 @@ export function dayMetrics(entries, ws, we, ls = null, le = null) {
     delay_min: Math.round(Math.max(0, first - ws)),
     worked_min: Math.round(worked), inside_min: Math.round(inside), overtime_min: Math.round(before + after + lunch),
     before_min: Math.round(before), after_min: Math.round(after), lunch_min: Math.round(lunch), idle_min: Math.round(idle),
+    lunch_from: ls, lunch_to: le, lunch_delayed_min: lunchWin?.delayed_min || 0,
   };
 }
 

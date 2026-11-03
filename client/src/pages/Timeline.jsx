@@ -70,7 +70,7 @@ export default function Timeline() {
         <div className="tl-legend">
           <span><i className="lg-delay" /> Atraso até a 1ª atividade</span>
           <span><i className="lg-extra" /> Fora da jornada (hora extra)</span>
-          <span><i className="lg-lunch" /> Almoço (trabalho aqui conta como extra)</span>
+          <span><i className="lg-lunch" /> Almoço de 1h (adiado se houver atividade em andamento às {data.lunch_start}; trabalho nele conta como extra)</span>
           <span><i className="lg-plan" /> Horário previsto de tarefa</span>
           <span><i className="lg-run" /> Em andamento</span>
         </div>
@@ -93,7 +93,8 @@ export default function Timeline() {
                         Início <b>{hhmm(m.first_start)}</b>{' '}
                         {m.delay_min > 0 ? <span className="tag danger">+{fmtMin(m.delay_min)} atraso</span> : <span className="tag ok">no horário</span>}
                         <br />Trabalhado <b>{fmtMin(m.worked_min)}</b>{m.overtime_min > 0 && <> · extra <b className="purple">{fmtMin(m.overtime_min)}</b></>}
-                        {m.lunch_min > 0 && <><br /><span className="purple">{fmtMin(m.lunch_min)} no almoço</span></>}
+                        <br />Almoço <b>{hhmm(m.lunch_from)}–{hhmm(m.lunch_to)}</b>{m.lunch_delayed_min > 0 && <span className="muted"> (adiado)</span>}
+                        {m.lunch_min > 0 && <span className="purple"> · {fmtMin(m.lunch_min)} trabalhando</span>}
                       </small>
                     ) : <small className="muted">Sem apontamento</small>}
                   </div>
@@ -101,7 +102,8 @@ export default function Timeline() {
                     {hours.map((h) => <span key={h} className="tl-grid" style={{ left: x(h) }} />)}
                     {axisStart < ws && <span className="tl-off" style={{ left: x(axisStart), width: w(axisStart, ws) }} />}
                     {axisEnd > we && <span className="tl-off" style={{ left: x(we), width: w(we, axisEnd) }} />}
-                    {data.ls != null && <span className="tl-lunch" style={{ left: x(data.ls), width: w(data.ls, data.le) }}><em>Almoço</em></span>}
+                    {m.lunch_from != null && <span className="tl-lunch" style={{ left: x(m.lunch_from), width: w(m.lunch_from, m.lunch_to) }}
+                      title={`Almoço ${hhmm(m.lunch_from)}–${hhmm(m.lunch_to)}${m.lunch_delayed_min > 0 ? ` (adiado ${fmtMin(m.lunch_delayed_min)} pela atividade em andamento às ${data.lunch_start})` : ''}`}><em>Almoço</em></span>}
                     <span className="tl-work-line" style={{ left: x(ws) }} />
                     <span className="tl-work-line end" style={{ left: x(we) }} />
                     {m.delay_min > 0 && <span className="tl-delay" style={{ left: x(ws), width: w(ws, m.first_start) }} title={`Atraso de ${fmtMin(m.delay_min)} até a primeira atividade`} />}
@@ -180,7 +182,7 @@ export function WorkHours({ start, end, lunchStart, lunchEnd, onClose }) {
   };
   return (
     <Modal title="Horário da jornada" onClose={onClose} footer={<button className="btn primary" onClick={save}>Salvar</button>}>
-      <p className="muted small" style={{ margin: 0 }}>Usado para calcular o atraso da primeira atividade e a hora extra (tempo trabalhado antes do início, depois do fim ou durante o almoço).</p>
+      <p className="muted small" style={{ margin: 0 }}>Usado para calcular o atraso da primeira atividade e a hora extra (tempo trabalhado antes do início, depois do fim ou durante o almoço). Se uma atividade estiver em andamento no início do almoço, o almoço começa quando ela terminar, mantendo a mesma duração.</p>
       <div className="grid-2">
         <Field label="Início da jornada"><input type="time" value={f.work_start} onChange={(e) => setF({ ...f, work_start: e.target.value })} /></Field>
         <Field label="Fim da jornada"><input type="time" value={f.work_end} onChange={(e) => setF({ ...f, work_end: e.target.value })} /></Field>
