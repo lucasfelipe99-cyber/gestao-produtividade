@@ -10,6 +10,7 @@ import Goals from './pages/Goals.jsx';
 import Reports from './pages/Reports.jsx';
 import Team from './pages/Team.jsx';
 import History from './pages/History.jsx';
+import Timeline from './pages/Timeline.jsx';
 import TaskDrawer from './components/TaskDrawer.jsx';
 
 const Ctx = createContext(null);
@@ -50,6 +51,7 @@ function Shell({ me, onLogout }) {
     ['/', 'dashboard', isAdmin ? 'Dashboard' : 'Meu painel'],
     ['/diarias', 'today', 'Tarefas diárias'],
     ['/semanais', 'week', 'Tarefas semanais'],
+    ['/linha-do-tempo', 'timeline', 'Linha do tempo'],
     ['/metas', 'target', 'Metas e atingimento'],
     ['/relatorios', 'chart', 'Relatórios'],
     ['/historico', 'history', 'Histórico'],
@@ -87,6 +89,7 @@ function Shell({ me, onLogout }) {
               <Route path="/" element={<Dashboard />} />
               <Route path="/diarias" element={<Daily />} />
               <Route path="/semanais" element={<Weekly />} />
+              <Route path="/linha-do-tempo" element={<Timeline />} />
               <Route path="/metas" element={<Goals />} />
               <Route path="/relatorios" element={<Reports />} />
               <Route path="/historico" element={<History />} />
@@ -136,7 +139,7 @@ function ActiveTimer() {
   return (
     <div className="timer-chip running">
       <span className="pulse" />
-      <button className="link" onClick={() => openTask(data.task_id)} title={data.title}>{data.title}</button>
+      <button className="link" onClick={() => openTask(data.task_id)} title={data.title}>{data.title}{data.subtask_title ? ` › ${data.subtask_title}` : ''}</button>
       <b className="mono">{fmtClock(secs)}</b>
       <button className="icon-btn sm" title="Pausar" onClick={() => act('pause')}><Icon name="pause" /></button>
       <button className="icon-btn sm ok" title="Finalizar" onClick={() => act('finish')}><Icon name="check" /></button>

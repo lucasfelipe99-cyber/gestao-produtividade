@@ -276,3 +276,45 @@ ul.feed { list-style: none; margin: 0; padding: 0; } ul.feed li { display: flex;
 .mcard .title-text { font-size: 14.5px; } .mcard .title-text.done { text-decoration: line-through; color: var(--muted); }
 @media (max-width: 1100px) { .kpis.four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .desktop-only { display: none; } .mobile-only.mcards { display: flex; } }
+
+/* Subtarefas */
+.subtasks { background: #f8f9fb; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px; }
+.subtasks h4 { margin: 0; }
+.subtasks ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.subtasks li { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; }
+.subtasks li.on { border-color: #fdd59b; background: #fff8ec; }
+.subtasks li.done .st-title { text-decoration: line-through; color: var(--muted); }
+.subtasks li input[type=checkbox] { width: 17px; height: 17px; }
+.st-title { cursor: default; }
+.ok-text { color: #037f4c; } .purple { color: #7e3fb3; }
+
+/* Linha do tempo */
+.tl-legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+.tl-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.tl-legend i { width: 18px; height: 10px; border-radius: 3px; display: inline-block; }
+.lg-delay { background: repeating-linear-gradient(45deg, #fbd0d7, #fbd0d7 3px, #fde4e8 3px, #fde4e8 6px); }
+.lg-extra { background: repeating-linear-gradient(45deg, #ecdcf8, #ecdcf8 3px, #f7f0fc 3px, #f7f0fc 6px); }
+.lg-plan { width: 10px !important; height: 10px !important; transform: rotate(45deg); border: 2px solid #0073ea; background: #fff; }
+.lg-run { background: #fdab3d; }
+.tl-scroll { overflow-x: auto; }
+.tl { min-width: 900px; }
+.tl-row { display: flex; border-bottom: 1px solid #f0f1f5; min-height: 64px; }
+.tl-axis { min-height: 26px; border-bottom: 1px solid var(--border); }
+.tl-name { width: 210px; flex-shrink: 0; padding: 8px 10px 8px 0; display: flex; flex-direction: column; gap: 4px; justify-content: center; font-size: 13px; }
+.tl-name small { font-size: 12px; color: var(--muted); line-height: 1.6; } .tl-name small b { color: var(--text); }
+.tl-track { position: relative; flex: 1; margin-right: 18px; }
+.tl-hour { position: absolute; bottom: 4px; transform: translateX(-50%); font-size: 11px; color: var(--muted); }
+.tl-grid { position: absolute; top: 0; bottom: 0; border-left: 1px dashed #eceef4; }
+.tl-off { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(45deg, #f7f0fc, #f7f0fc 6px, #fbf8fe 6px, #fbf8fe 12px); }
+.tl-work-line { position: absolute; top: 0; bottom: 0; border-left: 2px solid #9fa4c4; }
+.tl-delay { position: absolute; top: 14px; bottom: 14px; background: repeating-linear-gradient(45deg, #fbd0d7, #fbd0d7 4px, #fde4e8 4px, #fde4e8 8px); border-radius: 4px; }
+.tl-block { position: absolute; top: 16px; bottom: 16px; border: none; border-radius: 5px; color: #fff; font-size: 11px; font-weight: 600; padding: 0 5px; overflow: hidden; text-align: left; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); z-index: 1; }
+.tl-block span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; line-height: 1; }
+.tl-block:hover { filter: brightness(.92); z-index: 3; }
+.tl-block.manual { opacity: .8; background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.18) 0 4px, transparent 4px 8px) !important; }
+.tl-block.running { box-shadow: 0 0 0 2px #fdab3d; animation: blink 1.6s infinite; }
+@keyframes blink { 50% { opacity: .75; } }
+.tl-plan { position: absolute; top: 4px; width: 10px; height: 10px; transform: translateX(-50%) rotate(45deg); border: 2px solid; background: #fff; padding: 0; z-index: 2; }
+.tl-now { position: absolute; top: 0; bottom: 0; border-left: 2px solid var(--danger); z-index: 4; }
+.tl-week td, .tl-week th { text-align: center; } .tl-week td:first-child, .tl-week th:first-child { text-align: left; }
+.tl-week .sel { background: #f0f6ff; }

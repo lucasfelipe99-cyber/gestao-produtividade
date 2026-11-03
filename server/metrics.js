@@ -25,7 +25,11 @@ function entryFilter({ companyId, from, to, tz, userId, categoryId }) {
 const pct = (done, planned) => (planned > 0 ? Math.round((done / planned) * 1000) / 10 : 0);
 
 // Atingimento = concluídas dentro do período ÷ planejadas para o período × 100 (canceladas excluídas)
+// ocorrências futuras (recorrências pré-geradas) não entram no atingimento: conta até hoje
+const capToday = (from, to, tz) => { const t = todayIn(tz); return to > t ? (from > t ? from : t) : to; };
+
 export async function attainment({ companyId, tz, from, to, userId }) {
+  to = capToday(from, to, tz);
   const f = taskFilter({ companyId, from, to, userId });
   f.params.push(tz);
   const r = await one(
@@ -38,6 +42,7 @@ export async function attainment({ companyId, tz, from, to, userId }) {
 
 export async function perUser({ companyId, tz, from, to, userId, categoryId }) {
   const today = todayIn(tz);
+  to = capToday(from, to, tz);
   const params = [companyId, from, to, tz, today];
   let extra = '';
   if (userId) { params.push(userId); extra += ` AND u.id=$${params.length}`; }

@@ -63,6 +63,8 @@ function Badges({ task }) {
       {task.rollover_count > 0 && <span className="tag warn" title={`Planejada para ${fmtDate(task.planned_date)}`}>Transferida {task.rollover_count}x</span>}
       {task.overdue && !task.carried && !task.rollover_count && <span className="tag danger">Vencida</span>}
       {task.recurrence_id && <span className="tag" title="Tarefa recorrente"><Icon name="repeat" size={12} /></span>}
+      {task.subtasks_total > 0 && <span className={'tag' + (task.subtasks_done === task.subtasks_total ? ' ok' : '')} title="Subtarefas concluídas"><Icon name="list" size={12} />{task.subtasks_done}/{task.subtasks_total}</span>}
+      {task.active_subtask_title && <span className="tag primary" title="Subtarefa em andamento">▶ {task.active_subtask_title}</span>}
     </span>
   );
 }

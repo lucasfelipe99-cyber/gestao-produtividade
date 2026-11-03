@@ -132,3 +132,23 @@ CREATE TABLE IF NOT EXISTS goals (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS goals_uq ON goals (company_id, COALESCE(user_id, 0), period);
+
+-- ===== v2: jornada, subtarefas =====
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS work_start TIME NOT NULL DEFAULT '08:00';
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS work_end TIME NOT NULL DEFAULT '17:30';
+
+CREATE TABLE IF NOT EXISTS subtasks (
+  id              SERIAL PRIMARY KEY,
+  company_id      INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  task_id         INT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  title           TEXT NOT NULL,
+  done            BOOLEAN NOT NULL DEFAULT false,
+  tracked_seconds INT NOT NULL DEFAULT 0,
+  position        INT NOT NULL DEFAULT 0,
+  created_by      INT REFERENCES users(id) ON DELETE SET NULL,
+  completed_at    TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS subtasks_task ON subtasks (task_id);
+ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS subtask_id INT REFERENCES subtasks(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS tasks_recurrence ON tasks (recurrence_id, planned_date);

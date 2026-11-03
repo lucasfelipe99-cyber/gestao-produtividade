@@ -26,9 +26,10 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
       estimated_minutes: (Number(estH) || 0) * 60 + (Number(estM) || 0), shared: f.shared,
     };
     if (!editing) { body.recurrence = f.recurrence || null; body.notes = f.notes; }
+    if (editing && initial.recurrence_id) body.apply_to_series = !!f.apply_to_series;
     try {
       const t = editing ? await api(`/tasks/${initial.id}`, { method: 'PATCH', body }) : await api('/tasks', { method: 'POST', body });
-      toast(editing ? 'Tarefa atualizada' : 'Tarefa criada', 'success');
+      toast(editing ? 'Tarefa atualizada' : t.generated ? `Tarefa criada · ${t.generated + 1} ocorrências programadas nos próximos 3 meses` : 'Tarefa criada', 'success');
       emitLocal();
       onSaved?.(t);
       onClose();
@@ -74,12 +75,15 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
           </div>
         </Field>
         {!editing && (
-          <Field label="Recorrência" hint="Gera automaticamente uma nova tarefa a cada período">
+          <Field label="Recorrência" hint="As ocorrências dos próximos 3 meses já ficam criadas no calendário (e o sistema vai estendendo automaticamente)">
             <select value={f.recurrence} onChange={set('recurrence')}>
               <option value="">Não se repete</option><option value="daily">Diariamente (dias úteis)</option>
               <option value="weekly">Semanalmente</option><option value="monthly">Mensalmente</option>
             </select>
           </Field>
+        )}
+        {editing && initial.recurrence_id && (
+          <label className="check"><input type="checkbox" checked={!!f.apply_to_series} onChange={set('apply_to_series')} /> Aplicar também às próximas ocorrências desta recorrência (que ainda não foram iniciadas)</label>
         )}
         {!editing && <Field label="Observações"><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>}
       </div>

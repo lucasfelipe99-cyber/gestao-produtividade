@@ -88,6 +88,9 @@ export const ACTIONS = {
   status_changed: 'alterou o status', updated: 'editou a tarefa', cancelled: 'cancelou a tarefa', deleted: 'excluiu a tarefa',
   rolled_over: 'transferiu para o próximo dia útil', marked_late: 'marcou como atrasada',
   note_added: 'registrou uma observação', time_removed: 'removeu um registro de tempo',
+  subtask_added: 'adicionou a subtarefa', subtask_started: 'iniciou a subtarefa', subtask_finished: 'concluiu a subtarefa',
+  subtask_reopened: 'reabriu a subtarefa', subtask_removed: 'removeu a subtarefa',
+  series_updated: 'aplicou as alterações às próximas ocorrências de', recurrence_stopped: 'encerrou uma recorrência',
 };
 export const FIELD = {
   title: 'Nome', description: 'Descrição', assignee_id: 'Responsável', team_id: 'Equipe', category_id: 'Categoria', shared: 'Compartilhada',

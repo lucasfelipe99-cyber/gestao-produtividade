@@ -2,11 +2,15 @@ import { pool, tx, logEvent, broadcast, many } from './db.js';
 import { todayIn, addDays, addMonths, isBusinessDay, nextBusinessDayOnOrAfter, weekStart } from './dates.js';
 
 const INTERVAL_MS = 5 * 60 * 1000;
+export const RECURRENCE_HORIZON_DAYS = 92; // ~3 meses de ocorrências visíveis no calendário
 
-function nextOccurrence(freq, date) {
+// anchor: data da primeira ocorrência (mensal mantém o mesmo dia do mês, ex.: 31 -> 30/28 -> 31)
+export function nextOccurrence(freq, date, anchor) {
   if (freq === 'daily') { let d = addDays(date, 1); while (!isBusinessDay(d)) d = addDays(d, 1); return d; }
   if (freq === 'weekly') return addDays(date, 7);
-  return addMonths(date, 1);
+  if (!anchor) return addMonths(date, 1);
+  const months = (Number(date.slice(0, 4)) - Number(anchor.slice(0, 4))) * 12 + Number(date.slice(5, 7)) - Number(anchor.slice(5, 7));
+  return addMonths(anchor, months + 1);
 }
 
 export async function insertTaskFromTemplate(db, companyId, t, dueDate, recurrenceId, userId) {
@@ -22,6 +26,26 @@ export async function insertTaskFromTemplate(db, companyId, t, dueDate, recurren
   return rows[0];
 }
 
+// Gera as ocorrências de uma recorrência de hoje até o horizonte (sem duplicar, sem gerar passado)
+export async function generateRecurrence(db, companyId, r, today) {
+  const horizon = addDays(today, RECURRENCE_HORIZON_DAYS);
+  let d = r.next_date;
+  let guard = 0, created = 0;
+  while (d < today && guard++ < 1000) d = nextOccurrence(r.frequency, d, r.template.anchor_date);
+  const existing = new Set((await db.query(
+    'SELECT planned_date FROM tasks WHERE recurrence_id=$1 AND planned_date >= $2', [r.id, d])).rows.map((x) => x.planned_date));
+  while (d <= horizon && guard++ < 1000) {
+    if (!existing.has(d)) {
+      const t = await insertTaskFromTemplate(db, companyId, r.template, d, r.id, r.created_by);
+      await logEvent(db, { companyId, taskId: t.id, taskTitle: t.title, userId: null, action: 'created_by_recurrence', details: { frequency: r.frequency } });
+      created++;
+    }
+    d = nextOccurrence(r.frequency, d, r.template.anchor_date);
+  }
+  await db.query('UPDATE recurrences SET next_date=$1 WHERE id=$2', [d, r.id]);
+  return created;
+}
+
 export async function runAutomationForCompany(companyId, { force = false } = {}) {
   return tx(async (db) => {
     // trava por empresa para evitar execuções concorrentes
@@ -35,23 +59,10 @@ export async function runAutomationForCompany(companyId, { force = false } = {})
     const today = todayIn(c.timezone);
     let changes = 0;
 
-    // 1) Recorrências: gera a ocorrência de hoje (ocorrências perdidas não geram acúmulo)
-    const recs = (await db.query('SELECT * FROM recurrences WHERE company_id=$1 AND active AND next_date <= $2', [companyId, today])).rows;
-    for (const r of recs) {
-      let d = r.next_date;
-      let guard = 0;
-      while (d < today && guard++ < 500) d = nextOccurrence(r.frequency, d);
-      const dup = d === today && (await db.query('SELECT 1 FROM tasks WHERE recurrence_id=$1 AND planned_date=$2', [r.id, today])).rowCount;
-      if (d === today) {
-        if (!dup) {
-          const t = await insertTaskFromTemplate(db, companyId, r.template, today, r.id, r.created_by);
-          await logEvent(db, { companyId, taskId: t.id, taskTitle: t.title, userId: null, action: 'created_by_recurrence', details: { frequency: r.frequency } });
-          changes++;
-        }
-        d = nextOccurrence(r.frequency, d);
-      }
-      await db.query('UPDATE recurrences SET next_date=$1 WHERE id=$2', [d, r.id]);
-    }
+    // 1) Recorrências: mantém ocorrências geradas até o horizonte (próximos meses)
+    const recs = (await db.query(
+      'SELECT * FROM recurrences WHERE company_id=$1 AND active AND next_date <= $2', [companyId, addDays(today, RECURRENCE_HORIZON_DAYS)])).rows;
+    for (const r of recs) changes += await generateRecurrence(db, companyId, r, today);
 
     // 2) Diárias não concluídas -> próximo dia útil (histórico original preservado em planned_date)
     const target = nextBusinessDayOnOrAfter(today);

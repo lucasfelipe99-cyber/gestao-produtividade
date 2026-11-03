@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { pool, q, one, many, tx, migrate, logEvent, subscribe, broadcast } from './db.js';
-import { runAutomationForCompany, startAutomationLoop, ensureAutomation, insertTaskFromTemplate } from './automation.js';
+import { runAutomationForCompany, startAutomationLoop, ensureAutomation, insertTaskFromTemplate, generateRecurrence, nextOccurrence, RECURRENCE_HORIZON_DAYS } from './automation.js';
+import { timeline } from './timeline.js';
 import { dashboard, report, attainment, perUser, weeklySeries } from './metrics.js';
 import { todayIn, addDays, weekStart, isDate, isBusinessDay, addMonths } from './dates.js';
 import { buildWorkbook } from './export.js';
@@ -78,14 +79,18 @@ const TASK_SELECT = `
   SELECT t.*, u.name AS assignee_name, c.name AS category_name, c.color AS category_color, tm.name AS team_name,
     cb.name AS created_by_name,
     a.user_id AS active_user_id, au.name AS active_user_name, a.started_at AS active_started_at,
+    a.subtask_id AS active_subtask_id, ast.title AS active_subtask_title,
+    COALESCE(sc.total, 0) AS subtasks_total, COALESCE(sc.done, 0) AS subtasks_done,
     (t.status NOT IN ('done','cancelled') AND ((t.kind='daily' AND t.planned_date < $TODAY) OR (t.kind='weekly' AND t.due_date < $TODAY))) AS overdue
   FROM tasks t
   LEFT JOIN users u ON u.id=t.assignee_id
   LEFT JOIN users cb ON cb.id=t.created_by
   LEFT JOIN categories c ON c.id=t.category_id
   LEFT JOIN teams tm ON tm.id=t.team_id
-  LEFT JOIN LATERAL (SELECT user_id, started_at FROM time_entries e WHERE e.task_id=t.id AND e.ended_at IS NULL LIMIT 1) a ON TRUE
-  LEFT JOIN users au ON au.id=a.user_id`;
+  LEFT JOIN LATERAL (SELECT user_id, started_at, subtask_id FROM time_entries e WHERE e.task_id=t.id AND e.ended_at IS NULL LIMIT 1) a ON TRUE
+  LEFT JOIN users au ON au.id=a.user_id
+  LEFT JOIN subtasks ast ON ast.id=a.subtask_id
+  LEFT JOIN LATERAL (SELECT count(*)::int AS total, count(*) FILTER (WHERE done)::int AS done FROM subtasks s WHERE s.task_id=t.id) sc ON TRUE`;
 
 async function fetchTask(id, req) {
   const today = todayIn(req.user.timezone);
@@ -305,14 +310,23 @@ app.get('/api/tasks/:id', wrap(async (req, res) => {
   await loadTask(pool, req, req.params.id);
   const task = await fetchTask(req.params.id, req);
   const entries = await many(
-    `SELECT e.*, u.name AS user_name FROM time_entries e JOIN users u ON u.id=e.user_id WHERE e.task_id=$1 ORDER BY e.started_at DESC`, [task.id]);
+    `SELECT e.*, u.name AS user_name, s.title AS subtask_title FROM time_entries e JOIN users u ON u.id=e.user_id
+     LEFT JOIN subtasks s ON s.id=e.subtask_id WHERE e.task_id=$1 ORDER BY e.started_at DESC`, [task.id]);
   const notes = await many(
     `SELECT n.*, u.name AS user_name FROM task_notes n LEFT JOIN users u ON u.id=n.user_id WHERE n.task_id=$1 ORDER BY n.created_at DESC`, [task.id]);
   const events = await many(
     `SELECT ev.*, u.name AS user_name FROM task_events ev LEFT JOIN users u ON u.id=ev.user_id WHERE ev.task_id=$1 AND ev.company_id=$2 ORDER BY ev.created_at DESC, ev.id DESC`,
     [task.id, req.user.company_id]);
-  const recurrence = task.recurrence_id ? await one('SELECT id, frequency, next_date, active FROM recurrences WHERE id=$1', [task.recurrence_id]) : null;
-  res.json({ task, entries, notes, events, recurrence });
+  const recurrence = task.recurrence_id ? await one(
+    `SELECT r.id, r.frequency, r.next_date, r.active,
+       (SELECT count(*)::int FROM tasks x WHERE x.recurrence_id=r.id AND x.due_date >= $2) AS upcoming,
+       (SELECT max(planned_date) FROM tasks x WHERE x.recurrence_id=r.id) AS last_date
+     FROM recurrences r WHERE r.id=$1`, [task.recurrence_id, todayIn(req.user.timezone)]) : null;
+  const subtasks = await many(
+    `SELECT s.*, a.user_id AS active_user_id, a.started_at AS active_started_at FROM subtasks s
+     LEFT JOIN LATERAL (SELECT user_id, started_at FROM time_entries e WHERE e.subtask_id=s.id AND e.ended_at IS NULL LIMIT 1) a ON TRUE
+     WHERE s.task_id=$1 ORDER BY s.position, s.id`, [task.id]);
+  res.json({ task, entries, notes, events, recurrence, subtasks });
 }));
 
 app.post('/api/tasks', adminOnly, wrap(async (req, res) => {
@@ -323,20 +337,24 @@ app.post('/api/tasks', adminOnly, wrap(async (req, res) => {
   const task = await tx(async (db) => {
     await assertRefs(db, req.user.company_id, data);
     let recId = null;
+    let rec = null;
     if (recurrence) {
-      let next = recurrence === 'daily' ? addDays(data.due_date, 1) : recurrence === 'weekly' ? addDays(data.due_date, 7) : addMonths(data.due_date, 1);
-      if (recurrence === 'daily') while (!isBusinessDay(next)) next = addDays(next, 1);
-      const r = (await db.query(
-        `INSERT INTO recurrences (company_id, frequency, template, next_date, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-        [req.user.company_id, recurrence, JSON.stringify(data), next, req.user.id])).rows[0];
-      recId = r.id;
+      const template = { ...data, anchor_date: data.due_date };
+      rec = (await db.query(
+        `INSERT INTO recurrences (company_id, frequency, template, next_date, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [req.user.company_id, recurrence, JSON.stringify(template), nextOccurrence(recurrence, data.due_date, data.due_date), req.user.id])).rows[0];
+      recId = rec.id;
     }
     const t = await insertTaskFromTemplate(db, req.user.company_id, data, data.due_date, recId, req.user.id);
-    await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'created', details: { recurrence: recurrence || null } });
+    let generated = 0;
+    if (rec) generated = await generateRecurrence(db, req.user.company_id, rec, todayIn(req.user.timezone));
+    await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'created',
+      details: { recurrence: recurrence || null, generated } });
+    t.generated = generated;
     return t;
   });
   changed(req);
-  res.json(await fetchTask(task.id, req));
+  res.json({ ...(await fetchTask(task.id, req)), generated: task.generated || 0 });
 }));
 
 const FIELD_LABELS = {
@@ -347,6 +365,7 @@ const FIELD_LABELS = {
 app.patch('/api/tasks/:id', wrap(async (req, res) => {
   const u = req.user;
   let data = cleanTask(req.body || {}, { partial: true });
+  const applySeries = isAdmin(u) && !!req.body?.apply_to_series;
   if (!isAdmin(u)) {
     // colaborador: pode atualizar andamento (status) e observações
     const allowed = {};
@@ -386,6 +405,22 @@ app.patch('/api/tasks/:id', wrap(async (req, res) => {
       await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: data.title || t.title, userId: u.id,
         action: diff.status ? (data.status === 'cancelled' ? 'cancelled' : 'status_changed') : 'updated', details: diff });
     }
+    // aplica nome/descrição/responsável/etc. às próximas ocorrências ainda não iniciadas
+    if (applySeries && t.recurrence_id) {
+      const SERIES = ['title', 'description', 'assignee_id', 'team_id', 'category_id', 'priority', 'scheduled_time', 'estimated_minutes'];
+      const upd = Object.fromEntries(SERIES.filter((k) => k in data).map((k) => [k, data[k]]));
+      if (Object.keys(upd).length) {
+        await db.query(`UPDATE recurrences SET template = template || $1::jsonb WHERE id=$2`, [JSON.stringify(upd), t.recurrence_id]);
+        const ks = Object.keys(upd);
+        const r = await db.query(
+          `UPDATE tasks SET ${ks.map((k, i) => `${k}=$${i + 1}`).join(',')}, updated_at=now()
+           WHERE recurrence_id=$${ks.length + 1} AND id<>$${ks.length + 2} AND due_date >= $${ks.length + 3}
+             AND status IN ('not_started','late') AND tracked_seconds=0`,
+          [...ks.map((k) => upd[k]), t.recurrence_id, t.id, t.due_date]);
+        await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: data.title || t.title, userId: u.id, action: 'series_updated',
+          details: { fields: ks, tasks: r.rowCount } });
+      }
+    }
   });
   changed(req);
   res.json(await fetchTask(req.params.id, req));
@@ -403,25 +438,47 @@ app.delete('/api/tasks/:id', adminOnly, wrap(async (req, res) => {
 }));
 
 app.post('/api/recurrences/:id/stop', adminOnly, wrap(async (req, res) => {
-  await q('UPDATE recurrences SET active=false WHERE id=$1 AND company_id=$2', [req.params.id, req.user.company_id]);
+  const today = todayIn(req.user.timezone);
+  const removed = await tx(async (db) => {
+    const r = (await db.query('UPDATE recurrences SET active=false WHERE id=$1 AND company_id=$2 RETURNING id', [req.params.id, req.user.company_id])).rows[0];
+    if (!r) throw new HttpError(404, 'Recorrência não encontrada');
+    const del = await db.query(
+      `DELETE FROM tasks WHERE recurrence_id=$1 AND due_date > $2 AND status='not_started' AND tracked_seconds=0
+         AND NOT EXISTS (SELECT 1 FROM subtasks s WHERE s.task_id=tasks.id) RETURNING id`, [r.id, today]);
+    await logEvent(db, { companyId: req.user.company_id, userId: req.user.id, action: 'recurrence_stopped', details: { removed: del.rowCount } });
+    return del.rowCount;
+  });
   changed(req);
-  res.json({ ok: true });
+  res.json({ ok: true, removed });
 }));
 
 // ---------- controle de tempo ----------
+async function applyClosed(db, taskId, rows) {
+  const add = rows.reduce((s, r) => s + r.seconds, 0);
+  if (add) await db.query('UPDATE tasks SET tracked_seconds=tracked_seconds+$1 WHERE id=$2', [add, taskId]);
+  for (const r of rows) if (r.subtask_id) await db.query('UPDATE subtasks SET tracked_seconds=tracked_seconds+$1 WHERE id=$2', [r.seconds, r.subtask_id]);
+  return add;
+}
 async function closeOpenEntries(db, task) {
   const open = (await db.query(
     `UPDATE time_entries SET ended_at=now(), seconds=GREATEST(1, EXTRACT(EPOCH FROM (now()-started_at))::int)
-     WHERE task_id=$1 AND ended_at IS NULL RETURNING seconds`, [task.id])).rows;
-  const add = open.reduce((s, r) => s + r.seconds, 0);
-  if (add) await db.query('UPDATE tasks SET tracked_seconds=tracked_seconds+$1 WHERE id=$2', [add, task.id]);
-  return add;
+     WHERE task_id=$1 AND ended_at IS NULL RETURNING seconds, subtask_id`, [task.id])).rows;
+  return applyClosed(db, task.id, open);
+}
+// Encerra o segmento atual e abre outro na mesma tarefa (troca de subtarefa sem parar o cronômetro)
+async function switchSegment(db, entry, subtaskId) {
+  const closed = (await db.query(
+    `UPDATE time_entries SET ended_at=now(), seconds=GREATEST(1, EXTRACT(EPOCH FROM (now()-started_at))::int)
+     WHERE id=$1 RETURNING seconds, subtask_id`, [entry.id])).rows;
+  await applyClosed(db, entry.task_id, closed);
+  await db.query(`INSERT INTO time_entries (company_id, task_id, user_id, started_at, source, subtask_id) VALUES ($1,$2,$3,now(),'timer',$4)`,
+    [entry.company_id, entry.task_id, entry.user_id, subtaskId]);
 }
 
 app.get('/api/timer/active', wrap(async (req, res) => {
   const e = await one(
-    `SELECT e.id, e.task_id, e.started_at, t.title, t.tracked_seconds FROM time_entries e JOIN tasks t ON t.id=e.task_id
-     WHERE e.user_id=$1 AND e.ended_at IS NULL`, [req.user.id]);
+    `SELECT e.id, e.task_id, e.started_at, t.title, t.tracked_seconds, s.title AS subtask_title FROM time_entries e JOIN tasks t ON t.id=e.task_id
+     LEFT JOIN subtasks s ON s.id=e.subtask_id WHERE e.user_id=$1 AND e.ended_at IS NULL`, [req.user.id]);
   res.json(e || null);
 }));
 
@@ -487,6 +544,7 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
 app.post('/api/tasks/:id/manual-time', wrap(async (req, res) => {
   const u = req.user;
   const { started_at, ended_at, finish, user_id } = req.body || {};
+  const subtaskId = req.body?.subtask_id ? parseInt(req.body.subtask_id, 10) : null;
   const s = new Date(started_at), e = new Date(ended_at);
   if (isNaN(s) || isNaN(e)) throw new HttpError(400, 'Informe data e horário de início e de finalização');
   if (e <= s) throw new HttpError(400, 'O horário de finalização deve ser posterior ao início');
@@ -501,9 +559,11 @@ app.post('/api/tasks/:id/manual-time', wrap(async (req, res) => {
       `SELECT 1 FROM time_entries WHERE user_id=$1 AND tstzrange(started_at, COALESCE(ended_at, now())) && tstzrange($2,$3)`, [who, s, e])).rowCount;
     if (overlap) throw new HttpError(409, 'Esse período se sobrepõe a outro registro de tempo do colaborador');
     const secs = Math.round((e - s) / 1000);
+    if (subtaskId && !(await db.query('SELECT 1 FROM subtasks WHERE id=$1 AND task_id=$2', [subtaskId, t.id])).rowCount) throw new HttpError(400, 'Subtarefa inválida');
     await db.query(
-      `INSERT INTO time_entries (company_id, task_id, user_id, started_at, ended_at, seconds, source) VALUES ($1,$2,$3,$4,$5,$6,'manual')`,
-      [u.company_id, t.id, who, s, e, secs]);
+      `INSERT INTO time_entries (company_id, task_id, user_id, started_at, ended_at, seconds, source, subtask_id) VALUES ($1,$2,$3,$4,$5,$6,'manual',$7)`,
+      [u.company_id, t.id, who, s, e, secs, subtaskId]);
+    if (subtaskId) await db.query('UPDATE subtasks SET tracked_seconds=tracked_seconds+$1 WHERE id=$2', [secs, subtaskId]);
     const sets = ['tracked_seconds=tracked_seconds+$1', 'started_at=LEAST(COALESCE(started_at,$2),$2)', 'updated_at=now()'];
     const params = [secs, s];
     if (finish) {
@@ -526,6 +586,7 @@ app.delete('/api/time-entries/:id', adminOnly, wrap(async (req, res) => {
     if (!e.ended_at) throw new HttpError(400, 'Pause o cronômetro antes de excluir o registro');
     await db.query('DELETE FROM time_entries WHERE id=$1', [e.id]);
     const t = (await db.query('UPDATE tasks SET tracked_seconds=GREATEST(0,tracked_seconds-$1) WHERE id=$2 RETURNING title', [e.seconds, e.task_id])).rows[0];
+    if (e.subtask_id) await db.query('UPDATE subtasks SET tracked_seconds=GREATEST(0,tracked_seconds-$1) WHERE id=$2', [e.seconds, e.subtask_id]);
     await logEvent(db, { companyId: req.user.company_id, taskId: e.task_id, taskTitle: t?.title, userId: req.user.id, action: 'time_removed',
       details: { seconds: e.seconds, started_at: e.started_at, ended_at: e.ended_at } });
   });
@@ -543,6 +604,130 @@ app.post('/api/tasks/:id/notes', wrap(async (req, res) => {
     await db.query('INSERT INTO task_notes (company_id, task_id, user_id, kind, body) VALUES ($1,$2,$3,$4,$5)', [req.user.company_id, t.id, req.user.id, kind, body.slice(0, 5000)]);
     await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'note_added', details: { kind } });
   });
+  changed(req);
+  res.json({ ok: true });
+}));
+
+// ---------- subtarefas ----------
+async function loadSubtask(db, req, id) {
+  const st = (await db.query('SELECT * FROM subtasks WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, req.user.company_id])).rows[0];
+  if (!st) throw new HttpError(404, 'Subtarefa não encontrada');
+  const t = await loadTask(db, req, st.task_id, { forUpdate: true });
+  return { st, t };
+}
+const myOpenEntry = async (db, userId) =>
+  (await db.query(`SELECT e.*, tk.title FROM time_entries e JOIN tasks tk ON tk.id=e.task_id WHERE e.user_id=$1 AND e.ended_at IS NULL`, [userId])).rows[0];
+
+app.post('/api/tasks/:id/subtasks', wrap(async (req, res) => {
+  const title = String(req.body?.title || '').trim().slice(0, 300);
+  if (!title) throw new HttpError(400, 'Informe o nome da subtarefa');
+  let started = false;
+  await tx(async (db) => {
+    const t = await loadTask(db, req, req.params.id, { forUpdate: true });
+    if (t.status === 'cancelled') throw new HttpError(400, 'Tarefa cancelada');
+    const st = (await db.query(
+      `INSERT INTO subtasks (company_id, task_id, title, created_by, position)
+       VALUES ($1,$2,$3,$4,(SELECT COALESCE(max(position),0)+1 FROM subtasks WHERE task_id=$2)) RETURNING *`,
+      [req.user.company_id, t.id, title, req.user.id])).rows[0];
+    await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'subtask_added', details: { subtask: title } });
+    // cronômetro da tarefa rodando com este usuário: a nova subtarefa já começa a contar
+    const open = await myOpenEntry(db, req.user.id);
+    if (open && open.task_id === t.id) {
+      await switchSegment(db, open, st.id);
+      await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'subtask_started', details: { subtask: title } });
+      started = true;
+    }
+  });
+  changed(req);
+  res.json({ ok: true, started });
+}));
+
+app.patch('/api/subtasks/:id', wrap(async (req, res) => {
+  const title = String(req.body?.title || '').trim().slice(0, 300);
+  if (!title) throw new HttpError(400, 'Informe o nome da subtarefa');
+  await tx(async (db) => { const { st } = await loadSubtask(db, req, req.params.id); await db.query('UPDATE subtasks SET title=$1 WHERE id=$2', [title, st.id]); });
+  changed(req);
+  res.json({ ok: true });
+}));
+
+app.delete('/api/subtasks/:id', wrap(async (req, res) => {
+  await tx(async (db) => {
+    const { st, t } = await loadSubtask(db, req, req.params.id);
+    const open = (await db.query('SELECT * FROM time_entries WHERE subtask_id=$1 AND ended_at IS NULL', [st.id])).rows[0];
+    if (open) await switchSegment(db, open, null);
+    await db.query('DELETE FROM subtasks WHERE id=$1', [st.id]); // o tempo continua contando na tarefa principal
+    await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'subtask_removed', details: { subtask: st.title, seconds: st.tracked_seconds } });
+  });
+  changed(req);
+  res.json({ ok: true });
+}));
+
+app.post('/api/subtasks/:id/start', wrap(async (req, res) => {
+  const u = req.user;
+  await tx(async (db) => {
+    const { st, t } = await loadSubtask(db, req, req.params.id);
+    if (t.status === 'cancelled') throw new HttpError(400, 'Tarefa cancelada');
+    if (st.done) await db.query('UPDATE subtasks SET done=false, completed_at=NULL WHERE id=$1', [st.id]);
+    const open = await myOpenEntry(db, u.id);
+    if (open && open.task_id !== t.id) throw new HttpError(409, `Você já tem um cronômetro ativo em "${open.title}". Pause ou finalize antes de iniciar outra tarefa.`);
+    if (open && open.subtask_id === st.id) throw new HttpError(409, 'Esta subtarefa já está em andamento');
+    if (open) await switchSegment(db, open, st.id);
+    else {
+      if ((await db.query('SELECT 1 FROM time_entries WHERE task_id=$1 AND ended_at IS NULL', [t.id])).rowCount) {
+        throw new HttpError(409, 'Outro colaborador está com o cronômetro desta tarefa ativo');
+      }
+      await db.query(`INSERT INTO time_entries (company_id, task_id, user_id, started_at, source, subtask_id) VALUES ($1,$2,$3,now(),'timer',$4)`, [u.company_id, t.id, u.id, st.id]);
+      await db.query(`UPDATE tasks SET status='in_progress', started_at=COALESCE(started_at, now()), completed_at=NULL, updated_at=now() WHERE id=$1`, [t.id]);
+    }
+    await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: t.title, userId: u.id, action: 'subtask_started', details: { subtask: st.title } });
+  });
+  changed(req);
+  res.json({ ok: true });
+}));
+
+app.post('/api/subtasks/:id/finish', wrap(async (req, res) => {
+  const u = req.user;
+  await tx(async (db) => {
+    const { st, t } = await loadSubtask(db, req, req.params.id);
+    // se estava rodando, o cronômetro continua na tarefa principal
+    const open = (await db.query('SELECT * FROM time_entries WHERE subtask_id=$1 AND ended_at IS NULL', [st.id])).rows[0];
+    if (open) await switchSegment(db, open, null);
+    const r = (await db.query('UPDATE subtasks SET done=true, completed_at=now() WHERE id=$1 RETURNING tracked_seconds', [st.id])).rows[0];
+    await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: t.title, userId: u.id, action: 'subtask_finished', details: { subtask: st.title, seconds: r.tracked_seconds } });
+  });
+  changed(req);
+  res.json({ ok: true });
+}));
+
+app.post('/api/subtasks/:id/reopen', wrap(async (req, res) => {
+  await tx(async (db) => {
+    const { st, t } = await loadSubtask(db, req, req.params.id);
+    await db.query('UPDATE subtasks SET done=false, completed_at=NULL WHERE id=$1', [st.id]);
+    await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'subtask_reopened', details: { subtask: st.title } });
+  });
+  changed(req);
+  res.json({ ok: true });
+}));
+
+// ---------- linha do tempo / jornada ----------
+app.get('/api/timeline', wrap(async (req, res) => {
+  const today = todayIn(req.user.timezone);
+  const date = isDate(req.query.date) ? req.query.date : today;
+  res.json(await timeline({ companyId: req.user.company_id, date, today, userId: isAdmin(req.user) ? (req.query.user ? parseInt(req.query.user, 10) : null) : req.user.id }));
+}));
+
+app.get('/api/company', wrap(async (req, res) => {
+  res.json(await one(`SELECT id, name, timezone, to_char(work_start,'HH24:MI') AS work_start, to_char(work_end,'HH24:MI') AS work_end FROM companies WHERE id=$1`, [req.user.company_id]));
+}));
+
+app.patch('/api/company', adminOnly, wrap(async (req, res) => {
+  const { name, work_start, work_end } = req.body || {};
+  const re = /^\d{2}:\d{2}$/;
+  if (work_start && !re.test(work_start)) throw new HttpError(400, 'Horário de início inválido');
+  if (work_end && !re.test(work_end)) throw new HttpError(400, 'Horário de término inválido');
+  if (work_start && work_end && work_end <= work_start) throw new HttpError(400, 'O término da jornada deve ser depois do início');
+  await q(`UPDATE companies SET name=COALESCE($1,name), work_start=COALESCE($2::time,work_start), work_end=COALESCE($3::time,work_end) WHERE id=$4`,
+    [name?.trim() || null, work_start || null, work_end || null, req.user.company_id]);
   changed(req);
   res.json({ ok: true });
 }));
@@ -572,7 +757,7 @@ app.get('/api/events', wrap(async (req, res) => {
   const u = req.user;
   const limit = Math.min(500, parseInt(req.query.limit, 10) || 100);
   const params = [u.company_id];
-  let w = 'ev.company_id=$1';
+  let w = `ev.company_id=$1 AND ev.action <> 'created_by_recurrence'`;
   if (!isAdmin(u)) { params.push(u.id); w += ` AND ev.task_id IN (SELECT id FROM tasks WHERE assignee_id=$2)`; }
   if (req.query.user && isAdmin(u)) { params.push(parseInt(req.query.user, 10)); w += ` AND ev.user_id=$${params.length}`; }
   params.push(limit);

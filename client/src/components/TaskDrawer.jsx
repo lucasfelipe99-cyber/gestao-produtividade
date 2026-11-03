@@ -30,8 +30,8 @@ export default function TaskDrawer({ id, onClose }) {
     try { await api(`/tasks/${id}`, { method: 'DELETE' }); emitLocal(); toast('Tarefa excluída'); onClose(); } catch (e) { toast(e.message, 'error'); }
   };
   const stopRec = async () => {
-    if (!confirm('Encerrar a recorrência? As tarefas já criadas serão mantidas.')) return;
-    try { await api(`/recurrences/${data.recurrence.id}/stop`, { method: 'POST' }); emitLocal(); toast('Recorrência encerrada'); } catch (e) { toast(e.message, 'error'); }
+    if (!confirm('Encerrar a recorrência? As próximas ocorrências ainda não iniciadas serão removidas; as já realizadas ficam no histórico.')) return;
+    try { const r = await api(`/recurrences/${data.recurrence.id}/stop`, { method: 'POST' }); emitLocal(); toast(`Recorrência encerrada · ${r.removed} ocorrência(s) futura(s) removida(s)`); } catch (e) { toast(e.message, 'error'); }
   };
 
   return (
@@ -50,7 +50,8 @@ export default function TaskDrawer({ id, onClose }) {
             <small>Tempo utilizado</small>
             <div className={'big-timer mono' + (task.active_started_at ? ' running' : '')}>{fmtClock(secs)}</div>
             {estSecs > 0 && <Progress value={(secs / estSecs) * 100} color={secs > estSecs ? '#e2445c' : '#0073ea'} label={`${fmtMin(task.estimated_minutes)} estimado`} />}
-            {task.active_started_at && <small className="muted">Cronômetro ativo com {task.active_user_name} desde {fmtDateTime(task.active_started_at)}</small>}
+            {task.active_started_at && <small className="muted">Cronômetro ativo com {task.active_user_name} desde {fmtDateTime(task.active_started_at)}
+              {task.active_subtask_title ? <> · subtarefa <b>{task.active_subtask_title}</b></> : ''}</small>}
           </div>
           <TaskButtons task={task} />
         </div>
@@ -65,6 +66,7 @@ export default function TaskDrawer({ id, onClose }) {
       <div className="drawer-body">
         {tab === 'details' && (
           <>
+            <Subtasks task={task} subtasks={data.subtasks} />
             <dl className="details">
               <dt>Responsável</dt><dd className="row gap-s"><Avatar name={task.assignee_name} id={task.assignee_id} size={22} />{task.assignee_name || 'Sem responsável'}</dd>
               <dt>{task.kind === 'daily' ? 'Data de execução' : 'Prazo'}</dt><dd>{fmtDateFull(task.due_date)} {task.scheduled_time && `às ${fmtTime(task.scheduled_time)}`}</dd>
@@ -76,7 +78,7 @@ export default function TaskDrawer({ id, onClose }) {
               <dt>Conclusão</dt><dd>{fmtDateTime(task.completed_at)}</dd>
               <dt>Criada por</dt><dd>{task.created_by_name || 'Automação'} em {fmtDateTime(task.created_at)}</dd>
               {data.recurrence && <><dt>Recorrência</dt><dd>{{ daily: 'Diária', weekly: 'Semanal', monthly: 'Mensal' }[data.recurrence.frequency]}
-                {data.recurrence.active ? <> · próxima {fmtDateFull(data.recurrence.next_date)} {isAdmin && <button className="link danger" onClick={stopRec}>encerrar</button>}</> : ' · encerrada'}</dd></>}
+                {data.recurrence.active ? <> · {data.recurrence.upcoming} ocorrência(s) programada(s) até {fmtDateFull(data.recurrence.last_date)} {isAdmin && <button className="link danger" onClick={stopRec}>encerrar recorrência</button>}</> : ' · encerrada'}</dd></>}
             </dl>
             <h4>Descrição</h4>
             <p className="pre">{task.description || <span className="muted">Sem descrição.</span>}</p>
@@ -91,7 +93,7 @@ export default function TaskDrawer({ id, onClose }) {
           </>
         )}
 
-        {tab === 'time' && <TimeTab task={task} entries={data.entries} />}
+        {tab === 'time' && <TimeTab task={task} entries={data.entries} subtasks={data.subtasks} />}
 
         {tab === 'notes' && <NotesTab task={task} notes={data.notes} />}
 
@@ -141,15 +143,15 @@ function NotesField({ task }) {
   );
 }
 
-function TimeTab({ task, entries }) {
+function TimeTab({ task, entries, subtasks }) {
   const { isAdmin, activeUsers, me } = useApp();
   const now = new Date();
-  const [f, setF] = useState({ start: toLocalInput(new Date(now - 3600e3)), end: toLocalInput(now), finish: false, user_id: '' });
+  const [f, setF] = useState({ start: toLocalInput(new Date(now - 3600e3)), end: toLocalInput(now), finish: false, user_id: '', subtask_id: '' });
   const secs = f.start && f.end ? (new Date(f.end) - new Date(f.start)) / 1000 : 0;
   const submit = async () => {
     try {
       await api(`/tasks/${task.id}/manual-time`, { method: 'POST', body: {
-        started_at: new Date(f.start).toISOString(), ended_at: new Date(f.end).toISOString(), finish: f.finish, user_id: f.user_id || undefined } });
+        started_at: new Date(f.start).toISOString(), ended_at: new Date(f.end).toISOString(), finish: f.finish, user_id: f.user_id || undefined, subtask_id: f.subtask_id || undefined } });
       emitLocal(); toast('Horário lançado', 'success');
     } catch (e) { toast(e.message, 'error'); }
   };
@@ -167,6 +169,14 @@ function TimeTab({ task, entries }) {
             <Field label="Data e horário de início"><input type="datetime-local" value={f.start} onChange={(e) => setF({ ...f, start: e.target.value })} /></Field>
             <Field label="Data e horário de finalização"><input type="datetime-local" value={f.end} onChange={(e) => setF({ ...f, end: e.target.value })} /></Field>
           </div>
+          {subtasks.length > 0 && (
+            <Field label="Subtarefa (opcional)">
+              <select value={f.subtask_id} onChange={(e) => setF({ ...f, subtask_id: e.target.value })}>
+                <option value="">Tarefa principal (geral)</option>
+                {subtasks.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+              </select>
+            </Field>
+          )}
           {isAdmin && (
             <Field label="Colaborador">
               <select value={f.user_id} onChange={(e) => setF({ ...f, user_id: e.target.value })}>
@@ -185,17 +195,17 @@ function TimeTab({ task, entries }) {
       <h4>Períodos registrados</h4>
       {!entries.length && <p className="muted">Nenhum registro de tempo ainda.</p>}
       <table className="simple">
-        <thead><tr><th>Colaborador</th><th>Início</th><th>Fim</th><th>Duração</th><th>Origem</th>{isAdmin && <th />}</tr></thead>
+        <thead><tr><th>Colaborador</th><th>Subtarefa</th><th>Início</th><th>Fim</th><th>Duração</th><th>Origem</th>{isAdmin && <th />}</tr></thead>
         <tbody>
           {entries.map((e) => (
             <tr key={e.id}>
-              <td>{e.user_name}</td><td>{fmtDateTime(e.started_at)}</td><td>{e.ended_at ? fmtDateTime(e.ended_at) : <span className="tag ok">em andamento</span>}</td>
+              <td>{e.user_name}</td><td>{e.subtask_title || <span className="muted">—</span>}</td><td>{fmtDateTime(e.started_at)}</td><td>{e.ended_at ? fmtDateTime(e.ended_at) : <span className="tag ok">em andamento</span>}</td>
               <td>{e.ended_at ? fmtDur(e.seconds) : '—'}</td><td>{e.source === 'manual' ? 'Manual' : 'Cronômetro'}</td>
               {isAdmin && <td>{e.ended_at && <button className="icon-btn sm" onClick={() => remove(e.id)} title="Remover"><Icon name="trash" size={14} /></button>}</td>}
             </tr>
           ))}
         </tbody>
-        {entries.length > 0 && <tfoot><tr><td colSpan={3}><b>Total</b></td><td><b>{fmtDur(task.tracked_seconds)}</b></td><td colSpan={2} /></tr></tfoot>}
+        {entries.length > 0 && <tfoot><tr><td colSpan={4}><b>Total</b></td><td><b>{fmtDur(task.tracked_seconds)}</b></td><td colSpan={2} /></tr></tfoot>}
       </table>
     </>
   );
@@ -254,5 +264,68 @@ function EventDetails({ e, userName, catName }) {
   if (e.action === 'finished') return <div className="small muted">Tempo total: {fmtDur(d.total_seconds)}</div>;
   if (e.action === 'time_removed') return <div className="small muted">{fmtDur(d.seconds)} removidos</div>;
   if (e.action === 'note_added') return <div className="small muted">{NOTE_KIND[d.kind]?.[0]}</div>;
+  if (e.action.startsWith('subtask_')) return <div className="small muted">“{d.subtask}”{d.seconds ? ` · ${fmtDur(d.seconds)}` : ''}</div>;
+  if (e.action === 'series_updated') return <div className="small muted">{d.tasks} ocorrência(s) atualizada(s)</div>;
   return null;
+}
+
+function Subtasks({ task, subtasks }) {
+  const { me, isAdmin } = useApp();
+  const [title, setTitle] = useState('');
+  const running = subtasks.some((s) => s.active_started_at);
+  useTick(1000, running || !!task.active_started_at);
+  const canAct = isAdmin || task.assignee_id === me.id;
+  const myTimerHere = task.active_started_at && task.active_user_id === me.id;
+  const call = async (path, body) => { try { const r = await api(path, { method: 'POST', body }); emitLocal(); return r; } catch (e) { toast(e.message, 'error'); } };
+  const add = async () => {
+    if (!title.trim()) return;
+    const r = await call(`/tasks/${task.id}/subtasks`, { title });
+    if (r) { setTitle(''); if (r.started) toast('Subtarefa criada e cronômetro iniciado nela', 'success'); }
+  };
+  const rename = async (s) => {
+    const t = prompt('Nome da subtarefa', s.title); if (!t) return;
+    try { await api(`/subtasks/${s.id}`, { method: 'PATCH', body: { title: t } }); emitLocal(); } catch (e) { toast(e.message, 'error'); }
+  };
+  const remove = async (s) => {
+    if (!confirm(`Remover a subtarefa "${s.title}"? O tempo dela continua somado na tarefa principal.`)) return;
+    try { await api(`/subtasks/${s.id}`, { method: 'DELETE' }); emitLocal(); } catch (e) { toast(e.message, 'error'); }
+  };
+  const live = (s) => s.tracked_seconds + (s.active_started_at ? (Date.now() - new Date(s.active_started_at)) / 1000 : 0);
+  const total = liveSeconds(task);
+  const sumSubs = subtasks.reduce((a, s) => a + live(s), 0);
+  const done = subtasks.filter((s) => s.done).length;
+  return (
+    <div className="subtasks">
+      <div className="row between">
+        <h4>Subtarefas {subtasks.length > 0 && <span className="muted">· {done}/{subtasks.length} concluídas</span>}</h4>
+        {subtasks.length > 0 && <small className="muted">Subtarefas {fmtDur(sumSubs)} · geral {fmtDur(Math.max(0, total - sumSubs))}</small>}
+      </div>
+      {subtasks.length > 0 && <Progress value={subtasks.length ? (done / subtasks.length) * 100 : 0} height={6} label={false} />}
+      <ul>
+        {subtasks.map((s) => {
+          const on = !!s.active_started_at;
+          return (
+            <li key={s.id} className={(on ? 'on ' : '') + (s.done ? 'done' : '')}>
+              <input type="checkbox" checked={s.done} disabled={!canAct}
+                onChange={() => call(`/subtasks/${s.id}/${s.done ? 'reopen' : 'finish'}`)} title={s.done ? 'Reabrir' : 'Concluir'} />
+              <span className="grow st-title" onDoubleClick={() => canAct && rename(s)}>{s.title}</span>
+              <span className={'timer-cell' + (on ? ' running' : '')}>{on && <span className="pulse" />}{on ? fmtClock(live(s)) : fmtDur(live(s))}</span>
+              {canAct && task.status !== 'cancelled' && (
+                on ? <button className="btn xs finish" onClick={() => call(`/subtasks/${s.id}/finish`)} title="Concluir subtarefa (o cronômetro segue na tarefa)"><Icon name="check" size={13} /></button>
+                  : !s.done && <button className="btn xs start" onClick={() => call(`/subtasks/${s.id}/start`)} title={myTimerHere ? 'Mudar o cronômetro para esta subtarefa' : 'Iniciar subtarefa'}><Icon name="play" size={13} /></button>
+              )}
+              {canAct && <button className="icon-btn sm" onClick={() => remove(s)} title="Remover"><Icon name="trash" size={13} /></button>}
+            </li>
+          );
+        })}
+      </ul>
+      {canAct && task.status !== 'cancelled' && (
+        <div className="row gap-s">
+          <input className="grow" value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()}
+            placeholder={myTimerHere ? 'Nova subtarefa (começa a contar o tempo na hora)' : 'Adicionar subtarefa'} />
+          <button className="btn primary sm" onClick={add}><Icon name="plus" size={14} /></button>
+        </div>
+      )}
+    </div>
+  );
 }
