@@ -34,13 +34,23 @@ export async function generateRecurrence(db, companyId, r, today) {
   while (d < today && guard++ < 1000) d = nextOccurrence(r.frequency, d, r.template.anchor_date);
   const existing = new Set((await db.query(
     'SELECT planned_date FROM tasks WHERE recurrence_id=$1 AND planned_date >= $2', [r.id, d])).rows.map((x) => x.planned_date));
+  const dates = [];
   while (d <= horizon && guard++ < 1000) {
-    if (!existing.has(d)) {
-      const t = await insertTaskFromTemplate(db, companyId, r.template, d, r.id, r.created_by);
-      await logEvent(db, { companyId, taskId: t.id, taskTitle: t.title, userId: null, action: 'created_by_recurrence', details: { frequency: r.frequency } });
-      created++;
-    }
+    if (!existing.has(d)) dates.push(d);
     d = nextOccurrence(r.frequency, d, r.template.anchor_date);
+  }
+  // inserção em lote (uma consulta por recorrência)
+  if (dates.length) {
+    const t = r.template;
+    const ins = await db.query(
+      `INSERT INTO tasks (company_id, kind, title, description, assignee_id, team_id, category_id, shared, priority,
+         due_date, planned_date, week_start, scheduled_time, estimated_minutes, notes, recurrence_id, created_by, business_id, channel_id)
+       SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9, d, d, (d - ((EXTRACT(ISODOW FROM d)::int - 1) * INTERVAL '1 day'))::date, $11,$12,$13,$14,$15,$16,$17
+       FROM unnest($10::date[]) AS d`,
+      [companyId, t.kind === 'weekly' ? 'weekly' : 'daily', t.title, t.description || '', t.assignee_id || null, t.team_id || null,
+       t.category_id || null, !!t.shared, t.priority || 'medium', dates, t.scheduled_time || null, Number(t.estimated_minutes) || 0,
+       t.notes || '', r.id, r.created_by || null, t.business_id || null, t.channel_id || null]);
+    created = ins.rowCount;
   }
   await db.query('UPDATE recurrences SET next_date=$1 WHERE id=$2', [d, r.id]);
   return created;

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { api, toast, emitLocal, PALETTE, TABS, COMMON_CHANNELS } from '../lib.js';
 import { Card, Avatar, Modal, Field, Icon } from '../ui.jsx';
 import { useApp } from '../App.jsx';
+import RoutineBuilder from '../components/RoutineBuilder.jsx';
 
 export default function Team() {
   const { users, teams, categories, me, businesses, channels } = useApp();
@@ -12,11 +13,17 @@ export default function Team() {
     emitLocal(); toast(todo.length ? `${todo.length} canais adicionados` : 'Os canais comuns já estão cadastrados', 'success');
   };
   const [editUser, setEditUser] = useState(null);
+  const [routine, setRoutine] = useState(false);
+  const [clearing, setClearing] = useState(false);
   return (
     <div className="page">
       <div className="page-head">
         <div><h1>Equipe e cadastros</h1><p className="muted">Usuários, permissões, equipes e categorias de atividade</p></div>
-        <button className="btn primary" onClick={() => setEditUser({})}><Icon name="plus" /> Novo usuário</button>
+        <div className="row gap wrap">
+          <button className="btn danger" onClick={() => setClearing(true)}><Icon name="trash" /> Limpar atividades</button>
+          <button className="btn" onClick={() => setRoutine(true)}><Icon name="repeat" /> Montar rotina em lote</button>
+          <button className="btn primary" onClick={() => setEditUser({})}><Icon name="plus" /> Novo usuário</button>
+        </div>
       </div>
       <Card title={`Usuários (${users.length})`}>
         <div className="table-scroll">
@@ -50,6 +57,8 @@ export default function Team() {
         <SimpleList title="Categorias de atividade" path="categories" items={categories} withColor noun="categoria" />
       </div>
       {editUser && <UserForm user={editUser} teams={teams} onClose={() => setEditUser(null)} />}
+      {routine && <RoutineBuilder onClose={() => setRoutine(false)} />}
+      {clearing && <ClearTasks users={users} onClose={() => setClearing(false)} />}
     </div>
   );
 }
@@ -136,5 +145,36 @@ function SimpleList({ title, path, items, withColor, noun, hint, extra }) {
         {!items.length && <li className="muted">Nenhum cadastro ainda.</li>}
       </ul>
     </Card>
+  );
+}
+
+function ClearTasks({ users, onClose }) {
+  const [userId, setUserId] = useState('');
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    try {
+      const r = await api('/admin/clear-tasks', { method: 'POST', body: { confirm: text, user_id: userId || null } });
+      emitLocal(); toast(`Limpeza concluída: ${r.tasks} tarefas, ${r.recurrences} rotinas e ${r.time_entries} registros de tempo removidos`, 'success'); onClose();
+    } catch (e) { toast(e.message, 'error'); } finally { setBusy(false); }
+  };
+  const who = users.find((u) => u.id === Number(userId))?.name;
+  return (
+    <Modal title="Limpar atividades" onClose={onClose}
+      footer={<><button className="btn" onClick={onClose}>Cancelar</button>
+        <button className="btn danger-solid" disabled={text !== 'LIMPAR' || busy} onClick={run}>{busy ? 'Limpando…' : 'Limpar definitivamente'}</button></>}>
+      <div className="warn-box danger">
+        Remove <b>definitivamente</b> as tarefas, rotinas recorrentes, subtarefas, observações e registros de tempo {who ? <>de <b>{who}</b></> : <>de <b>todos os colaboradores</b></>}.
+        Usuários, empresas, canais, categorias, equipes e metas são mantidos. Não é possível desfazer.
+      </div>
+      <Field label="De quem">
+        <select value={userId} onChange={(e) => setUserId(e.target.value)}>
+          <option value="">Todos os colaboradores</option>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+      </Field>
+      <Field label="Digite LIMPAR para confirmar"><input value={text} onChange={(e) => setText(e.target.value)} placeholder="LIMPAR" /></Field>
+    </Modal>
   );
 }

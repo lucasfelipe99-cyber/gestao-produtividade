@@ -329,7 +329,7 @@ app.get('/api/tasks', wrap(async (req, res) => {
   const sql = TASK_SELECT.replaceAll('$TODAY', '$2').replace('SELECT t.*,', `SELECT t.*, ${carriedExpr} AS carried,`) +
     ` WHERE ${w.join(' AND ')}
       ORDER BY t.due_date, CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, t.scheduled_time NULLS LAST, t.id
-      LIMIT 2000`;
+      LIMIT 6000`;
   res.json(await many(sql, params));
 }));
 
@@ -764,6 +764,92 @@ app.patch('/api/company', adminOnly, wrap(async (req, res) => {
   changed(req);
   res.json({ ok: true });
 }));
+
+// ---------- administração: limpar atividades ----------
+app.post('/api/admin/clear-tasks', adminOnly, wrap(async (req, res) => {
+  const { confirm, user_id } = req.body || {};
+  if (confirm !== 'LIMPAR') throw new HttpError(400, 'Digite LIMPAR para confirmar');
+  const cid = req.user.company_id;
+  const uid = user_id ? parseInt(user_id, 10) : null;
+  if (uid) await assertRefs(pool, cid, { assignee_id: uid });
+  const result = await tx(async (db) => {
+    const ids = (await db.query(`SELECT id FROM tasks WHERE company_id=$1 ${uid ? 'AND assignee_id=$2' : ''}`, uid ? [cid, uid] : [cid])).rows.map((r) => r.id);
+    // recorrências: todas da empresa, ou as do colaborador (responsável no modelo)
+    const recs = await db.query(
+      `DELETE FROM recurrences WHERE company_id=$1 ${uid ? `AND (template->>'assignee_id')::int = $2` : ''} RETURNING id`, uid ? [cid, uid] : [cid]);
+    const entries = await db.query(
+      `DELETE FROM time_entries WHERE company_id=$1 AND (task_id = ANY($2::int[]) ${uid ? 'OR user_id=$3' : 'OR TRUE'}) RETURNING id`,
+      uid ? [cid, ids, uid] : [cid, ids]);
+    await db.query('DELETE FROM task_events WHERE company_id=$1 AND task_id = ANY($2::int[])', [cid, ids]);
+    const del = await db.query('DELETE FROM tasks WHERE id = ANY($1::int[])', [ids]);
+    // recalcula o tempo das tarefas restantes (caso tenha removido registros de outra pessoa nelas)
+    if (uid) await db.query(`UPDATE tasks t SET tracked_seconds = COALESCE((SELECT sum(seconds) FROM time_entries e WHERE e.task_id=t.id AND e.ended_at IS NOT NULL),0) WHERE company_id=$1`, [cid]);
+    await logEvent(db, { companyId: cid, userId: req.user.id, action: 'tasks_cleared',
+      details: { user_id: uid, tasks: del.rowCount, recurrences: recs.rowCount, time_entries: entries.rowCount } });
+    return { tasks: del.rowCount, recurrences: recs.rowCount, time_entries: entries.rowCount };
+  });
+  changed(req);
+  res.json({ ok: true, ...result });
+}));
+
+// ---------- rotina em lote ----------
+// Cria recorrências para cada combinação colaborador × canal × empresa × atividade
+app.post('/api/routines/bulk', adminOnly, wrap(async (req, res) => {
+  const cid = req.user.company_id;
+  const today = todayIn(req.user.timezone);
+  const { assignments = [], business_ids = [], daily = [], weekly = [], category_id, start_date, include_current_week } = req.body || {};
+  const start = isDate(start_date) && start_date >= today ? start_date : today;
+  const biz = business_ids.length ? business_ids.map(Number) : [null];
+  const clean = (list) => list.map((a) => ({ ...a, title: String(a.title || '').trim().slice(0, 300) })).filter((a) => a.title);
+  const D = clean(daily), W = clean(weekly);
+  const combos = [];
+  for (const a of assignments) {
+    const chans = a.channel_ids?.length ? a.channel_ids.map(Number) : [null];
+    for (const ch of chans) for (const b of biz) combos.push({ user: Number(a.user_id), channel: ch, business: b });
+  }
+  if (!combos.length || (!D.length && !W.length)) throw new HttpError(400, 'Escolha colaboradores e ao menos uma atividade');
+  const plan = [];
+  for (const c of combos) {
+    for (const a of D) if (!(a.exclude_channel_ids || []).map(Number).includes(c.channel)) plan.push({ ...c, a, freq: 'daily' });
+    for (const a of W) if (!(a.exclude_channel_ids || []).map(Number).includes(c.channel)) plan.push({ ...c, a, freq: 'weekly' });
+  }
+  if (plan.length > 600) throw new HttpError(400, `São ${plan.length} rotinas; o limite por vez é 600`);
+  const out = await tx(async (db) => {
+    for (const c of combos) await assertRefs(db, cid, { assignee_id: c.user, channel_id: c.channel, business_id: c.business, category_id: category_id || null });
+    let recurrences = 0, tasks = 0;
+    for (const p of plan) {
+      let first;
+      if (p.freq === 'daily') first = nextBusinessDay(start);
+      else { // próximo dia da semana escolhido (1=segunda ... 5=sexta), a partir da data inicial
+        const wd = Math.min(7, Math.max(1, Number(p.a.weekday) || 1));
+        // incluir a semana atual: parte da segunda-feira desta semana (a ocorrência já passada entra como atrasada)
+        first = include_current_week ? weekStart(start) : start; let g = 0;
+        while (((new Date(first + 'T00:00:00Z').getUTCDay() + 6) % 7) + 1 !== wd && g++ < 7) first = addDays(first, 1);
+      }
+      const template = {
+        title: p.a.title, description: p.a.description || '', kind: p.freq === 'daily' ? 'daily' : 'weekly',
+        assignee_id: p.user, business_id: p.business, channel_id: p.channel, category_id: category_id || null,
+        priority: p.a.priority || 'medium', estimated_minutes: Number(p.a.estimated_minutes) || 0, scheduled_time: p.a.scheduled_time || null,
+        anchor_date: first,
+      };
+      const r = (await db.query(
+        `INSERT INTO recurrences (company_id, frequency, template, next_date, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [cid, p.freq, JSON.stringify(template), first, req.user.id])).rows[0];
+      recurrences++;
+      if (first < today) { // ocorrência desta semana que já passou: cria mesmo assim (aparece como pendente/atrasada)
+        await insertTaskFromTemplate(db, cid, template, first, r.id, req.user.id);
+        r.next_date = nextOccurrence(p.freq, first, first);
+        tasks++;
+      }
+      tasks += await generateRecurrence(db, cid, r, today);
+    }
+    await logEvent(db, { companyId: cid, userId: req.user.id, action: 'routine_created', details: { recurrences, tasks } });
+    return { recurrences, tasks };
+  });
+  changed(req);
+  res.json({ ok: true, ...out });
+}));
+const nextBusinessDay = (d) => { let x = d; while (!isBusinessDay(x)) x = addDays(x, 1); return x; };
 
 // ---------- alertas ----------
 app.get('/api/alerts', wrap(async (req, res) => {

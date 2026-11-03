@@ -330,3 +330,23 @@ td.c-biz { padding: 4px 6px; overflow: hidden; }
 .tl-lunch { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, #eef0f4, #eef0f4 5px, #f5f6f8 5px, #f5f6f8 10px); border-left: 1px solid #d0d4e4; border-right: 1px solid #d0d4e4; }
 .tl-lunch em { position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%); font-size: 10px; color: #9699a6; font-style: normal; white-space: nowrap; }
 .tl-axis .tl-lunch em { display: none; }
+
+.btn.danger-solid { background: var(--danger); border-color: var(--danger); color: #fff; }
+.warn-box { background: #fff4e0; border: 1px solid #fdd59b; color: #7a4a00; padding: 9px 12px; border-radius: 7px; font-size: 13px; }
+.warn-box.danger { background: #fde4e8; border-color: #f2b8c1; color: #8f1f33; }
+.rb-h { margin: 8px 0 0; }
+.rb-row { display: flex; gap: 10px; align-items: flex-start; }
+.rb-row > select { width: 220px; flex-shrink: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #c3c6d4; border-radius: 16px; padding: 4px 10px; font-size: 12.5px; cursor: pointer; background: #fff; user-select: none; }
+.chip input { display: none; }
+.chip.on { background: var(--c, #0073ea); border-color: var(--c, #0073ea); color: #fff; text-shadow: 0 0 2px rgba(0,0,0,.3); }
+.chip.off { background: #fde4e8; border-color: #f2b8c1; color: #8f1f33; text-decoration: line-through; }
+.rb-acts { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.rb-act { display: flex; gap: 8px; align-items: flex-start; width: 100%; flex-wrap: wrap; }
+.rb-act > input.grow { min-width: 240px; }
+.rb-min { width: 70px; }
+.rb-ex summary { cursor: pointer; font-size: 12.5px; color: var(--muted); padding: 8px 0; }
+.rb-ex[open] { width: 100%; }
+.rb-preview { background: #f0f6ff; border: 1px solid #cfe2fc; border-radius: 8px; padding: 10px 12px; font-size: 13.5px; display: flex; flex-direction: column; gap: 3px; }
+@media (max-width: 600px) { .rb-row { flex-direction: column; } .rb-row > select { width: 100%; } }
