@@ -231,3 +231,21 @@ UPDATE notepads SET content = '' WHERE content <> '';
 -- ===== v6: tarefas em grupo (entrega de parceiro ligada a uma tarefa principal) =====
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_task_id INT REFERENCES tasks(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS tasks_parent ON tasks (parent_task_id) WHERE parent_task_id IS NOT NULL;
+
+-- ===== v7: tipo de tarefa "pontual" (avulsa com prazo, não diária nem semanal) =====
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tasks_kind_check' AND pg_get_constraintdef(oid) LIKE '%oneoff%') THEN
+    ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_kind_check;
+    ALTER TABLE tasks ADD CONSTRAINT tasks_kind_check CHECK (kind IN ('daily','weekly','oneoff'));
+  END IF;
+END $$;
+-- migrações que rodam uma única vez
+CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, done_at TIMESTAMPTZ NOT NULL DEFAULT now());
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v7_aba_pontuais') THEN
+    -- quem já tinha acesso às tarefas diárias passa a ver também as pontuais
+    UPDATE users SET allowed_tabs = array_append(allowed_tabs, 'pontuais')
+      WHERE allowed_tabs IS NOT NULL AND 'diarias' = ANY(allowed_tabs) AND NOT 'pontuais' = ANY(allowed_tabs);
+    INSERT INTO app_meta (key) VALUES ('v7_aba_pontuais');
+  END IF;
+END $$;

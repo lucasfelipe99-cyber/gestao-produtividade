@@ -12,6 +12,7 @@ import Team from './pages/Team.jsx';
 import History from './pages/History.jsx';
 import Timeline from './pages/Timeline.jsx';
 import Summary from './pages/Summary.jsx';
+import Oneoff from './pages/Oneoff.jsx';
 import TaskDrawer from './components/TaskDrawer.jsx';
 
 const Ctx = createContext(null);
@@ -56,6 +57,7 @@ function Shell({ me, onLogout }) {
     ['/resumo', 'note', 'Resumo', null, <Summary />],
     ['/diarias', 'today', 'Tarefas diárias', 'diarias', <Daily />],
     ['/semanais', 'week', 'Tarefas semanais', 'semanais', <Weekly />],
+    ['/pontuais', 'target', 'Tarefas pontuais', 'pontuais', <Oneoff />],
     ['/linha-do-tempo', 'timeline', 'Linha do tempo', 'linha-do-tempo', <Timeline />],
     ['/metas', 'target', 'Metas e atingimento', 'metas', <Goals />],
     ['/relatorios', 'chart', 'Relatórios', 'relatorios', <Reports />],
@@ -189,7 +191,7 @@ function Alerts() {
                   <b>{a.title}</b>
                   <small>{a.level === 'reminder'
                     ? `Lembrete · ${a.remind_date === me.today ? 'hoje' : fmtDate(a.remind_date)}${a.remind_time ? ' às ' + a.remind_time : ''}`
-                    : <>{LABEL[a.level]} · {a.kind === 'daily' ? 'planejada ' + fmtDate(a.planned_date) : 'prazo ' + fmtDate(a.due_date)}{a.assignee_name ? ' · ' + a.assignee_name : ''}</>}</small>
+                    : <>{LABEL[a.level]} · {a.kind === 'daily' ? 'planejada ' + fmtDate(a.planned_date) : (a.kind === 'oneoff' ? 'pontual · prazo ' : 'prazo ') + fmtDate(a.due_date)}{a.assignee_name ? ' · ' + a.assignee_name : ''}</>}</small>
                 </span>
                 <span className="pill xs" style={{ background: STATUS[a.status].color }}>{STATUS[a.status].label}</span>
               </button>

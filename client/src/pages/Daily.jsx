@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { useData, addDays, fmtDateLong, fmtMonth, monthStart, monthEnd, fmtDur, fmtMin } from '../lib.js';
+import { Link } from 'react-router-dom';
+import { useData, canTab, addDays, fmtDateLong, fmtMonth, monthStart, monthEnd, fmtDur, fmtMin } from '../lib.js';
 import { Icon, Segmented, Loading, Progress } from '../ui.jsx';
 import { useApp } from '../App.jsx';
 import { TaskTable, Kanban, CalendarView, TaskFilters, qs } from '../components/Tasks.jsx';
@@ -19,6 +20,9 @@ export default function Daily() {
   // atividades diárias atrasadas de dias anteriores (rotinas não são transferidas para hoje)
   const late = useData(`/tasks?${qs({ kind: 'daily', status: 'overdue', to: addDays(me.today, -1), ...filters, status: 'overdue' })}`);
   const lateList = (late.data || []).filter((t) => t.due_date < me.today);
+  // pontuais que vencem hoje ou já venceram (ficam na aba própria, mas avisamos aqui)
+  const oneoff = useData(canTab(me, 'pontuais') ? `/tasks?${qs({ kind: 'oneoff', to: me.today, ...filters })}` : null);
+  const oneoffDue = (oneoff.data || []).filter((t) => !['done', 'cancelled'].includes(t.status));
   const tasks = data || [];
   const valid = tasks.filter((t) => t.status !== 'cancelled');
   const done = valid.filter((t) => t.status === 'done').length;
@@ -53,6 +57,13 @@ export default function Daily() {
         <TaskFilters filters={filters} setFilters={setFilters} />
       </div>
 
+      {oneoffDue.length > 0 && view !== 'calendar' && (
+        <div className="oneoff-banner">
+          <Icon name="target" size={18} />
+          <span className="grow"><b>{oneoffDue.length} tarefa(s) pontual(is)</b> vencendo hoje ou com prazo vencido</span>
+          <Link className="btn sm" to="/pontuais">Ver pontuais</Link>
+        </div>
+      )}
       {lateList.length > 0 && view !== 'calendar' && (
         <div className="late-banner">
           <Icon name="alert" size={18} />

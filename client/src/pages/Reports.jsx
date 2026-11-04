@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ResponsiveContainer, BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend, Cell } from 'recharts';
-import { useData, fmtDur, fmtDate, fmtMin, STATUS, pctColor } from '../lib.js';
+import { useData, fmtDur, fmtDate, fmtMin, STATUS, KIND, pctColor } from '../lib.js';
 import { Card, Loading, Kpi, Icon, Empty, Progress, StatusPill } from '../ui.jsx';
 import { useApp } from '../App.jsx';
 import { qs } from '../components/Tasks.jsx';
@@ -168,7 +168,7 @@ export default function Reports() {
                 <tbody>
                   {data.tasks.map((t) => (
                     <tr key={t.id} onClick={() => openTask(t.id)}>
-                      <td>{t.title}</td><td>{t.kind === 'daily' ? 'Diária' : 'Semanal'}</td><td>{t.assignee || '—'}</td><td>{t.business || '—'}</td><td>{t.channel || '—'}</td><td>{t.category || '—'}</td>
+                      <td>{t.title}</td><td>{KIND[t.kind]}</td><td>{t.assignee || '—'}</td><td>{t.business || '—'}</td><td>{t.channel || '—'}</td><td>{t.category || '—'}</td>
                       <td>{fmtDate(t.planned_date)}</td><td><StatusPill status={t.status} /></td><td>{fmtMin(t.estimated_minutes)}</td><td>{fmtDur(t.tracked_seconds)}</td>
                     </tr>
                   ))}

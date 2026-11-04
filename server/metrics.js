@@ -63,7 +63,7 @@ export async function perUser({ companyId, tz, from, to, userId, dims }) {
        (SELECT count(*) FROM tasks t WHERE t.assignee_id=u.id AND t.planned_date BETWEEN $2 AND $3 AND t.status='done'
           AND (t.completed_at AT TIME ZONE $4)::date <= $3${cat})::int AS done,
        (SELECT count(*) FROM tasks t WHERE t.assignee_id=u.id AND t.planned_date BETWEEN $2 AND $3 AND t.status NOT IN ('done','cancelled')
-          AND ((t.kind='daily' AND t.planned_date < $5) OR (t.kind='weekly' AND t.due_date < $5))${cat})::int AS late,
+          AND ((t.kind='daily' AND t.planned_date < $5) OR (t.kind<>'daily' AND t.due_date < $5))${cat})::int AS late,
        (SELECT COALESCE(sum(e.seconds),0) FROM time_entries e JOIN tasks t ON t.id=e.task_id WHERE e.user_id=u.id AND e.ended_at IS NOT NULL
           AND (e.started_at AT TIME ZONE $4)::date BETWEEN $2 AND $3${cat})::int AS seconds,
        (SELECT count(DISTINCT e.task_id) FROM time_entries e JOIN tasks t ON t.id=e.task_id WHERE e.user_id=u.id AND e.ended_at IS NOT NULL
@@ -150,7 +150,7 @@ export async function dashboard({ companyId, tz, from, to, userId, dims }) {
   const ld = dimSql(lp, dims);
   const late = await one(
     `SELECT count(*)::int AS n FROM tasks t WHERE t.company_id=$1 AND t.status NOT IN ('done','cancelled')
-     AND ((t.kind='daily' AND t.planned_date < $2) OR (t.kind='weekly' AND t.due_date < $2)) ${userId ? 'AND t.assignee_id=$3' : ''}${ld}`, lp);
+     AND ((t.kind='daily' AND t.planned_date < $2) OR (t.kind<>'daily' AND t.due_date < $2)) ${userId ? 'AND t.assignee_id=$3' : ''}${ld}`, lp);
   const att = await attainment({ companyId, tz, from, to, userId, dims });
   const ef = entryFilter({ companyId, from, to, tz, userId, dims });
   const time = await one(

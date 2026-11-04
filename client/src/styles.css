@@ -423,3 +423,6 @@ textarea.notebook[readonly] { background: #fafbfc; border-color: var(--border); 
 .partners li { display: flex; gap: 10px; align-items: center; background: #fff; border: 1px solid var(--border); border-left: 4px solid #fdab3d; border-radius: 7px; padding: 7px 10px; cursor: pointer; }
 .partners li.done { border-left-color: #00c875; } .partners li.late { border-left-color: var(--danger); }
 .partners li b { display: block; font-size: 13.5px; font-weight: 500; } .partners li small { font-size: 12px; }
+
+.tag.oneoff { background: #e6f4ff; color: #0060c2; }
+.oneoff-banner { display: flex; align-items: center; gap: 10px; background: #e6f4ff; border: 1px solid #b9dcfb; color: #0b4f8a; border-radius: var(--radius); padding: 10px 14px; }

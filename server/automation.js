@@ -14,7 +14,7 @@ export function nextOccurrence(freq, date, anchor) {
 }
 
 export async function insertTaskFromTemplate(db, companyId, t, dueDate, recurrenceId, userId) {
-  const kind = t.kind === 'weekly' ? 'weekly' : 'daily';
+  const kind = ['weekly', 'oneoff'].includes(t.kind) ? t.kind : 'daily';
   const { rows } = await db.query(
     `INSERT INTO tasks (company_id, kind, title, description, assignee_id, team_id, category_id, shared, priority,
        due_date, planned_date, week_start, scheduled_time, estimated_minutes, notes, recurrence_id, created_by, business_id, channel_id)
@@ -47,7 +47,7 @@ export async function generateRecurrence(db, companyId, r, today) {
          due_date, planned_date, week_start, scheduled_time, estimated_minutes, notes, recurrence_id, created_by, business_id, channel_id)
        SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9, d, d, (d - ((EXTRACT(ISODOW FROM d)::int - 1) * INTERVAL '1 day'))::date, $11,$12,$13,$14,$15,$16,$17
        FROM unnest($10::date[]) AS d`,
-      [companyId, t.kind === 'weekly' ? 'weekly' : 'daily', t.title, t.description || '', t.assignee_id || null, t.team_id || null,
+      [companyId, ['weekly', 'oneoff'].includes(t.kind) ? t.kind : 'daily', t.title, t.description || '', t.assignee_id || null, t.team_id || null,
        t.category_id || null, !!t.shared, t.priority || 'medium', dates, t.scheduled_time || null, Number(t.estimated_minutes) || 0,
        t.notes || '', r.id, r.created_by || null, t.business_id || null, t.channel_id || null]);
     created = ins.rowCount;
@@ -99,10 +99,10 @@ export async function runAutomationForCompany(companyId, { force = false } = {})
       changes++;
     }
 
-    // 3) Semanais com prazo vencido e não iniciadas -> atrasadas
+    // 3) Semanais e pontuais com prazo vencido e não iniciadas -> atrasadas
     const lateWeekly = (await db.query(
       `UPDATE tasks SET status='late', updated_at=now()
-       WHERE company_id=$1 AND kind='weekly' AND due_date < $2 AND status='not_started' RETURNING id, title`,
+       WHERE company_id=$1 AND kind IN ('weekly','oneoff') AND due_date < $2 AND status='not_started' RETURNING id, title`,
       [companyId, today])).rows;
     for (const t of lateWeekly) {
       await logEvent(db, { companyId, taskId: t.id, taskTitle: t.title, action: 'marked_late', details: {} });

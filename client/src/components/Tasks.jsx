@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { api, toast, emitLocal, useTick, STATUS, STATUS_ORDER, PRIORITY, fmtDate, fmtTime, fmtDur, fmtClock, fmtMin, liveSeconds,
+import { api, toast, emitLocal, useTick, STATUS, STATUS_ORDER, PRIORITY, KIND, fmtDate, fmtTime, fmtDur, fmtClock, fmtMin, liveSeconds,
   parseDate, toISODate, addDays, monthStart, fmtWeekday } from '../lib.js';
 import { Icon, Avatar, StatusPill, PriorityPill, Pill, Empty, Progress } from '../ui.jsx';
 import { useApp } from '../App.jsx';
@@ -56,10 +56,11 @@ export function TaskButtons({ task, compact }) {
   );
 }
 
-function Badges({ task }) {
+function Badges({ task, showKind }) {
   return (
     <span className="badges">
       {task.carried && <span className="tag warn" title="Pendência de semana anterior">Pendência anterior</span>}
+      {task.kind === 'oneoff' && showKind && <span className="tag oneoff">Pontual</span>}
       {task.rollover_count > 0 && <span className="tag warn" title={`Planejada para ${fmtDate(task.planned_date)}`}>Transferida {task.rollover_count}x</span>}
       {task.overdue && !task.carried && !task.rollover_count && <span className="tag danger">Vencida</span>}
       {task.recurrence_id && <span className="tag" title="Tarefa recorrente"><Icon name="repeat" size={12} /></span>}
@@ -91,9 +92,20 @@ export function BizChannel({ task: t, inline, withCategory }) {
 export function TaskTable({ tasks, groupBy = 'status', showDate = false }) {
   const { openTask, isAdmin, me } = useApp();
   const [collapsed, setCollapsed] = useState({});
+  const today = me.today;
   if (!tasks.length) return <Empty>Nenhuma tarefa encontrada para os filtros selecionados.</Empty>;
   let groups;
-  if (groupBy === 'status') {
+  if (groupBy === 'deadline') {
+    const we = addDays(today, 6 - ((parseDate(today).getDay() + 6) % 7));
+    const B = [
+      ['late', 'Atrasadas', '#e2445c', (t) => t.status !== 'done' && t.due_date < today],
+      ['today', 'Vencem hoje', '#fdab3d', (t) => t.status !== 'done' && t.due_date === today],
+      ['week', 'Nesta semana', '#579bfc', (t) => t.status !== 'done' && t.due_date > today && t.due_date <= we],
+      ['later', 'Próximas', '#a25ddc', (t) => t.status !== 'done' && t.due_date > we],
+      ['done', 'Concluídas', '#00c875', (t) => t.status === 'done'],
+    ];
+    groups = B.map(([key, label, color, fn]) => ({ key, label, color, items: tasks.filter(fn) })).filter((g) => g.items.length);
+  } else if (groupBy === 'status') {
     groups = STATUS_ORDER.map((s) => ({ key: s, label: STATUS[s].label, color: STATUS[s].color, items: tasks.filter((t) => t.status === s) })).filter((g) => g.items.length);
   } else {
     const map = new Map();

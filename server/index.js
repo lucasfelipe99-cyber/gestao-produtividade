@@ -57,7 +57,7 @@ async function auth(req, _res, next) {
 }
 const adminOnly = (req, _res, next) => (isAdmin(req.user) ? next() : next(new HttpError(403, 'Apenas administradores')));
 // Abas do sistema que o administrador pode liberar/bloquear por colaborador
-export const TABS = ['dashboard', 'diarias', 'semanais', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
+export const TABS = ['dashboard', 'diarias', 'semanais', 'pontuais', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
 const canTab = (u, tab) => isAdmin(u) || !u.allowed_tabs || u.allowed_tabs.includes(tab);
 const requireTab = (tab) => (req, _res, next) => (canTab(req.user, tab) ? next() : next(new HttpError(403, 'Você não tem acesso a esta área')));
 
@@ -93,7 +93,7 @@ const TASK_SELECT = `
     a.user_id AS active_user_id, au.name AS active_user_name, a.started_at AS active_started_at,
     a.subtask_id AS active_subtask_id, ast.title AS active_subtask_title,
     COALESCE(sc.total, 0) AS subtasks_total, COALESCE(sc.done, 0) AS subtasks_done,
-    (t.status NOT IN ('done','cancelled') AND ((t.kind='daily' AND t.planned_date < $TODAY) OR (t.kind='weekly' AND t.due_date < $TODAY))) AS overdue,
+    (t.status NOT IN ('done','cancelled') AND ((t.kind='daily' AND t.planned_date < $TODAY) OR (t.kind<>'daily' AND t.due_date < $TODAY))) AS overdue,
     pt.title AS parent_title, pt.assignee_id AS parent_assignee_id, pu.name AS parent_assignee_name, pt.status AS parent_status,
     dep.items AS partners
   FROM tasks t
@@ -130,7 +130,7 @@ function cleanTask(body, { partial = false } = {}) {
   }
   if (has('description')) out.description = String(body.description || '').slice(0, 10000);
   if (has('notes')) out.notes = String(body.notes || '').slice(0, 10000);
-  if (has('kind')) { if (!['daily', 'weekly'].includes(body.kind)) throw new HttpError(400, 'Tipo inválido'); out.kind = body.kind; }
+  if (has('kind')) { if (!['daily', 'weekly', 'oneoff'].includes(body.kind)) throw new HttpError(400, 'Tipo inválido'); out.kind = body.kind; }
   if (has('priority')) { if (!PRIORITIES.includes(body.priority)) throw new HttpError(400, 'Prioridade inválida'); out.priority = body.priority; }
   if (has('status')) { if (!STATUSES.includes(body.status)) throw new HttpError(400, 'Status inválido'); out.status = body.status; }
   if (has('due_date')) { if (!isDate(body.due_date)) throw new HttpError(400, 'Data inválida'); out.due_date = body.due_date; }
@@ -313,16 +313,17 @@ app.get('/api/tasks', wrap(async (req, res) => {
   const today = todayIn(u.timezone);
   const { from, to, week, assignee, status, category, team, mine, business, channel } = req.query;
   let { kind } = req.query;
-  // colaborador sem acesso a uma das abas de tarefas só recebe o outro tipo
-  if (!canTab(u, 'diarias') && !canTab(u, 'semanais')) throw new HttpError(403, 'Você não tem acesso às tarefas');
-  if (!canTab(u, 'diarias')) kind = 'weekly';
-  else if (!canTab(u, 'semanais')) kind = 'daily';
+  // colaborador só recebe os tipos de tarefa das abas liberadas para ele
+  const kinds = [['daily', 'diarias'], ['weekly', 'semanais'], ['oneoff', 'pontuais']].filter(([, tab]) => canTab(u, tab)).map(([k]) => k);
+  if (!kinds.length) throw new HttpError(403, 'Você não tem acesso às tarefas');
+  if (kind && !kinds.includes(kind)) return res.json([]);
   const params = [u.company_id, today];
   const w = ['t.company_id=$1'];
   const vis = visibilitySql(u, 't', params.length + 1);
   params.push(...vis.params); w.push(vis.sql);
   let carriedExpr = 'FALSE';
   if (kind) { params.push(kind); w.push(`t.kind=$${params.length}`); }
+  else if (kinds.length < 3) { params.push(kinds); w.push(`t.kind = ANY($${params.length}::text[])`); }
   if (week && isDate(week)) {
     const ws = weekStart(week);
     params.push(ws);
@@ -337,7 +338,7 @@ app.get('/api/tasks', wrap(async (req, res) => {
   if (assignee) { if (assignee === 'none') w.push('t.assignee_id IS NULL'); else { params.push(parseInt(assignee, 10)); w.push(`t.assignee_id=$${params.length}`); } }
   if (mine === '1') { params.push(u.id); w.push(`t.assignee_id=$${params.length}`); }
   if (status) {
-    if (status === 'overdue') w.push(`(t.status NOT IN ('done','cancelled') AND ((t.kind='daily' AND t.planned_date < $2) OR (t.kind='weekly' AND t.due_date < $2)))`);
+    if (status === 'overdue') w.push(`(t.status NOT IN ('done','cancelled') AND ((t.kind='daily' AND t.planned_date < $2) OR (t.kind<>'daily' AND t.due_date < $2)))`);
     else { params.push(status); w.push(`t.status=$${params.length}`); }
   }
   if (category) { params.push(parseInt(category, 10)); w.push(`t.category_id=$${params.length}`); }
@@ -384,6 +385,7 @@ app.post('/api/tasks', wrap(async (req, res) => {
     data.team_id = req.user.team_id || null;
     req.body.recurrence = null;
   }
+  if (data.kind === 'oneoff') req.body.recurrence = null; // pontual não se repete
   const recurrence = req.body.recurrence;
   if (recurrence && !['daily', 'weekly', 'monthly'].includes(recurrence)) throw new HttpError(400, 'Recorrência inválida');
   const task = await tx(async (db) => {
@@ -1091,7 +1093,7 @@ app.get('/api/summary', wrap(async (req, res) => {
     `SELECT count(*) FILTER (WHERE due_date=$3 AND status<>'cancelled')::int AS total,
        count(*) FILTER (WHERE due_date=$3 AND status='done')::int AS done,
        count(*) FILTER (WHERE due_date=$3 AND status='in_progress')::int AS in_progress,
-       count(*) FILTER (WHERE status NOT IN ('done','cancelled') AND ((kind='daily' AND planned_date < $3) OR (kind='weekly' AND due_date < $3)))::int AS overdue,
+       count(*) FILTER (WHERE status NOT IN ('done','cancelled') AND ((kind='daily' AND planned_date < $3) OR (kind<>'daily' AND due_date < $3)))::int AS overdue,
        count(*) FILTER (WHERE kind='weekly' AND week_start=$4 AND status<>'cancelled')::int AS week_total,
        count(*) FILTER (WHERE kind='weekly' AND week_start=$4 AND status='done')::int AS week_done
      FROM tasks WHERE company_id=$1 AND assignee_id=$2`, [u.company_id, uid, today, weekStart(today)]);
@@ -1201,12 +1203,12 @@ app.get('/api/alerts', wrap(async (req, res) => {
   if (!isAdmin(u)) params.push(u.id);
   const rows = await many(
     `SELECT t.id, t.title, t.kind, t.due_date, t.planned_date, t.scheduled_time, t.priority, t.status, u.name AS assignee_name,
-       CASE WHEN (t.kind='daily' AND t.planned_date < $2) OR (t.kind='weekly' AND t.due_date < $2) THEN 'overdue'
+       CASE WHEN (t.kind='daily' AND t.planned_date < $2) OR (t.kind<>'daily' AND t.due_date < $2) THEN 'overdue'
             WHEN t.due_date = $2 THEN 'today' ELSE 'tomorrow' END AS level
      FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id
      WHERE t.company_id=$1 AND ${vis} AND t.status NOT IN ('done','cancelled')
-       AND ( (t.kind='daily' AND t.planned_date < $2) OR (t.kind='weekly' AND t.due_date <= $3) OR (t.kind='daily' AND t.due_date=$2 AND t.priority IN ('high','urgent')) )
-     ORDER BY CASE WHEN (t.kind='daily' AND t.planned_date < $2) OR (t.kind='weekly' AND t.due_date < $2) THEN 0 WHEN t.due_date=$2 THEN 1 ELSE 2 END, t.due_date
+       AND ( (t.kind='daily' AND t.planned_date < $2) OR (t.kind<>'daily' AND t.due_date <= $3) OR (t.kind='daily' AND t.due_date=$2 AND t.priority IN ('high','urgent')) )
+     ORDER BY CASE WHEN (t.kind='daily' AND t.planned_date < $2) OR (t.kind<>'daily' AND t.due_date < $2) THEN 0 WHEN t.due_date=$2 THEN 1 ELSE 2 END, t.due_date
      LIMIT 50`, params);
   const reminders = await many(
     `SELECT n.id AS note_id, n.task_id AS id, n.title, n.remind_date, to_char(n.remind_time,'HH24:MI') AS remind_time,

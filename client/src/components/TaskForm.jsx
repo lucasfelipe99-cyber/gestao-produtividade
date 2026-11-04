@@ -25,7 +25,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
       category_id: f.category_id || null, business_id: f.business_id || null, channel_id: f.channel_id || null, priority: f.priority, due_date: f.due_date, scheduled_time: f.scheduled_time || null,
       estimated_minutes: (Number(estH) || 0) * 60 + (Number(estM) || 0), shared: f.shared,
     };
-    if (!editing) { body.recurrence = f.recurrence || null; body.notes = f.notes; }
+    if (!editing) { body.recurrence = f.kind === 'oneoff' ? null : f.recurrence || null; body.notes = f.notes; }
     if (editing && initial.recurrence_id) body.apply_to_series = !!f.apply_to_series;
     try {
       const t = editing ? await api(`/tasks/${initial.id}`, { method: 'PATCH', body }) : await api('/tasks', { method: 'POST', body });
@@ -42,7 +42,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
       <div className="grid-form">
         <Field label="Nome da tarefa *"><input autoFocus value={f.title} onChange={set('title')} placeholder="Ex.: Atualizar preços no Mercado Livre" /></Field>
         <Field label="Tipo">
-          <select value={f.kind} onChange={set('kind')}><option value="daily">Diária</option><option value="weekly">Semanal</option></select>
+          <select value={f.kind} onChange={set('kind')}><option value="daily">Diária</option><option value="weekly">Semanal</option><option value="oneoff">Pontual (avulsa, com prazo)</option></select>
         </Field>
         <Field label="Descrição detalhada" ><textarea rows={3} value={f.description} onChange={set('description')} /></Field>
         <Field label="Empresa">
@@ -71,7 +71,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
           </select>
         </Field>
         </>)}
-        <Field label={f.kind === 'daily' ? 'Data de execução' : 'Prazo de conclusão'}><input type="date" value={f.due_date} onChange={set('due_date')} /></Field>
+        <Field label={f.kind === 'daily' ? 'Data de execução' : f.kind === 'oneoff' ? 'Prazo de entrega' : 'Prazo de conclusão'}><input type="date" value={f.due_date} onChange={set('due_date')} /></Field>
         <Field label="Horário previsto"><input type="time" value={f.scheduled_time} onChange={set('scheduled_time')} /></Field>
         <Field label="Prioridade">
           <select value={f.priority} onChange={set('priority')}>{Object.entries(PRIORITY).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select>
@@ -88,7 +88,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
             <input type="number" min="0" max="59" value={estM} onChange={(e) => setEstM(e.target.value)} placeholder="0" /> <span>min</span>
           </div>
         </Field>
-        {!editing && isAdmin && (
+        {!editing && isAdmin && f.kind !== 'oneoff' && (
           <Field label="Recorrência" hint="As ocorrências dos próximos 3 meses já ficam criadas no calendário (e o sistema vai estendendo automaticamente)">
             <select value={f.recurrence} onChange={set('recurrence')}>
               <option value="">Não se repete</option><option value="daily">Diariamente (dias úteis)</option>

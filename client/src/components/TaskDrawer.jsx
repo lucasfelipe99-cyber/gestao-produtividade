@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { api, toast, emitLocal, useData, useTick, STATUS, PRIORITY, ACTIONS, FIELD, fmtDateFull, fmtDateTime, fmtDur, fmtClock, fmtMin, fmtTime,
+import { api, toast, emitLocal, useData, useTick, KIND, STATUS, PRIORITY, ACTIONS, FIELD, fmtDateFull, fmtDateTime, fmtDur, fmtClock, fmtMin, fmtTime,
   liveSeconds, toLocalInput } from '../lib.js';
 import { Icon, Avatar, StatusPill, PriorityPill, Loading, Progress, Field } from '../ui.jsx';
 import { useApp } from '../App.jsx';
@@ -55,7 +55,7 @@ export default function TaskDrawer({ id, onClose }) {
           <StatusPill status={task.status} onChange={canStatus ? (s) => setStatus(task, s) : null}
             options={isAdmin ? undefined : ['not_started', 'in_progress', 'paused', 'done']} />
           <PriorityPill priority={task.priority} />
-          <span className="tag">{task.kind === 'daily' ? 'Diária' : 'Semanal'}</span>
+          <span className={'tag' + (task.kind === 'oneoff' ? ' oneoff' : '')}>{KIND[task.kind]}</span>
           {task.overdue && <span className="tag danger">Vencida</span>}
         </div>
         <h2>{task.title}</h2>
@@ -90,7 +90,7 @@ export default function TaskDrawer({ id, onClose }) {
             <Subtasks task={task} subtasks={data.subtasks} />
             <dl className="details">
               <dt>Responsável</dt><dd className="row gap-s"><Avatar name={task.assignee_name} id={task.assignee_id} size={22} />{task.assignee_name || 'Sem responsável'}</dd>
-              <dt>{task.kind === 'daily' ? 'Data de execução' : 'Prazo'}</dt><dd>{fmtDateFull(task.due_date)} {task.scheduled_time && `às ${fmtTime(task.scheduled_time)}`}</dd>
+              <dt>{task.kind === 'daily' ? 'Data de execução' : 'Prazo de entrega'}</dt><dd>{fmtDateFull(task.due_date)} {task.scheduled_time && `às ${fmtTime(task.scheduled_time)}`}</dd>
               <dt>Data planejada original</dt><dd>{fmtDateFull(task.planned_date)}{task.rollover_count > 0 && <span className="tag warn"> transferida {task.rollover_count}x</span>}</dd>
               <dt>Empresa</dt><dd>{task.business_name ? <span className="cat"><i style={{ background: task.business_color }} />{task.business_name}</span> : '—'}</dd>
               <dt>Canal</dt><dd>{task.channel_name ? <span className="chan" style={{ background: task.channel_color }}>{task.channel_name}</span> : '—'}</dd>

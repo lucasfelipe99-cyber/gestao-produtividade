@@ -76,6 +76,7 @@ export const STATUS = {
   cancelled: { label: 'Cancelada', color: '#676879' },
 };
 export const STATUS_ORDER = ['late', 'in_progress', 'paused', 'not_started', 'done', 'cancelled'];
+export const KIND = { daily: 'Diária', weekly: 'Semanal', oneoff: 'Pontual' };
 export const PRIORITY = {
   urgent: { label: 'Urgente', color: '#333333' },
   high: { label: 'Alta', color: '#401694' },
@@ -138,7 +139,7 @@ export const pctColor = (p, target = 90) => (p >= target ? '#00c875' : p >= targ
 
 // Abas que o administrador pode liberar para cada colaborador
 export const TABS = [
-  ['dashboard', 'Meu painel (dashboard)'], ['diarias', 'Tarefas diárias'], ['semanais', 'Tarefas semanais'],
+  ['dashboard', 'Meu painel (dashboard)'], ['diarias', 'Tarefas diárias'], ['semanais', 'Tarefas semanais'], ['pontuais', 'Tarefas pontuais'],
   ['linha-do-tempo', 'Linha do tempo'], ['metas', 'Metas e atingimento'], ['relatorios', 'Relatórios'], ['historico', 'Histórico'],
 ];
 export const canTab = (me, tab) => me.role === 'admin' || !me.allowed_tabs || me.allowed_tabs.includes(tab);

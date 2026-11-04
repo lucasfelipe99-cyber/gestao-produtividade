@@ -49,6 +49,6 @@ export function buildWorkbook(d, { from, to, company }) {
     ['ID', 'id', 8], ['Tipo', 'kind', 10], ['Tarefa', 'title', 40], ['Responsável', 'assignee', 22], ['Empresa', 'business', 20], ['Canal', 'channel', 18], ['Categoria', 'category', 18], ['Prioridade', 'priority', 12],
     ['Status', 'status', 14], ['Data planejada', 'planned_date', 15], ['Data atual/prazo', 'due_date', 16], ['Estimado (min)', 'estimated_minutes', 15],
     ['Realizado (min)', 'actual', 15], ['Transferências', 'rollover_count', 14], ['Início', 'started_at', 18], ['Conclusão', 'completed_at', 18], ['Observações', 'notes', 40],
-  ], d.tasks.map((t) => ({ ...t, kind: t.kind === 'daily' ? 'Diária' : 'Semanal', status: STATUS[t.status], priority: PRIORITY[t.priority], actual: Math.round(t.tracked_seconds / 60) })));
+  ], d.tasks.map((t) => ({ ...t, kind: { daily: 'Diária', weekly: 'Semanal', oneoff: 'Pontual' }[t.kind], status: STATUS[t.status], priority: PRIORITY[t.priority], actual: Math.round(t.tracked_seconds / 60) })));
   return wb;
 }
