@@ -851,6 +851,166 @@ app.post('/api/routines/bulk', adminOnly, wrap(async (req, res) => {
 }));
 const nextBusinessDay = (d) => { let x = d; while (!isBusinessDay(x)) x = addDays(x, 1); return x; };
 
+// ---------- aba Resumo: apontamentos e lembretes pessoais ----------
+// Cada pessoa cria e edita os próprios; administradores podem consultar os de qualquer colaborador.
+const NOTE_SELECT = `
+  SELECT n.*, to_char(n.remind_time,'HH24:MI') AS remind_time, b.name AS business_name, b.color AS business_color,
+    ch.name AS channel_name, ch.color AS channel_color, t.status AS task_status, t.due_date AS task_due_date
+  FROM notes n LEFT JOIN businesses b ON b.id=n.business_id LEFT JOIN channels ch ON ch.id=n.channel_id
+  LEFT JOIN tasks t ON t.id=n.task_id`;
+
+function noteOwner(req) {
+  const asked = req.query.user ? parseInt(req.query.user, 10) : null;
+  return isAdmin(req.user) && asked ? asked : req.user.id;
+}
+
+function cleanNote(b, { partial = false } = {}) {
+  const out = {};
+  const has = (k) => Object.prototype.hasOwnProperty.call(b, k);
+  if (!partial) {
+    if (!['note', 'reminder'].includes(b.kind)) throw new HttpError(400, 'Tipo inválido');
+    out.kind = b.kind;
+  }
+  if (has('title')) out.title = String(b.title || '').trim().slice(0, 300);
+  if (has('body')) out.body = String(b.body || '').slice(0, 10000);
+  if (has('pinned')) out.pinned = !!b.pinned;
+  if (has('remind_date')) { if (b.remind_date && !isDate(b.remind_date)) throw new HttpError(400, 'Data do lembrete inválida'); out.remind_date = b.remind_date || null; }
+  if (has('remind_time')) {
+    const v = b.remind_time || null;
+    if (v && !/^\d{2}:\d{2}(:\d{2})?$/.test(v)) throw new HttpError(400, 'Horário do lembrete inválido');
+    out.remind_time = v;
+  }
+  for (const k of ['business_id', 'channel_id']) if (has(k)) out[k] = b[k] ? parseInt(b[k], 10) : null;
+  return out;
+}
+
+app.get('/api/notes', wrap(async (req, res) => {
+  const uid = noteOwner(req);
+  const params = [req.user.company_id, uid];
+  let w = 'n.company_id=$1 AND n.user_id=$2';
+  if (req.query.kind === 'note' || req.query.kind === 'reminder') { params.push(req.query.kind); w += ` AND n.kind=$${params.length}`; }
+  res.json(await many(`${NOTE_SELECT} WHERE ${w}
+    ORDER BY CASE WHEN n.kind='reminder' THEN n.remind_date END NULLS LAST, n.remind_time NULLS LAST, n.pinned DESC, n.created_at DESC LIMIT 500`, params));
+}));
+
+app.post('/api/notes', wrap(async (req, res) => {
+  const u = req.user;
+  const data = cleanNote(req.body || {});
+  const today = todayIn(u.timezone);
+  if (data.kind === 'note' && !data.body?.trim() && !data.title) throw new HttpError(400, 'Escreva o apontamento');
+  if (data.kind === 'reminder') {
+    if (!data.title) throw new HttpError(400, 'Informe o assunto do lembrete');
+    if (!data.remind_date) throw new HttpError(400, 'Informe a data do lembrete');
+    if (data.remind_date < today) throw new HttpError(400, 'A data do lembrete não pode estar no passado');
+  }
+  const note = await tx(async (db) => {
+    await assertRefs(db, u.company_id, { business_id: data.business_id, channel_id: data.channel_id });
+    let taskId = null;
+    if (data.kind === 'reminder') {
+      // o lembrete já vira uma tarefa do próprio colaborador na data marcada
+      const t = await insertTaskFromTemplate(db, u.company_id, {
+        kind: 'daily', title: data.title, assignee_id: u.id, priority: req.body.priority || 'medium',
+        description: [data.body, '(Tarefa criada a partir de um lembrete)'].filter(Boolean).join('\n\n'),
+        scheduled_time: data.remind_time, business_id: data.business_id, channel_id: data.channel_id,
+      }, data.remind_date, null, u.id);
+      await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: t.title, userId: u.id, action: 'created', details: { from_reminder: true } });
+      taskId = t.id;
+    }
+    const cols = { ...data, company_id: u.company_id, user_id: u.id, task_id: taskId };
+    const keys = Object.keys(cols);
+    return (await db.query(`INSERT INTO notes (${keys.join(',')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(',')}) RETURNING id`, keys.map((k) => cols[k]))).rows[0];
+  });
+  changed(req);
+  res.json(await one(`${NOTE_SELECT} WHERE n.id=$1`, [note.id]));
+}));
+
+async function loadOwnNote(db, req, id) {
+  const n = (await db.query('SELECT * FROM notes WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, req.user.company_id])).rows[0];
+  if (!n) throw new HttpError(404, 'Registro não encontrado');
+  if (n.user_id !== req.user.id) throw new HttpError(403, 'Só quem criou pode alterar');
+  return n;
+}
+
+app.patch('/api/notes/:id', wrap(async (req, res) => {
+  const u = req.user;
+  const data = cleanNote(req.body || {}, { partial: true });
+  const today = todayIn(u.timezone);
+  await tx(async (db) => {
+    const n = await loadOwnNote(db, req, req.params.id);
+    await assertRefs(db, u.company_id, { business_id: data.business_id, channel_id: data.channel_id });
+    if (n.kind === 'reminder') {
+      if ('title' in data && !data.title) throw new HttpError(400, 'Informe o assunto do lembrete');
+      if ('remind_date' in data && (!data.remind_date || (data.remind_date < today && data.remind_date !== n.remind_date))) throw new HttpError(400, 'Data do lembrete inválida');
+    }
+    const keys = Object.keys(data);
+    if (keys.length) await db.query(`UPDATE notes SET ${keys.map((k, i) => `${k}=$${i + 1}`).join(',')}, updated_at=now() WHERE id=$${keys.length + 1}`, [...keys.map((k) => data[k]), n.id]);
+    // mantém a tarefa do lembrete em sincronia enquanto ela não foi concluída
+    if (n.kind === 'reminder' && n.task_id) {
+      const t = (await db.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE', [n.task_id])).rows[0];
+      if (t && !['done', 'cancelled'].includes(t.status)) {
+        const sets = {};
+        if ('title' in data) sets.title = data.title;
+        if ('remind_time' in data) sets.scheduled_time = data.remind_time;
+        if ('business_id' in data) sets.business_id = data.business_id;
+        if ('channel_id' in data) sets.channel_id = data.channel_id;
+        if ('remind_date' in data && data.remind_date !== t.planned_date) Object.assign(sets, { due_date: data.remind_date, planned_date: data.remind_date, week_start: weekStart(data.remind_date) });
+        const ks = Object.keys(sets);
+        if (ks.length) {
+          await db.query(`UPDATE tasks SET ${ks.map((k, i) => `${k}=$${i + 1}`).join(',')}, updated_at=now() WHERE id=$${ks.length + 1}`, [...ks.map((k) => sets[k]), t.id]);
+          await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: sets.title || t.title, userId: u.id, action: 'updated', details: { from_reminder: true, fields: ks } });
+        }
+      }
+    }
+  });
+  changed(req);
+  res.json(await one(`${NOTE_SELECT} WHERE n.id=$1`, [req.params.id]));
+}));
+
+app.delete('/api/notes/:id', wrap(async (req, res) => {
+  let taskRemoved = false;
+  await tx(async (db) => {
+    const n = await loadOwnNote(db, req, req.params.id);
+    if (n.kind === 'reminder' && n.task_id) {
+      // remove a tarefa só se ainda não foi trabalhada; senão ela fica no histórico
+      const del = await db.query(
+        `DELETE FROM tasks WHERE id=$1 AND status IN ('not_started','late') AND tracked_seconds=0
+           AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.task_id=tasks.id) RETURNING id, title`, [n.task_id]);
+      if (del.rowCount) {
+        taskRemoved = true;
+        await logEvent(db, { companyId: req.user.company_id, taskId: n.task_id, taskTitle: del.rows[0].title, userId: req.user.id, action: 'deleted', details: { from_reminder: true } });
+      }
+    }
+    await db.query('DELETE FROM notes WHERE id=$1', [n.id]);
+  });
+  changed(req);
+  res.json({ ok: true, task_removed: taskRemoved });
+}));
+
+// Resumo do dia de uma pessoa (a própria, ou qualquer colaborador para administradores)
+app.get('/api/summary', wrap(async (req, res) => {
+  const u = req.user;
+  const uid = noteOwner(req);
+  const today = todayIn(u.timezone);
+  const person = await one('SELECT id, name FROM users WHERE id=$1 AND company_id=$2', [uid, u.company_id]);
+  if (!person) throw new HttpError(404, 'Colaborador não encontrado');
+  const counts = await one(
+    `SELECT count(*) FILTER (WHERE due_date=$3 AND status<>'cancelled')::int AS total,
+       count(*) FILTER (WHERE due_date=$3 AND status='done')::int AS done,
+       count(*) FILTER (WHERE due_date=$3 AND status='in_progress')::int AS in_progress,
+       count(*) FILTER (WHERE status NOT IN ('done','cancelled') AND ((kind='daily' AND planned_date < $3) OR (kind='weekly' AND due_date < $3)))::int AS overdue,
+       count(*) FILTER (WHERE kind='weekly' AND week_start=$4 AND status<>'cancelled')::int AS week_total,
+       count(*) FILTER (WHERE kind='weekly' AND week_start=$4 AND status='done')::int AS week_done
+     FROM tasks WHERE company_id=$1 AND assignee_id=$2`, [u.company_id, uid, today, weekStart(today)]);
+  const time = await one(
+    `SELECT COALESCE(sum(CASE WHEN ended_at IS NULL THEN EXTRACT(EPOCH FROM now()-started_at) ELSE seconds END),0)::int AS seconds
+     FROM time_entries WHERE company_id=$1 AND user_id=$2 AND (started_at AT TIME ZONE $4)::date=$3`, [u.company_id, uid, today, u.timezone]);
+  const tl = await timeline({ companyId: u.company_id, date: today, today, userId: uid });
+  const reminders = await many(`${NOTE_SELECT} WHERE n.user_id=$1 AND n.kind='reminder' AND n.remind_date >= $2
+      AND COALESCE(t.status,'') NOT IN ('done','cancelled') ORDER BY n.remind_date, n.remind_time NULLS LAST LIMIT 5`, [uid, today]);
+  const notesToday = await one(`SELECT count(*)::int AS n FROM notes WHERE user_id=$1 AND kind='note' AND (created_at AT TIME ZONE $3)::date=$2`, [uid, today, u.timezone]);
+  res.json({ today, person, counts, seconds: time.seconds, day: tl.people[0]?.metrics || null, work_start: tl.work_start, reminders, notes_today: notesToday.n });
+}));
+
 // ---------- alertas ----------
 app.get('/api/alerts', wrap(async (req, res) => {
   const u = req.user;
@@ -868,7 +1028,15 @@ app.get('/api/alerts', wrap(async (req, res) => {
        AND ( (t.kind='daily' AND t.planned_date < $2) OR (t.kind='weekly' AND t.due_date <= $3) OR (t.kind='daily' AND t.due_date=$2 AND t.priority IN ('high','urgent')) )
      ORDER BY CASE WHEN (t.kind='daily' AND t.planned_date < $2) OR (t.kind='weekly' AND t.due_date < $2) THEN 0 WHEN t.due_date=$2 THEN 1 ELSE 2 END, t.due_date
      LIMIT 50`, params);
-  res.json(rows);
+  const reminders = await many(
+    `SELECT n.id AS note_id, n.task_id AS id, n.title, n.remind_date, to_char(n.remind_time,'HH24:MI') AS remind_time,
+       COALESCE(t.status,'not_started') AS status, 'reminder' AS level, 'reminder' AS kind
+     FROM notes n LEFT JOIN tasks t ON t.id=n.task_id
+     WHERE n.user_id=$1 AND n.kind='reminder' AND n.remind_date <= $2 AND COALESCE(t.status,'') NOT IN ('done','cancelled')
+     ORDER BY n.remind_date, n.remind_time NULLS FIRST LIMIT 20`, [u.id, today]);
+  // a tarefa do lembrete já aparece como lembrete: evita duplicar
+  const ids = new Set(reminders.map((r) => r.id));
+  res.json([...reminders, ...rows.filter((r) => !ids.has(r.id))]);
 }));
 
 // ---------- histórico ----------

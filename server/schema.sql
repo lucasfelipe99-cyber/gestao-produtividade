@@ -175,3 +175,24 @@ CREATE INDEX IF NOT EXISTS tasks_channel ON tasks (channel_id);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_tabs TEXT[];
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS lunch_start TIME NOT NULL DEFAULT '12:00';
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS lunch_end TIME NOT NULL DEFAULT '13:00';
+
+-- ===== v4: apontamentos e lembretes pessoais (aba Resumo) =====
+CREATE TABLE IF NOT EXISTS notes (
+  id            SERIAL PRIMARY KEY,
+  company_id    INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  user_id       INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind          TEXT NOT NULL CHECK (kind IN ('note','reminder')),
+  title         TEXT NOT NULL DEFAULT '',
+  body          TEXT NOT NULL DEFAULT '',
+  pinned        BOOLEAN NOT NULL DEFAULT false,
+  remind_date   DATE,
+  remind_time   TIME,
+  business_id   INT REFERENCES businesses(id) ON DELETE SET NULL,
+  channel_id    INT REFERENCES channels(id) ON DELETE SET NULL,
+  task_id       INT REFERENCES tasks(id) ON DELETE SET NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (kind = 'note' OR remind_date IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS notes_user ON notes (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS notes_remind ON notes (company_id, remind_date) WHERE kind = 'reminder';

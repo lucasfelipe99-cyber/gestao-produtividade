@@ -11,6 +11,7 @@ import Reports from './pages/Reports.jsx';
 import Team from './pages/Team.jsx';
 import History from './pages/History.jsx';
 import Timeline from './pages/Timeline.jsx';
+import Summary from './pages/Summary.jsx';
 import TaskDrawer from './components/TaskDrawer.jsx';
 
 const Ctx = createContext(null);
@@ -52,6 +53,7 @@ function Shell({ me, onLogout }) {
   const logout = async () => { await api('/auth/logout', { method: 'POST' }); onLogout(); };
   const ALL = [
     ['/', 'dashboard', isAdmin ? 'Dashboard' : 'Meu painel', 'dashboard', <Dashboard />],
+    ['/resumo', 'note', 'Resumo', null, <Summary />],
     ['/diarias', 'today', 'Tarefas diárias', 'diarias', <Daily />],
     ['/semanais', 'week', 'Tarefas semanais', 'semanais', <Weekly />],
     ['/linha-do-tempo', 'timeline', 'Linha do tempo', 'linha-do-tempo', <Timeline />],
@@ -151,7 +153,24 @@ function Alerts() {
   const [open, setOpen] = useState(false);
   const list = data || [];
   const overdue = list.filter((a) => a.level === 'overdue').length;
-  const LABEL = { overdue: 'Atrasada', today: 'Vence hoje', tomorrow: 'Vence amanhã' };
+  const LABEL = { overdue: 'Atrasada', today: 'Vence hoje', tomorrow: 'Vence amanhã', reminder: 'Lembrete' };
+  // aviso na hora do lembrete (toast + notificação do navegador, uma vez por lembrete)
+  const { me } = useApp();
+  useTick(30000);
+  useEffect(() => {
+    const now = new Date();
+    const hm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    for (const r of list.filter((a) => a.level === 'reminder')) {
+      const due = r.remind_date < me.today || (r.remind_date === me.today && (!r.remind_time || r.remind_time <= hm));
+      const key = `rem-notified-${r.note_id}-${r.remind_date}`;
+      let seen = false;
+      try { seen = !!localStorage.getItem(key); } catch { /* sem armazenamento */ }
+      if (!due || seen) continue;
+      try { localStorage.setItem(key, '1'); } catch { /* */ }
+      toast(`🔔 Lembrete: ${r.title}`, 'info');
+      try { if (typeof Notification !== 'undefined' && Notification.permission === 'granted') new Notification('Lembrete', { body: r.title }); } catch { /* */ }
+    }
+  });
   return (
     <div className="alerts">
       <button className="icon-btn" onClick={() => setOpen(!open)} aria-label="Alertas">
@@ -164,11 +183,13 @@ function Alerts() {
             <h4>Alertas de prazo</h4>
             {!list.length && <p className="muted pad">Nenhuma tarefa vencida ou próxima do vencimento.</p>}
             {list.map((a) => (
-              <button key={a.id} className="alert-item" onClick={() => { openTask(a.id); setOpen(false); }}>
+              <button key={(a.level === 'reminder' ? 'r' : 't') + (a.note_id || a.id)} className="alert-item" onClick={() => { if (a.id) openTask(a.id); setOpen(false); }}>
                 <span className={'dot ' + a.level} />
                 <span className="grow">
                   <b>{a.title}</b>
-                  <small>{LABEL[a.level]} · {a.kind === 'daily' ? 'planejada ' + fmtDate(a.planned_date) : 'prazo ' + fmtDate(a.due_date)}{a.assignee_name ? ' · ' + a.assignee_name : ''}</small>
+                  <small>{a.level === 'reminder'
+                    ? `Lembrete · ${a.remind_date === me.today ? 'hoje' : fmtDate(a.remind_date)}${a.remind_time ? ' às ' + a.remind_time : ''}`
+                    : <>{LABEL[a.level]} · {a.kind === 'daily' ? 'planejada ' + fmtDate(a.planned_date) : 'prazo ' + fmtDate(a.due_date)}{a.assignee_name ? ' · ' + a.assignee_name : ''}</>}</small>
                 </span>
                 <span className="pill xs" style={{ background: STATUS[a.status].color }}>{STATUS[a.status].label}</span>
               </button>
