@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { api, toast, emitLocal, onLive, useData, STATUS, PRIORITY, fmtDate, fmtDateLong, fmtDateTime, addDays, parseDate } from '../lib.js';
-import { Icon, Card, Loading, Empty, Modal, Field, Pill } from '../ui.jsx';
+import React, { useState } from 'react';
+import { api, toast, emitLocal, useData, STATUS, PRIORITY, fmtDate, fmtDateLong, fmtDateTime, addDays, parseDate } from '../lib.js';
+import { Icon, Card, Loading, Empty, Modal, Field, Pill, Avatar } from '../ui.jsx';
 import { useApp } from '../App.jsx';
 
 const WD = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
@@ -23,12 +23,12 @@ export default function Summary() {
       <div className="page-head">
         <div>
           <h1>Resumo · {name}</h1>
-          <p className="muted">Bloco de notas de {fmtDateLong(day)}{day === me.today && ' · hoje'}{viewingOther && ' · somente leitura'}</p>
+          <p className="muted">Lançamentos de {fmtDateLong(day)}{day === me.today && ' · hoje'}{viewingOther && ' · somente leitura'}</p>
         </div>
         <div className="row gap wrap">
           {isAdmin && (
             <select value={user} onChange={(e) => setUser(e.target.value)}>
-              <option value="">Meu bloco de notas</option>
+              <option value="">Meus lançamentos</option>
               {activeUsers.filter((u) => u.id !== me.id).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select>
           )}
@@ -42,123 +42,64 @@ export default function Summary() {
       </div>
 
       <Notebook key={`${user}-${day}`} day={day} user={viewingOther ? user : ''} onDay={setDay}
-        onReminder={(text) => setRemPrefill({ title: text, at: Date.now() })} />
+        onReminder={(text) => { setRemPrefill({ title: text, at: Date.now() }); setTimeout(() => document.querySelector('.reminders-card')?.scrollIntoView({ behavior: 'smooth' }), 50); }} />
 
       <Reminders viewingOther={viewingOther} user={user} prefill={remPrefill} />
     </div>
   );
 }
 
-// ---------- bloco de notas + resumo por IA ----------
+// ---------- lançamentos do dia (estilo atualizações do Monday) + resumo por IA ----------
+function hm(iso) { const d = new Date(iso); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; }
+
 function Notebook({ day, user, onDay, onReminder }) {
-  const [state, setState] = useState(null);
-  const [content, setContent] = useState('');
-  const [status, setStatus] = useState('idle'); // idle | dirty | saving | saved | error
-  const [savedAt, setSavedAt] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const ta = useRef(null);
-  const timer = useRef(null);
-  const latest = useRef('');
+  const { me, users } = useApp();
   const uq = user ? `&user=${user}` : '';
-
-  const load = useCallback(async (keepText) => {
-    try {
-      const d = await api(`/notepad?date=${day}${uq}`);
-      setState(d);
-      if (!keepText) { setContent(d.pad.content); latest.current = d.pad.content; }
-    } catch (e) { toast(e.message, 'error'); }
-  }, [day, uq]);
-  useEffect(() => { load(false); }, [load]);
-  // atualizações de outras telas (ex.: resumo automático) sem apagar o que está sendo digitado
-  useEffect(() => onLive(() => load(!user)), [load, user]);
-
-  const save = useCallback(async () => {
-    clearTimeout(timer.current);
-    const text = latest.current;
-    setStatus('saving');
-    try {
-      const r = await api(`/notepad/${day}`, { method: 'PUT', body: { content: text } });
-      setSavedAt(r.updated_at);
-      setStatus(latest.current === text ? 'saved' : 'dirty');
-    } catch (e) { setStatus('error'); toast(e.message, 'error'); }
-  }, [day]);
-
-  const onChange = (v) => {
-    setContent(v); latest.current = v; setStatus('dirty');
-    clearTimeout(timer.current);
-    timer.current = setTimeout(save, 1200);
-  };
-  // salva ao sair da tela ou trocar de dia
-  useEffect(() => () => { if (timer.current) { clearTimeout(timer.current); api(`/notepad/${day}`, { method: 'PUT', body: { content: latest.current } }).catch(() => {}); } }, [day]);
-  useEffect(() => {
-    const warn = (e) => { if (status === 'dirty' || status === 'saving') { e.preventDefault(); e.returnValue = ''; } };
-    window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
-  }, [status]);
-
-  const insertAtCursor = (text) => {
-    const el = ta.current; if (!el) return;
-    const s = el.selectionStart, e = el.selectionEnd;
-    const before = content.slice(0, s);
-    const prefix = before && !before.endsWith('\n') ? '\n' : '';
-    const v = before + prefix + text + content.slice(e);
-    onChange(v);
-    requestAnimationFrame(() => { el.focus(); const pos = s + prefix.length + text.length; el.setSelectionRange(pos, pos); });
-  };
-  const stamp = () => { const d = new Date(); insertAtCursor(`${pad2(d.getHours())}:${pad2(d.getMinutes())} `); };
-  const selectionToReminder = () => {
-    const el = ta.current; if (!el) return;
-    const sel = content.slice(el.selectionStart, el.selectionEnd).trim();
-    if (!sel) return toast('Selecione no bloco de notas o trecho que vira lembrete', 'error');
-    onReminder(sel.replace(/\s+/g, ' ').slice(0, 300));
-  };
-
-  const summarize = async () => {
-    if (status === 'dirty') await save();
-    setBusy(true);
-    try { await api(`/notepad/${day}/summarize${user ? `?user=${user}` : ''}`, { method: 'POST' }); await load(true); toast('Resumo organizado', 'success'); }
-    catch (e) { toast(e.message, 'error'); } finally { setBusy(false); }
-  };
-
+  const { data: state, reload } = useData(`/notepad?date=${day}${uq}`, [day, user]);
+  const [busy, setBusy] = useState(false);
   if (!state) return <Loading />;
   const ro = state.readonly;
   const pad = state.pad;
+  const owner = user ? users.find((u) => u.id === Number(user)) : me;
   const outdated = pad.summary && pad.updated_at && pad.summary_at && new Date(pad.updated_at) > new Date(pad.summary_at);
-  const saveLabel = { idle: '', dirty: 'Alterações não salvas…', saving: 'Salvando…', saved: savedAt ? `Salvo às ${fmtDateTime(savedAt).slice(6)}` : 'Salvo', error: 'Erro ao salvar' }[status];
+  const isToday = day === state.today;
+
+  const summarize = async () => {
+    setBusy(true);
+    try { await api(`/notepad/${day}/summarize${user ? `?user=${user}` : ''}`, { method: 'POST' }); await reload(); toast('Resumo organizado', 'success'); }
+    catch (e) { toast(e.message, 'error'); } finally { setBusy(false); }
+  };
 
   return (
     <div className="nb-grid">
-      <Card className="nb-card" title="Bloco de notas" actions={!ro && <>
-        <button className="btn sm" onClick={stamp} title="Inserir o horário atual"><Icon name="clock" size={14} /> Horário</button>
-        <button className="btn sm" onClick={selectionToReminder} title="Transforma o trecho selecionado em lembrete (cria uma tarefa na data)"><Icon name="bell" size={14} /> Seleção → lembrete</button>
-      </>}>
-        <textarea ref={ta} className="notebook" value={content} readOnly={ro} onChange={(e) => onChange(e.target.value)} onBlur={() => status === 'dirty' && save()}
-          placeholder={ro ? 'Sem anotações neste dia.' : 'Anote tudo aqui ao longo do dia, do jeito que vier: o que fez, números, combinados, problemas, ideias…\nNo fim do dia a IA organiza tudo num resumo.'} />
-        <div className="nb-foot">
-          <small className={status === 'error' ? 'danger-text' : 'muted'}>{ro ? 'Somente leitura' : saveLabel}</small>
-          <small className="muted">{content.length.toLocaleString('pt-BR')} caracteres</small>
-        </div>
+      <Card className="nb-card" title={`Lançamentos ${isToday ? 'de hoje' : 'do dia'}`} actions={<small className="muted">{state.entries.length} lançamento(s)</small>}>
+        {!ro && (isToday ? <Composer /> : <div className="warn-box mb">Novos lançamentos entram sempre no dia de hoje. <button className="link" onClick={() => onDay(state.today)}>Ir para hoje</button></div>)}
+        {!state.entries.length ? <Empty>{ro ? 'Nenhum lançamento neste dia.' : isToday ? 'Nenhum lançamento ainda. Escreva o primeiro acima.' : 'Nenhum lançamento neste dia.'}</Empty> : (
+          <ul className="updates">
+            {state.entries.map((e) => <Entry key={e.id} e={e} owner={owner} readonly={ro} onReminder={onReminder} />)}
+          </ul>
+        )}
       </Card>
 
       <div className="nb-side">
-        <Card title="Resumo organizado pela IA" actions={!ro || state.ai ? (
-          <button className="btn sm primary" disabled={busy || !state.ai || !content.trim()} onClick={summarize}>
+        <Card title="Resumo do dia pela IA" actions={(
+          <button className="btn sm primary" disabled={busy || !state.ai || !state.entries.length} onClick={summarize}>
             <Icon name="repeat" size={14} /> {busy ? 'Organizando…' : pad.summary ? 'Atualizar' : 'Organizar agora'}
-          </button>) : null}>
-          {!state.ai && <div className="warn-box">A IA ainda não está configurada no servidor. Peça ao administrador para adicionar a chave <b>ANTHROPIC_API_KEY</b> no Render.</div>}
+          </button>)}>
+          {!state.ai && <div className="warn-box">A IA ainda não está configurada no servidor. É preciso adicionar a chave <b>ANTHROPIC_API_KEY</b> no Render.</div>}
           {pad.summary ? <AiSummary s={pad.summary} /> : (
-            <Empty>{content.trim() ? 'Ainda sem resumo. Ele é gerado automaticamente no fim da jornada, ou clique em “Organizar agora”.' : 'Sem anotações para resumir neste dia.'}</Empty>
+            <Empty>{state.entries.length ? 'Ainda sem resumo. Ele é gerado automaticamente no fim da jornada, ou clique em “Organizar agora”.' : 'Sem lançamentos para resumir neste dia.'}</Empty>
           )}
-          {pad.summary_at && <small className="muted block-mt">Gerado em {fmtDateTime(pad.summary_at)}{outdated && ' · as anotações mudaram depois disso'}</small>}
+          {pad.summary_at && <small className="muted block-mt">Gerado em {fmtDateTime(pad.summary_at)}{outdated && ' · houve lançamentos depois disso'}</small>}
           {pad.summary_error && !pad.summary && <small className="danger-text block-mt">{pad.summary_error}</small>}
         </Card>
 
         {state.days.length > 0 && (
-          <Card title="Dias com anotações">
+          <Card title="Dias com lançamentos">
             <div className="day-chips">
               {state.days.map((d) => (
-                <button key={d.day} className={'day-chip' + (d.day === day ? ' on' : '')} onClick={() => onDay(d.day)} title={`${d.chars} caracteres`}>
-                  {fmtDate(d.day)}{d.has_summary && <Icon name="check" size={12} />}
+                <button key={d.day} className={'day-chip' + (d.day === day ? ' on' : '')} onClick={() => onDay(d.day)} title={`${d.entries} lançamento(s)`}>
+                  {fmtDate(d.day)} <span className="chip-count">{d.entries}</span>{d.has_summary && <Icon name="check" size={12} />}
                 </button>
               ))}
             </div>
@@ -166,6 +107,85 @@ function Notebook({ day, user, onDay, onReminder }) {
         )}
       </div>
     </div>
+  );
+}
+
+function Composer() {
+  const empty = { body: '', business_id: '', channel_id: '' };
+  const [f, setF] = useState(empty);
+  const [focus, setFocus] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const post = async () => {
+    if (!f.body.trim()) return;
+    setBusy(true);
+    try {
+      await api('/notes', { method: 'POST', body: { kind: 'note', body: f.body.trim(), business_id: f.business_id || null, channel_id: f.channel_id || null } });
+      emitLocal(); setF({ ...empty, business_id: f.business_id, channel_id: f.channel_id });
+    } catch (e) { toast(e.message, 'error'); } finally { setBusy(false); }
+  };
+  const open = focus || f.body;
+  return (
+    <div className={'composer' + (open ? ' open' : '')}>
+      <textarea rows={open ? 3 : 1} value={f.body} onChange={set('body')} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
+        placeholder="Escreva uma atualização…" onKeyDown={(e) => (e.ctrlKey || e.metaKey) && e.key === 'Enter' && post()} />
+      {open && (
+        <div className="row gap-s wrap">
+          <BizChannelSelects f={f} set={set} />
+          <span className="grow" />
+          <small className="muted hide-sm">Ctrl + Enter publica</small>
+          <button className="btn primary sm" disabled={busy || !f.body.trim()} onMouseDown={(e) => e.preventDefault()} onClick={post}>Publicar</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Entry({ e, owner, readonly, onReminder }) {
+  const [editing, setEditing] = useState(false);
+  const [f, setF] = useState({ body: e.body, business_id: e.business_id || '', channel_id: e.channel_id || '' });
+  const set = (k) => (ev) => setF({ ...f, [k]: ev.target.value });
+  const edited = new Date(e.updated_at) - new Date(e.created_at) > 60000;
+  const save = async () => {
+    if (!f.body.trim()) return toast('O lançamento não pode ficar vazio', 'error');
+    try { await api(`/notes/${e.id}`, { method: 'PATCH', body: { body: f.body.trim(), business_id: f.business_id || null, channel_id: f.channel_id || null } }); emitLocal(); setEditing(false); }
+    catch (err) { toast(err.message, 'error'); }
+  };
+  const del = async () => {
+    if (!confirm('Excluir este lançamento?')) return;
+    try { await api(`/notes/${e.id}`, { method: 'DELETE' }); emitLocal(); } catch (err) { toast(err.message, 'error'); }
+  };
+  return (
+    <li className="update">
+      <Avatar name={owner?.name} id={owner?.id} size={32} />
+      <div className="grow">
+        <div className="update-head">
+          <b>{owner?.name}</b>
+          <span className="muted">{hm(e.created_at)}{edited && ' · editado'}</span>
+          {e.business_name && <span className="cat small"><i style={{ background: e.business_color }} />{e.business_name}</span>}
+          {e.channel_name && <span className="chan" style={{ background: e.channel_color }}>{e.channel_name}</span>}
+          <span className="grow" />
+          {!readonly && !editing && (
+            <span className="update-actions">
+              <button className="icon-btn sm" title="Virar lembrete para revisar" onClick={() => onReminder(e.body.replace(/\s+/g, ' ').slice(0, 300))}><Icon name="bell" size={14} /></button>
+              <button className="icon-btn sm" title="Editar" onClick={() => setEditing(true)}><Icon name="edit" size={14} /></button>
+              <button className="icon-btn sm" title="Excluir" onClick={del}><Icon name="trash" size={14} /></button>
+            </span>
+          )}
+        </div>
+        {editing ? (
+          <div className="inline-form" style={{ marginTop: 6 }}>
+            <textarea rows={3} value={f.body} onChange={set('body')} autoFocus />
+            <div className="row gap-s wrap">
+              <BizChannelSelects f={f} set={set} />
+              <span className="grow" />
+              <button className="btn sm" onClick={() => setEditing(false)}>Cancelar</button>
+              <button className="btn primary sm" onClick={save}>Salvar</button>
+            </div>
+          </div>
+        ) : <p className="update-body">{e.body}</p>}
+      </div>
+    </li>
   );
 }
 
@@ -206,7 +226,7 @@ function Reminders({ viewingOther, user, prefill }) {
   const { openTask } = useApp();
   const remList = (reminders.data || []).filter((r) => showDone || !['done', 'cancelled'].includes(r.task_status));
   return (
-    <Card title="Lembretes" actions={<>
+    <Card className="reminders-card" title="Lembretes" actions={<>
       {!viewingOther && <NotifyButton />}
       <label className="check small"><input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> mostrar concluídos</label>
     </>}>

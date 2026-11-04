@@ -919,7 +919,9 @@ app.post('/api/notes', wrap(async (req, res) => {
     }
     const cols = { ...data, company_id: u.company_id, user_id: u.id, task_id: taskId };
     const keys = Object.keys(cols);
-    return (await db.query(`INSERT INTO notes (${keys.join(',')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(',')}) RETURNING id`, keys.map((k) => cols[k]))).rows[0];
+    const row = (await db.query(`INSERT INTO notes (${keys.join(',')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(',')}) RETURNING id`, keys.map((k) => cols[k]))).rows[0];
+    if (data.kind === 'note') await touchDay(db, u.company_id, u.id, today);
+    return row;
   });
   changed(req);
   res.json(await one(`${NOTE_SELECT} WHERE n.id=$1`, [note.id]));
@@ -945,6 +947,7 @@ app.patch('/api/notes/:id', wrap(async (req, res) => {
     }
     const keys = Object.keys(data);
     if (keys.length) await db.query(`UPDATE notes SET ${keys.map((k, i) => `${k}=$${i + 1}`).join(',')}, updated_at=now() WHERE id=$${keys.length + 1}`, [...keys.map((k) => data[k]), n.id]);
+    if (n.kind === 'note' && keys.some((k) => k !== 'pinned')) await touchDay(db, u.company_id, u.id, await noteDay(db, n.id));
     // mantém a tarefa do lembrete em sincronia enquanto ela não foi concluída
     if (n.kind === 'reminder' && n.task_id) {
       const t = (await db.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE', [n.task_id])).rows[0];
@@ -981,6 +984,7 @@ app.delete('/api/notes/:id', wrap(async (req, res) => {
         await logEvent(db, { companyId: req.user.company_id, taskId: n.task_id, taskTitle: del.rows[0].title, userId: req.user.id, action: 'deleted', details: { from_reminder: true } });
       }
     }
+    if (n.kind === 'note') await touchDay(db, req.user.company_id, req.user.id, await noteDay(db, n.id));
     await db.query('DELETE FROM notes WHERE id=$1', [n.id]);
   });
   changed(req);
@@ -1012,80 +1016,87 @@ app.get('/api/summary', wrap(async (req, res) => {
   res.json({ today, person, counts, seconds: time.seconds, day: tl.people[0]?.metrics || null, work_start: tl.work_start, reminders, notes_today: notesToday.n });
 }));
 
-// ---------- bloco de notas diário + resumo por IA ----------
-const NOTEPAD_COLS = `id, user_id, to_char(day,'YYYY-MM-DD') AS day, content, summary, summary_at, summary_error, updated_at`;
+// ---------- lançamentos do dia + resumo por IA ----------
+// Os lançamentos ficam em notes (kind='note'); a tabela notepads guarda o resumo de cada pessoa por dia.
+const localDay = (col) => `(${col} AT TIME ZONE (SELECT timezone FROM companies WHERE id=n.company_id))::date`;
+
+// marca o dia como alterado (para o resumo automático refazer)
+async function touchDay(db, companyId, userId, day) {
+  await db.query(
+    `INSERT INTO notepads (company_id, user_id, day) VALUES ($1,$2,$3)
+     ON CONFLICT (user_id, day) DO UPDATE SET updated_at=now()`, [companyId, userId, day]);
+}
+const noteDay = async (db, noteId) => (await db.query(`SELECT to_char(${localDay('n.created_at')},'YYYY-MM-DD') AS d FROM notes n WHERE n.id=$1`, [noteId])).rows[0]?.d;
+
+const SUMMARY_COLS = `to_char(day,'YYYY-MM-DD') AS day, summary, summary_at, summary_error, updated_at`;
 
 app.get('/api/notepad', wrap(async (req, res) => {
   const uid = noteOwner(req);
   const today = todayIn(req.user.timezone);
   const day = isDate(req.query.date) ? req.query.date : today;
   if (uid !== req.user.id) await assertRefs(pool, req.user.company_id, { assignee_id: uid });
-  const pad = await one(`SELECT ${NOTEPAD_COLS} FROM notepads WHERE user_id=$1 AND day=$2`, [uid, day]);
+  const pad = await one(`SELECT ${SUMMARY_COLS} FROM notepads WHERE user_id=$1 AND day=$2`, [uid, day]);
+  const entries = await many(`${NOTE_SELECT} WHERE n.user_id=$1 AND n.kind='note' AND ${localDay('n.created_at')}=$2 ORDER BY n.created_at DESC`, [uid, day]);
   const days = await many(
-    `SELECT to_char(day,'YYYY-MM-DD') AS day, length(content)::int AS chars, (summary IS NOT NULL) AS has_summary
-     FROM notepads WHERE user_id=$1 AND content <> '' ORDER BY day DESC LIMIT 60`, [uid]);
-  res.json({ day, today, ai: aiEnabled(), readonly: uid !== req.user.id,
-    pad: pad || { day, content: '', summary: null, summary_at: null, summary_error: null, updated_at: null }, days });
+    `SELECT to_char(${localDay('n.created_at')},'YYYY-MM-DD') AS day, count(*)::int AS entries
+     FROM notes n WHERE n.user_id=$1 AND n.kind='note' GROUP BY 1 ORDER BY 1 DESC LIMIT 60`, [uid]);
+  const summarized = new Set((await many(`SELECT to_char(day,'YYYY-MM-DD') AS d FROM notepads WHERE user_id=$1 AND summary IS NOT NULL`, [uid])).map((r) => r.d));
+  days.forEach((d) => (d.has_summary = summarized.has(d.day)));
+  res.json({ day, today, ai: aiEnabled(), readonly: uid !== req.user.id, entries, days,
+    pad: pad || { day, summary: null, summary_at: null, summary_error: null, updated_at: null } });
 }));
 
-app.put('/api/notepad/:day', wrap(async (req, res) => {
-  const day = req.params.day;
-  if (!isDate(day)) throw new HttpError(400, 'Data inválida');
-  const content = String(req.body?.content ?? '');
-  if (content.length > 200000) throw new HttpError(400, 'O bloco de notas passou do limite de 200 mil caracteres');
-  const row = await one(
-    `INSERT INTO notepads (company_id, user_id, day, content) VALUES ($1,$2,$3,$4)
-     ON CONFLICT (user_id, day) DO UPDATE SET content=EXCLUDED.content, updated_at=now()
-     RETURNING to_char(day,'YYYY-MM-DD') AS day, updated_at`, [req.user.company_id, req.user.id, day, content]);
-  res.json(row);
-}));
-
-export async function summarizePad(padId) {
-  const p = await one(
-    `SELECT n.*, to_char(n.day,'YYYY-MM-DD') AS day_s, u.name AS person FROM notepads n JOIN users u ON u.id=n.user_id WHERE n.id=$1`, [padId]);
-  if (!p) throw new HttpError(404, 'Bloco de notas não encontrado');
+export async function summarizeDay(companyId, userId, day) {
+  const person = await one('SELECT name FROM users WHERE id=$1', [userId]);
+  const entries = await many(
+    `SELECT to_char(n.created_at AT TIME ZONE c.timezone,'HH24:MI') AS hm, n.title, n.body, b.name AS business, ch.name AS channel
+     FROM notes n JOIN companies c ON c.id=n.company_id LEFT JOIN businesses b ON b.id=n.business_id LEFT JOIN channels ch ON ch.id=n.channel_id
+     WHERE n.user_id=$1 AND n.kind='note' AND (n.created_at AT TIME ZONE c.timezone)::date=$2 ORDER BY n.created_at`, [userId, day]);
+  if (!entries.length) throw new HttpError(400, 'Não há lançamentos neste dia para resumir');
+  const content = entries.map((e) => {
+    const tag = [e.business, e.channel].filter(Boolean).join(' · ');
+    return `${e.hm}${tag ? ` [${tag}]` : ''} ${e.title ? e.title + ' — ' : ''}${e.body}`;
+  }).join('\n');
   const [biz, chans] = await Promise.all([
-    many('SELECT name FROM businesses WHERE company_id=$1 ORDER BY name', [p.company_id]),
-    many('SELECT name FROM channels WHERE company_id=$1 ORDER BY name', [p.company_id]),
+    many('SELECT name FROM businesses WHERE company_id=$1 ORDER BY name', [companyId]),
+    many('SELECT name FROM channels WHERE company_id=$1 ORDER BY name', [companyId]),
   ]);
+  await q(`INSERT INTO notepads (company_id, user_id, day) VALUES ($1,$2,$3) ON CONFLICT (user_id, day) DO NOTHING`, [companyId, userId, day]);
   try {
-    const summary = await summarizeNotes({ content: p.content, personName: p.person, day: p.day_s,
-      businesses: biz.map((b) => b.name), channels: chans.map((c) => c.name) });
-    await q('UPDATE notepads SET summary=$1, summary_at=now(), summary_error=NULL WHERE id=$2', [JSON.stringify(summary), p.id]);
+    const summary = await summarizeNotes({ content, personName: person.name, day, businesses: biz.map((b) => b.name), channels: chans.map((c) => c.name) });
+    await q('UPDATE notepads SET summary=$1, summary_at=now(), summary_error=NULL WHERE user_id=$2 AND day=$3', [JSON.stringify(summary), userId, day]);
   } catch (e) {
-    await q('UPDATE notepads SET summary_error=$1 WHERE id=$2', [e.message.slice(0, 500), p.id]);
+    await q('UPDATE notepads SET summary_error=$1 WHERE user_id=$2 AND day=$3', [e.message.slice(0, 500), userId, day]);
     throw new HttpError(502, e.message);
   }
-  broadcast(p.company_id, { reason: 'notepad' });
+  broadcast(companyId, { reason: 'notepad' });
 }
 
 app.post('/api/notepad/:day/summarize', wrap(async (req, res) => {
   const uid = noteOwner(req);
   if (!isDate(req.params.day)) throw new HttpError(400, 'Data inválida');
   if (!aiEnabled()) throw new HttpError(400, 'A IA ainda não foi configurada no servidor (ANTHROPIC_API_KEY)');
-  const p = await one('SELECT id, content FROM notepads WHERE user_id=$1 AND day=$2 AND company_id=$3', [uid, req.params.day, req.user.company_id]);
-  if (!p || !p.content.trim()) throw new HttpError(400, 'Não há anotações neste dia para resumir');
-  await summarizePad(p.id);
-  res.json(await one(`SELECT ${NOTEPAD_COLS} FROM notepads WHERE id=$1`, [p.id]));
+  if (uid !== req.user.id) await assertRefs(pool, req.user.company_id, { assignee_id: uid });
+  await summarizeDay(req.user.company_id, uid, req.params.day);
+  res.json(await one(`SELECT ${SUMMARY_COLS} FROM notepads WHERE user_id=$1 AND day=$2`, [uid, req.params.day]));
 }));
 
-// Resumo automático "no final": dias anteriores com anotações sem resumo (ou alterados depois do resumo)
+// Resumo automático no fim do dia: dias anteriores, ou hoje após o fim da jornada (sem lançamentos nos últimos 15 min)
 let autoBusy = false;
 async function autoSummarize() {
   if (!aiEnabled() || autoBusy) return;
   autoBusy = true;
   try {
     const pending = await many(
-      `SELECT n.id FROM notepads n JOIN companies c ON c.id=n.company_id
-       WHERE n.content <> ''
-         -- fim do dia: dias anteriores, ou hoje depois do fim da jornada (sem edição nos últimos 15 min)
-         AND (n.day < (now() AT TIME ZONE c.timezone)::date
-              OR (n.day = (now() AT TIME ZONE c.timezone)::date AND (now() AT TIME ZONE c.timezone)::time >= c.work_end))
-         AND n.updated_at < now() - interval '15 minutes'
-         AND (n.summary_at IS NULL OR n.summary_at < n.updated_at)
-         AND (n.summary_error IS NULL OR n.updated_at > now() - interval '1 day')
-       ORDER BY n.day DESC LIMIT 5`);
-    for (const p of pending) { try { await summarizePad(p.id); } catch (e) { console.error('[resumo IA]', e.message); } }
+      `SELECT p.company_id, p.user_id, to_char(p.day,'YYYY-MM-DD') AS day FROM notepads p JOIN companies c ON c.id=p.company_id
+       WHERE (p.day < (now() AT TIME ZONE c.timezone)::date
+              OR (p.day = (now() AT TIME ZONE c.timezone)::date AND (now() AT TIME ZONE c.timezone)::time >= c.work_end))
+         AND p.updated_at < now() - interval '15 minutes'
+         AND (p.summary_at IS NULL OR p.summary_at < p.updated_at)
+         AND (p.summary_error IS NULL OR p.updated_at > now() - interval '1 day')
+         AND EXISTS (SELECT 1 FROM notes n WHERE n.user_id=p.user_id AND n.kind='note' AND (n.created_at AT TIME ZONE c.timezone)::date=p.day)
+       ORDER BY p.day DESC LIMIT 5`);
+    for (const p of pending) { try { await summarizeDay(p.company_id, p.user_id, p.day); } catch (e) { console.error('[resumo IA]', e.message); } }
   } finally { autoBusy = false; }
 }
 setInterval(autoSummarize, 10 * 60 * 1000);

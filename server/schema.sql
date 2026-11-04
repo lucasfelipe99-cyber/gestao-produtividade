@@ -213,16 +213,17 @@ CREATE TABLE IF NOT EXISTS notepads (
 );
 CREATE INDEX IF NOT EXISTS notepads_pending_summary ON notepads (day) WHERE content <> '';
 
--- Migração: apontamentos avulsos do formato anterior viram texto no bloco de notas do dia (executa uma vez)
-WITH g AS (
-  SELECT n.company_id, n.user_id, (n.created_at AT TIME ZONE c.timezone)::date AS d,
-         string_agg(to_char(n.created_at AT TIME ZONE c.timezone, 'HH24:MI') || ' ' ||
-                    CASE WHEN n.title <> '' THEN n.title || ' — ' ELSE '' END || n.body, E'\n' ORDER BY n.created_at) AS txt
-  FROM notes n JOIN companies c ON c.id = n.company_id
-  WHERE n.kind = 'note'
-  GROUP BY 1, 2, 3
+-- Migração: o texto do bloco de notas vira lançamentos separados (uma linha = um lançamento; "HH:MM texto" usa o horário)
+-- Executa uma vez: depois da conversão o texto do bloco é esvaziado.
+WITH lines AS (
+  SELECT p.company_id, p.user_id, l.line,
+         CASE WHEN l.line ~ '^([01]\d|2[0-3]):[0-5]\d '
+              THEN ((p.day::text || ' ' || substr(l.line, 1, 5))::timestamp AT TIME ZONE c.timezone)
+              ELSE p.updated_at + l.n * interval '1 millisecond' END AS ts
+  FROM notepads p JOIN companies c ON c.id = p.company_id
+  CROSS JOIN LATERAL regexp_split_to_table(p.content, E'\n') WITH ORDINALITY AS l(line, n)
+  WHERE p.content <> '' AND btrim(l.line) <> ''
 )
-INSERT INTO notepads (company_id, user_id, day, content)
-SELECT company_id, user_id, d, txt FROM g
-ON CONFLICT (user_id, day) DO UPDATE SET content = notepads.content || E'\n' || EXCLUDED.content, updated_at = now();
-DELETE FROM notes WHERE kind = 'note';
+INSERT INTO notes (company_id, user_id, kind, body, created_at, updated_at)
+SELECT company_id, user_id, 'note', CASE WHEN line ~ '^\d{2}:\d{2} ' THEN substr(line, 7) ELSE line END, ts, ts FROM lines;
+UPDATE notepads SET content = '' WHERE content <> '';
