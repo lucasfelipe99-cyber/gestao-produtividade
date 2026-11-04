@@ -9,7 +9,7 @@ import TaskForm from './TaskForm.jsx';
 const NOTE_KIND = { note: ['Observação', '#579bfc'], difficulty: ['Dificuldade', '#e2445c'], progress: ['Andamento', '#00c875'] };
 
 export default function TaskDrawer({ id, onClose }) {
-  const { isAdmin, me, users, categories, businesses, channels } = useApp();
+  const { isAdmin, me, users, categories, businesses, channels, openTask } = useApp();
   const { data, error } = useData(`/tasks/${id}`, [id]);
   const [tab, setTab] = useState('details');
   const [edit, setEdit] = useState(false);
@@ -22,6 +22,19 @@ export default function TaskDrawer({ id, onClose }) {
   const secs = liveSeconds(task);
   const estSecs = task.estimated_minutes * 60;
   const canStatus = isAdmin || task.assignee_id === me.id;
+  const mine = task.assignee_id === me.id;
+  const ownCreated = mine && task.created_by === me.id;
+  const removeFromDay = async () => {
+    let reason = '';
+    if (!ownCreated) {
+      reason = prompt('Por que esta tarefa vai sair do seu dia? (fica registrado no histórico)') || '';
+      if (!reason.trim()) return;
+    } else if (!confirm('Tirar esta tarefa do seu dia?')) return;
+    try {
+      const r = await api(`/tasks/${id}/remove-from-day`, { method: 'POST', body: { reason } });
+      emitLocal(); toast(r.result === 'deleted' ? 'Tarefa removida do seu dia' : 'Tarefa tirada do seu dia (registrada no histórico)'); onClose();
+    } catch (e) { toast(e.message, 'error'); }
+  };
   const userName = (uid) => users.find((u) => u.id === Number(uid))?.name || '—';
   const catName = (cid) => categories.find((c) => c.id === Number(cid))?.name || '—';
   const refName = (list) => (id) => list.find((c) => c.id === Number(id))?.name || '—';
@@ -54,8 +67,14 @@ export default function TaskDrawer({ id, onClose }) {
             {task.active_started_at && <small className="muted">Cronômetro ativo com {task.active_user_name} desde {fmtDateTime(task.active_started_at)}
               {task.active_subtask_title ? <> · subtarefa <b>{task.active_subtask_title}</b></> : ''}</small>}
           </div>
-          <TaskButtons task={task} />
+          {canStatus && <TaskButtons task={task} />}
         </div>
+        {task.parent_task_id && (
+          <button className="group-banner" onClick={() => openTask(task.parent_task_id)}>
+            <Icon name="share" size={15} /> Entrega para a tarefa <b>“{task.parent_title}”</b>{task.parent_assignee_name ? ` de ${task.parent_assignee_name}` : ''}
+            {task.parent_status && <span className="muted"> · {STATUS[task.parent_status]?.label}</span>}
+          </button>
+        )}
       </div>
 
       <div className="tabs">
@@ -67,6 +86,7 @@ export default function TaskDrawer({ id, onClose }) {
       <div className="drawer-body">
         {tab === 'details' && (
           <>
+            <Partners task={task} />
             <Subtasks task={task} subtasks={data.subtasks} />
             <dl className="details">
               <dt>Responsável</dt><dd className="row gap-s"><Avatar name={task.assignee_name} id={task.assignee_id} size={22} />{task.assignee_name || 'Sem responsável'}</dd>
@@ -86,6 +106,12 @@ export default function TaskDrawer({ id, onClose }) {
             <h4>Descrição</h4>
             <p className="pre">{task.description || <span className="muted">Sem descrição.</span>}</p>
             <NotesField task={task} />
+            {!isAdmin && mine && task.status !== 'cancelled' && (
+              <div className="row gap wrap mt">
+                {ownCreated && <button className="btn" onClick={() => setEdit(true)}><Icon name="edit" size={15} /> Editar</button>}
+                {task.status !== 'done' && <button className="btn danger" onClick={removeFromDay}><Icon name="trash" size={15} /> Tirar do meu dia</button>}
+              </div>
+            )}
             {isAdmin && (
               <div className="row gap wrap mt">
                 <button className="btn" onClick={() => setEdit(true)}><Icon name="edit" size={15} /> Editar</button>
@@ -270,6 +296,8 @@ function EventDetails({ e, userName, catName, bizName, chanName }) {
   if (e.action === 'time_removed') return <div className="small muted">{fmtDur(d.seconds)} removidos</div>;
   if (e.action === 'note_added') return <div className="small muted">{NOTE_KIND[d.kind]?.[0]}</div>;
   if (e.action.startsWith('subtask_')) return <div className="small muted">“{d.subtask}”{d.seconds ? ` · ${fmtDur(d.seconds)}` : ''}</div>;
+  if (['partner_added', 'partner_delivered', 'partner_removed'].includes(e.action)) return <div className="small muted">{d.partner ? `${d.partner}: ` : ''}“{d.partner_task}”{d.due_date ? ` · prazo ${fmtDateFull(d.due_date)}` : ''}{d.reason ? ` · motivo: ${d.reason}` : ''}</div>;
+  if (e.action === 'removed_from_day') return <div className="small muted">Motivo: {d.reason || '—'}</div>;
   if (e.action === 'series_updated') return <div className="small muted">{d.tasks} ocorrência(s) atualizada(s)</div>;
   return null;
 }
@@ -329,6 +357,67 @@ function Subtasks({ task, subtasks }) {
           <input className="grow" value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()}
             placeholder={myTimerHere ? 'Nova subtarefa (começa a contar o tempo na hora)' : 'Adicionar subtarefa'} />
           <button className="btn primary sm" onClick={add}><Icon name="plus" size={14} /></button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Tarefa em grupo: parceiros com a entrega e o prazo de cada um
+function Partners({ task }) {
+  const { isAdmin, me, activeUsers, users, openTask } = useApp();
+  const canAdd = (isAdmin || task.assignee_id === me.id) && !['done', 'cancelled'].includes(task.status) && !task.parent_task_id;
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ user_id: '', title: '', due_date: task.due_date, scheduled_time: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const list = task.partners || [];
+  const directory = useData(open && !isAdmin ? '/users/directory' : null);
+  const people = (isAdmin ? activeUsers : directory.data || []).filter((u) => u.id !== task.assignee_id);
+  const add = async () => {
+    if (!f.user_id || !f.title.trim()) return toast('Escolha o parceiro e descreva a entrega', 'error');
+    try { await api(`/tasks/${task.id}/partners`, { method: 'POST', body: f }); emitLocal(); setOpen(false); setF({ user_id: '', title: '', due_date: task.due_date, scheduled_time: '' }); toast('Parceiro adicionado: a entrega já aparece no dia dele', 'success'); }
+    catch (e) { toast(e.message, 'error'); }
+  };
+  const pending = list.filter((p) => p.status !== 'done').length;
+  if (!list.length && !canAdd) return null;
+  return (
+    <div className="partners">
+      <div className="row between">
+        <h4>Tarefa em grupo {list.length > 0 && <span className="muted">· {pending ? `aguardando ${pending} entrega(s)` : 'todas as entregas concluídas'}</span>}</h4>
+        {canAdd && !open && <button className="btn sm" onClick={() => setOpen(true)}><Icon name="plus" size={14} /> Adicionar parceiro</button>}
+      </div>
+      {list.length > 0 && (
+        <ul>
+          {list.map((p) => (
+            <li key={p.id} className={p.status === 'done' ? 'done' : p.late ? 'late' : ''} onClick={() => openTask(p.id)}>
+              <Avatar name={p.assignee_name} id={p.assignee_id} size={24} />
+              <div className="grow">
+                <b>{p.title}</b>
+                <small className="muted">{p.assignee_name} · prazo {fmtDateFull(p.due_date)}{p.scheduled_time ? ` às ${p.scheduled_time}` : ''}</small>
+              </div>
+              <span className={'tag ' + (p.status === 'done' ? 'ok' : p.late ? 'danger' : 'warn')}>
+                {p.status === 'done' ? 'Entregue' : p.late ? 'Atrasada' : STATUS[p.status]?.label}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {open && (
+        <div className="inline-form">
+          <div className="row gap-s wrap">
+            <select value={f.user_id} onChange={set('user_id')}>
+              <option value="">Colaborador parceiro</option>
+              {people.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+            <input type="date" value={f.due_date} onChange={set('due_date')} title="Prazo de entrega do parceiro" />
+            <input type="time" value={f.scheduled_time} onChange={set('scheduled_time')} title="Horário (opcional)" />
+          </div>
+          <input value={f.title} onChange={set('title')} placeholder="O que o parceiro precisa entregar" onKeyDown={(e) => e.key === 'Enter' && add()} />
+          <div className="row gap-s">
+            <button className="btn primary sm" onClick={add}>Adicionar</button>
+            <button className="btn sm" onClick={() => setOpen(false)}>Cancelar</button>
+            <small className="muted">A entrega vira uma tarefa no dia do parceiro, ligada a esta.</small>
+          </div>
         </div>
       )}
     </div>

@@ -412,3 +412,14 @@ textarea.notebook[readonly] { background: #fafbfc; border-color: var(--border); 
 .update-actions { display: inline-flex; gap: 2px; opacity: .55; } .update:hover .update-actions { opacity: 1; }
 .update-body { margin: 6px 0 0; white-space: pre-wrap; font-size: 14px; line-height: 1.55; word-break: break-word; }
 .chip-count { font-size: 11px; opacity: .75; }
+
+/* Tarefas em grupo */
+.tag.group { background: #ede6fb; color: #6c3fb5; }
+.group-banner { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; background: #f3effd; border: 1px solid #ddd0f7; color: #4b2c86; border-radius: 8px; padding: 9px 12px; font-size: 13px; }
+.group-banner:hover { background: #ebe4fc; }
+.partners { background: #faf8ff; border: 1px solid #e4dcf7; border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px; }
+.partners h4 { margin: 0; }
+.partners ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.partners li { display: flex; gap: 10px; align-items: center; background: #fff; border: 1px solid var(--border); border-left: 4px solid #fdab3d; border-radius: 7px; padding: 7px 10px; cursor: pointer; }
+.partners li.done { border-left-color: #00c875; } .partners li.late { border-left-color: var(--danger); }
+.partners li b { display: block; font-size: 13.5px; font-weight: 500; } .partners li small { font-size: 12px; }

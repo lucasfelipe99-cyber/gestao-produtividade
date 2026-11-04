@@ -227,3 +227,7 @@ WITH lines AS (
 INSERT INTO notes (company_id, user_id, kind, body, created_at, updated_at)
 SELECT company_id, user_id, 'note', CASE WHEN line ~ '^\d{2}:\d{2} ' THEN substr(line, 7) ELSE line END, ts, ts FROM lines;
 UPDATE notepads SET content = '' WHERE content <> '';
+
+-- ===== v6: tarefas em grupo (entrega de parceiro ligada a uma tarefa principal) =====
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS parent_task_id INT REFERENCES tasks(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS tasks_parent ON tasks (parent_task_id) WHERE parent_task_id IS NOT NULL;

@@ -63,6 +63,13 @@ function Badges({ task }) {
       {task.rollover_count > 0 && <span className="tag warn" title={`Planejada para ${fmtDate(task.planned_date)}`}>Transferida {task.rollover_count}x</span>}
       {task.overdue && !task.carried && !task.rollover_count && <span className="tag danger">Vencida</span>}
       {task.recurrence_id && <span className="tag" title="Tarefa recorrente"><Icon name="repeat" size={12} /></span>}
+      {task.parent_task_id && <span className="tag group" title={`Entrega para a tarefa “${task.parent_title || ''}”`}>⇢ Entrega p/ {task.parent_assignee_name?.split(' ')[0] || 'tarefa'}</span>}
+      {task.partners?.map((p) => (
+        <span key={p.id} className={'tag ' + (p.status === 'done' ? 'ok' : p.late ? 'danger' : 'warn')}
+          title={`${p.assignee_name}: ${p.title} · prazo ${p.due_date.slice(8)}/${p.due_date.slice(5, 7)}`}>
+          {p.status === 'done' ? '✓' : '⏳'} {p.assignee_name?.split(' ')[0]} {p.status === 'done' ? 'entregou' : `${p.due_date.slice(8)}/${p.due_date.slice(5, 7)}`}
+        </span>
+      ))}
       {task.subtasks_total > 0 && <span className={'tag' + (task.subtasks_done === task.subtasks_total ? ' ok' : '')} title="Subtarefas concluídas"><Icon name="list" size={12} />{task.subtasks_done}/{task.subtasks_total}</span>}
       {task.active_subtask_title && <span className="tag primary" title="Subtarefa em andamento">▶ {task.active_subtask_title}</span>}
     </span>

@@ -52,7 +52,7 @@ export async function migrate() {
 export async function logEvent(db, { companyId, taskId, taskTitle, userId, action, details = {} }) {
   await db.query(
     `INSERT INTO task_events (company_id, task_id, task_title, user_id, action, details)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
+     VALUES ($1,$2,COALESCE($3::text,(SELECT title FROM tasks WHERE id=$2::int)),$4,$5,$6)`,
     [companyId, taskId ?? null, taskTitle ?? null, userId ?? null, action, JSON.stringify(details)]
   );
 }

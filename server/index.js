@@ -70,14 +70,20 @@ function visibilitySql(user, alias = 't', startIdx) {
   };
 }
 
-async function loadTask(db, req, id, { forUpdate = false } = {}) {
+async function loadTask(db, req, id, { forUpdate = false, related = false } = {}) {
   const t = (await db.query(`SELECT * FROM tasks WHERE id=$1 AND company_id=$2 ${forUpdate ? 'FOR UPDATE' : ''}`, [id, req.user.company_id])).rows[0];
   if (!t) throw new HttpError(404, 'Tarefa não encontrada');
   const u = req.user;
-  if (!isAdmin(u) && t.assignee_id !== u.id) {
+  if (!isAdmin(u) && t.assignee_id !== u.id && !(related && await isRelated(db, t, u.id))) {
     throw new HttpError(403, 'Sem acesso a esta tarefa');
   }
   return t;
+}
+// Em tarefas em grupo, quem tem uma entrega pode ver a principal, e o dono da principal vê as entregas
+async function isRelated(db, t, userId) {
+  if (t.created_by === userId) return true;
+  if (t.parent_task_id && (await db.query('SELECT 1 FROM tasks WHERE id=$1 AND assignee_id=$2', [t.parent_task_id, userId])).rowCount) return true;
+  return (await db.query('SELECT 1 FROM tasks WHERE parent_task_id=$1 AND assignee_id=$2', [t.id, userId])).rowCount > 0;
 }
 
 const TASK_SELECT = `
@@ -87,8 +93,16 @@ const TASK_SELECT = `
     a.user_id AS active_user_id, au.name AS active_user_name, a.started_at AS active_started_at,
     a.subtask_id AS active_subtask_id, ast.title AS active_subtask_title,
     COALESCE(sc.total, 0) AS subtasks_total, COALESCE(sc.done, 0) AS subtasks_done,
-    (t.status NOT IN ('done','cancelled') AND ((t.kind='daily' AND t.planned_date < $TODAY) OR (t.kind='weekly' AND t.due_date < $TODAY))) AS overdue
+    (t.status NOT IN ('done','cancelled') AND ((t.kind='daily' AND t.planned_date < $TODAY) OR (t.kind='weekly' AND t.due_date < $TODAY))) AS overdue,
+    pt.title AS parent_title, pt.assignee_id AS parent_assignee_id, pu.name AS parent_assignee_name, pt.status AS parent_status,
+    dep.items AS partners
   FROM tasks t
+  LEFT JOIN tasks pt ON pt.id=t.parent_task_id
+  LEFT JOIN users pu ON pu.id=pt.assignee_id
+  LEFT JOIN LATERAL (SELECT json_agg(json_build_object('id', d.id, 'title', d.title, 'assignee_id', d.assignee_id, 'assignee_name', du.name,
+      'due_date', to_char(d.due_date,'YYYY-MM-DD'), 'scheduled_time', to_char(d.scheduled_time,'HH24:MI'), 'status', d.status,
+      'completed_at', d.completed_at, 'late', d.status NOT IN ('done','cancelled') AND d.due_date < $TODAY) ORDER BY d.due_date, d.id) AS items
+    FROM tasks d LEFT JOIN users du ON du.id=d.assignee_id WHERE d.parent_task_id=t.id AND d.status<>'cancelled') dep ON TRUE
   LEFT JOIN users u ON u.id=t.assignee_id
   LEFT JOIN users cb ON cb.id=t.created_by
   LEFT JOIN categories c ON c.id=t.category_id
@@ -215,6 +229,11 @@ app.get('/api/users', wrap(async (req, res) => {
      ORDER BY u.active DESC, u.name`, isAdmin(req.user) ? [req.user.company_id] : [req.user.company_id, req.user.id]));
 }));
 
+// Lista mínima (só nomes) dos colegas ativos, para escolher parceiro em tarefa em grupo
+app.get('/api/users/directory', wrap(async (req, res) => {
+  res.json(await many('SELECT id, name FROM users WHERE company_id=$1 AND active ORDER BY name', [req.user.company_id]));
+}));
+
 app.post('/api/users', adminOnly, wrap(async (req, res) => {
   const { name, email, password, role = 'member', team_id, allowed_tabs } = req.body || {};
   if (!name?.trim() || !email?.trim()) throw new HttpError(400, 'Informe nome e e-mail');
@@ -335,7 +354,7 @@ app.get('/api/tasks', wrap(async (req, res) => {
 }));
 
 app.get('/api/tasks/:id', wrap(async (req, res) => {
-  await loadTask(pool, req, req.params.id);
+  await loadTask(pool, req, req.params.id, { related: true });
   const task = await fetchTask(req.params.id, req);
   const entries = await many(
     `SELECT e.*, u.name AS user_name, s.title AS subtask_title FROM time_entries e JOIN users u ON u.id=e.user_id
@@ -357,9 +376,14 @@ app.get('/api/tasks/:id', wrap(async (req, res) => {
   res.json({ task, entries, notes, events, recurrence, subtasks });
 }));
 
-app.post('/api/tasks', adminOnly, wrap(async (req, res) => {
+app.post('/api/tasks', wrap(async (req, res) => {
   const data = cleanTask(req.body || {});
   data.kind = data.kind || 'daily';
+  if (!isAdmin(req.user)) { // colaborador: tarefa sempre dele, sem recorrência
+    data.assignee_id = req.user.id;
+    data.team_id = req.user.team_id || null;
+    req.body.recurrence = null;
+  }
   const recurrence = req.body.recurrence;
   if (recurrence && !['daily', 'weekly', 'monthly'].includes(recurrence)) throw new HttpError(400, 'Recorrência inválida');
   const task = await tx(async (db) => {
@@ -395,7 +419,12 @@ app.patch('/api/tasks/:id', wrap(async (req, res) => {
   const u = req.user;
   let data = cleanTask(req.body || {}, { partial: true });
   const applySeries = isAdmin(u) && !!req.body?.apply_to_series;
-  if (!isAdmin(u)) {
+  const own = !isAdmin(u) && (await one('SELECT 1 AS ok FROM tasks WHERE id=$1 AND created_by=$2 AND assignee_id=$2', [req.params.id, u.id]))?.ok;
+  if (!isAdmin(u) && own) {
+    // tarefa criada pelo próprio colaborador: pode editar tudo, menos o responsável
+    delete data.assignee_id; delete data.team_id;
+    if (data.status && !['not_started', 'paused', 'in_progress', 'done'].includes(data.status)) throw new HttpError(403, 'Status não permitido');
+  } else if (!isAdmin(u)) {
     // colaborador: pode atualizar andamento (status) e observações
     const allowed = {};
     if ('notes' in data) allowed.notes = data.notes;
@@ -455,15 +484,74 @@ app.patch('/api/tasks/:id', wrap(async (req, res) => {
   res.json(await fetchTask(req.params.id, req));
 }));
 
-app.delete('/api/tasks/:id', adminOnly, wrap(async (req, res) => {
+app.delete('/api/tasks/:id', wrap(async (req, res) => {
   await tx(async (db) => {
-    const t = await loadTask(db, req, req.params.id, { forUpdate: true });
+    const t = await loadTask(db, req, req.params.id, { forUpdate: true, related: true });
+    if (!isAdmin(req.user) && t.created_by !== req.user.id) throw new HttpError(403, 'Só é possível excluir tarefas que você criou. Use "Tirar do meu dia".');
+    if (t.parent_task_id) await logEvent(db, { companyId: req.user.company_id, taskId: t.parent_task_id, userId: req.user.id, action: 'partner_removed', details: { partner_task: t.title, assignee_id: t.assignee_id } });
     await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'deleted',
       details: { planned_date: t.planned_date, assignee_id: t.assignee_id, tracked_seconds: t.tracked_seconds } });
     await db.query('DELETE FROM tasks WHERE id=$1', [t.id]);
   });
   changed(req);
   res.json({ ok: true });
+}));
+
+// Colaborador tira uma tarefa do próprio dia: se ele criou, exclui; se foi atribuída, cancela com motivo (fica no histórico)
+app.post('/api/tasks/:id/remove-from-day', wrap(async (req, res) => {
+  const reason = String(req.body?.reason || '').trim().slice(0, 500);
+  let result;
+  await tx(async (db) => {
+    const t = await loadTask(db, req, req.params.id, { forUpdate: true });
+    if (t.status === 'done') throw new HttpError(400, 'Tarefa já concluída');
+    const open = (await db.query('SELECT 1 FROM time_entries WHERE task_id=$1 AND ended_at IS NULL', [t.id])).rowCount;
+    if (open) throw new HttpError(400, 'Pause o cronômetro antes de tirar a tarefa do dia');
+    if (t.created_by === req.user.id && !t.tracked_seconds) {
+      await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'deleted', details: { by_assignee: true } });
+      if (t.parent_task_id) await logEvent(db, { companyId: req.user.company_id, taskId: t.parent_task_id, userId: req.user.id, action: 'partner_removed', details: { partner_task: t.title } });
+      await db.query('DELETE FROM tasks WHERE id=$1', [t.id]);
+      result = 'deleted';
+    } else {
+      if (!reason && !isAdmin(req.user)) throw new HttpError(400, 'Informe o motivo para tirar esta tarefa do seu dia');
+      await db.query(`UPDATE tasks SET status='cancelled', updated_at=now() WHERE id=$1`, [t.id]);
+      await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'removed_from_day', details: { reason, previous_status: t.status } });
+      if (t.parent_task_id) await logEvent(db, { companyId: req.user.company_id, taskId: t.parent_task_id, userId: req.user.id, action: 'partner_removed', details: { partner_task: t.title, reason } });
+      result = 'cancelled';
+    }
+  });
+  changed(req);
+  res.json({ ok: true, result });
+}));
+
+// Tarefas em grupo: adiciona um parceiro com a entrega e o prazo dele (vira uma tarefa no dia do parceiro)
+app.post('/api/tasks/:id/partners', wrap(async (req, res) => {
+  const b = req.body || {};
+  const partnerId = parseInt(b.user_id, 10);
+  const title = String(b.title || '').trim().slice(0, 300);
+  if (!partnerId) throw new HttpError(400, 'Escolha o colaborador parceiro');
+  if (!title) throw new HttpError(400, 'Descreva o que o parceiro precisa entregar');
+  if (!isDate(b.due_date)) throw new HttpError(400, 'Informe o prazo de entrega do parceiro');
+  if (b.scheduled_time && !/^\d{2}:\d{2}$/.test(b.scheduled_time)) throw new HttpError(400, 'Horário inválido');
+  let child;
+  await tx(async (db) => {
+    const t = await loadTask(db, req, req.params.id, { forUpdate: true });
+    if (!isAdmin(req.user) && t.assignee_id !== req.user.id) throw new HttpError(403, 'Só o responsável pela tarefa ou um administrador adiciona parceiros');
+    if (['done', 'cancelled'].includes(t.status)) throw new HttpError(400, 'A tarefa já foi encerrada');
+    const partner = (await db.query('SELECT id, name FROM users WHERE id=$1 AND company_id=$2 AND active', [partnerId, req.user.company_id])).rows[0];
+    if (!partner) throw new HttpError(400, 'Colaborador inválido');
+    const owner = t.assignee_id ? (await db.query('SELECT name FROM users WHERE id=$1', [t.assignee_id])).rows[0]?.name : null;
+    child = await insertTaskFromTemplate(db, req.user.company_id, {
+      kind: 'daily', title, assignee_id: partner.id, team_id: null, category_id: t.category_id, business_id: t.business_id, channel_id: t.channel_id,
+      priority: t.priority, scheduled_time: b.scheduled_time || null, estimated_minutes: Number(b.estimated_minutes) || 0,
+      description: [`Entrega para a tarefa “${t.title}”${owner ? ` de ${owner}` : ''}.`, String(b.description || '').trim()].filter(Boolean).join('\n\n'),
+    }, b.due_date, null, req.user.id);
+    await db.query('UPDATE tasks SET parent_task_id=$1 WHERE id=$2', [t.id, child.id]);
+    await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'partner_added',
+      details: { partner: partner.name, partner_task: title, due_date: b.due_date } });
+    await logEvent(db, { companyId: req.user.company_id, taskId: child.id, taskTitle: title, userId: req.user.id, action: 'created', details: { partner_of: t.id } });
+  });
+  changed(req);
+  res.json(await fetchTask(child.id, req));
 }));
 
 app.post('/api/recurrences/:id/stop', adminOnly, wrap(async (req, res) => {
@@ -564,6 +652,7 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
       `UPDATE tasks SET status='done', completed_at=now(), updated_at=now() WHERE id=$1 RETURNING tracked_seconds`, [t.id])).rows[0];
     await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: t.title, userId: u.id, action: 'finished',
       details: { last_period_seconds: secs, total_seconds: r.tracked_seconds } });
+    if (t.parent_task_id) await logEvent(db, { companyId: u.company_id, taskId: t.parent_task_id, userId: u.id, action: 'partner_delivered', details: { partner_task: t.title } });
   });
   changed(req);
   res.json(await fetchTask(req.params.id, req));
@@ -629,7 +718,7 @@ app.post('/api/tasks/:id/notes', wrap(async (req, res) => {
   const kind = ['note', 'difficulty', 'progress'].includes(req.body?.kind) ? req.body.kind : 'note';
   if (!body) throw new HttpError(400, 'Escreva a observação');
   await tx(async (db) => {
-    const t = await loadTask(db, req, req.params.id);
+    const t = await loadTask(db, req, req.params.id, { related: true }); // parceiros de tarefa em grupo também comentam
     await db.query('INSERT INTO task_notes (company_id, task_id, user_id, kind, body) VALUES ($1,$2,$3,$4,$5)', [req.user.company_id, t.id, req.user.id, kind, body.slice(0, 5000)]);
     await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'note_added', details: { kind } });
   });

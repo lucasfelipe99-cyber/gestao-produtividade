@@ -91,6 +91,8 @@ export const ACTIONS = {
   subtask_added: 'adicionou a subtarefa', subtask_started: 'iniciou a subtarefa', subtask_finished: 'concluiu a subtarefa',
   subtask_reopened: 'reabriu a subtarefa', subtask_removed: 'removeu a subtarefa',
   series_updated: 'aplicou as alterações às próximas ocorrências de', recurrence_stopped: 'encerrou uma recorrência',
+  partner_added: 'adicionou um parceiro em', partner_delivered: 'concluiu sua entrega para', partner_removed: 'removeu uma entrega de parceiro de',
+  removed_from_day: 'tirou do dia a tarefa',
 };
 export const FIELD = {
   title: 'Nome', description: 'Descrição', assignee_id: 'Responsável', team_id: 'Equipe', category_id: 'Categoria', shared: 'Compartilhada',

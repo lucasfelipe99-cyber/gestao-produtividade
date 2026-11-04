@@ -35,7 +35,7 @@ export default function Weekly() {
             <button className="icon-btn" onClick={() => setWs(addDays(ws, 7))}><Icon name="right" /></button>
             {!thisWeek && <button className="btn sm" onClick={() => setWs(weekStart(me.today))}>Semana atual</button>}
           </div>
-          {isAdmin && <button className="btn primary" onClick={() => setCreating(true)}><Icon name="plus" /> Nova tarefa semanal</button>}
+          <button className="btn primary" onClick={() => setCreating(true)}><Icon name="plus" /> {isAdmin ? 'Nova tarefa semanal' : 'Adicionar à minha semana'}</button>
         </div>
       </div>
 

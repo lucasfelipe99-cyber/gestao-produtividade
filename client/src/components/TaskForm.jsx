@@ -4,7 +4,7 @@ import { Modal, Field } from '../ui.jsx';
 import { useApp } from '../App.jsx';
 
 export default function TaskForm({ initial = {}, onClose, onSaved }) {
-  const { activeUsers, categories, teams, me, businesses, channels } = useApp();
+  const { activeUsers, categories, teams, me, businesses, channels, isAdmin } = useApp();
   const editing = !!initial.id;
   const [f, setF] = useState({
     title: '', description: '', kind: 'daily', assignee_id: '', team_id: '', category_id: '', business_id: '', channel_id: '', priority: 'medium',
@@ -37,7 +37,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
   };
 
   return (
-    <Modal title={editing ? 'Editar tarefa' : 'Nova tarefa'} onClose={onClose} wide
+    <Modal title={editing ? 'Editar tarefa' : isAdmin ? 'Nova tarefa' : 'Adicionar tarefa ao meu dia'} onClose={onClose} wide
       footer={<><button className="btn" onClick={onClose}>Cancelar</button><button className="btn primary" disabled={busy} onClick={save}>{editing ? 'Salvar alterações' : 'Criar tarefa'}</button></>}>
       <div className="grid-form">
         <Field label="Nome da tarefa *"><input autoFocus value={f.title} onChange={set('title')} placeholder="Ex.: Atualizar preços no Mercado Livre" /></Field>
@@ -57,6 +57,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
             {channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </Field>
+        {isAdmin && (<>
         <Field label="Responsável">
           <select value={f.assignee_id || ''} onChange={set('assignee_id')}>
             <option value="">— Sem responsável (só administradores veem) —</option>
@@ -69,6 +70,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
             {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
         </Field>
+        </>)}
         <Field label={f.kind === 'daily' ? 'Data de execução' : 'Prazo de conclusão'}><input type="date" value={f.due_date} onChange={set('due_date')} /></Field>
         <Field label="Horário previsto"><input type="time" value={f.scheduled_time} onChange={set('scheduled_time')} /></Field>
         <Field label="Prioridade">
@@ -86,7 +88,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
             <input type="number" min="0" max="59" value={estM} onChange={(e) => setEstM(e.target.value)} placeholder="0" /> <span>min</span>
           </div>
         </Field>
-        {!editing && (
+        {!editing && isAdmin && (
           <Field label="Recorrência" hint="As ocorrências dos próximos 3 meses já ficam criadas no calendário (e o sistema vai estendendo automaticamente)">
             <select value={f.recurrence} onChange={set('recurrence')}>
               <option value="">Não se repete</option><option value="daily">Diariamente (dias úteis)</option>

@@ -39,7 +39,7 @@ export default function Daily() {
             <button className="icon-btn" onClick={() => setDate(view === 'calendar' ? addDays(monthEnd(date), 1) : addDays(date, 1))}><Icon name="right" /></button>
             {date !== me.today && <button className="btn sm" onClick={() => setDate(me.today)}>Hoje</button>}
           </div>
-          {isAdmin && <button className="btn primary" onClick={() => setCreating(true)}><Icon name="plus" /> Nova tarefa</button>}
+          <button className="btn primary" onClick={() => setCreating(true)}><Icon name="plus" /> {isAdmin ? 'Nova tarefa' : 'Adicionar ao meu dia'}</button>
         </div>
       </div>
 
