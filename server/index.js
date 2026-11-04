@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { pool, q, one, many, tx, migrate, logEvent, subscribe, broadcast } from './db.js';
 import { runAutomationForCompany, startAutomationLoop, ensureAutomation, insertTaskFromTemplate, generateRecurrence, nextOccurrence, RECURRENCE_HORIZON_DAYS } from './automation.js';
 import { timeline } from './timeline.js';
+import { aiEnabled, summarizeNotes } from './ai.js';
 import { dashboard, report, attainment, perUser, weeklySeries } from './metrics.js';
 import { todayIn, addDays, weekStart, isDate, isBusinessDay, addMonths } from './dates.js';
 import { buildWorkbook } from './export.js';
@@ -1010,6 +1011,85 @@ app.get('/api/summary', wrap(async (req, res) => {
   const notesToday = await one(`SELECT count(*)::int AS n FROM notes WHERE user_id=$1 AND kind='note' AND (created_at AT TIME ZONE $3)::date=$2`, [uid, today, u.timezone]);
   res.json({ today, person, counts, seconds: time.seconds, day: tl.people[0]?.metrics || null, work_start: tl.work_start, reminders, notes_today: notesToday.n });
 }));
+
+// ---------- bloco de notas diário + resumo por IA ----------
+const NOTEPAD_COLS = `id, user_id, to_char(day,'YYYY-MM-DD') AS day, content, summary, summary_at, summary_error, updated_at`;
+
+app.get('/api/notepad', wrap(async (req, res) => {
+  const uid = noteOwner(req);
+  const today = todayIn(req.user.timezone);
+  const day = isDate(req.query.date) ? req.query.date : today;
+  if (uid !== req.user.id) await assertRefs(pool, req.user.company_id, { assignee_id: uid });
+  const pad = await one(`SELECT ${NOTEPAD_COLS} FROM notepads WHERE user_id=$1 AND day=$2`, [uid, day]);
+  const days = await many(
+    `SELECT to_char(day,'YYYY-MM-DD') AS day, length(content)::int AS chars, (summary IS NOT NULL) AS has_summary
+     FROM notepads WHERE user_id=$1 AND content <> '' ORDER BY day DESC LIMIT 60`, [uid]);
+  res.json({ day, today, ai: aiEnabled(), readonly: uid !== req.user.id,
+    pad: pad || { day, content: '', summary: null, summary_at: null, summary_error: null, updated_at: null }, days });
+}));
+
+app.put('/api/notepad/:day', wrap(async (req, res) => {
+  const day = req.params.day;
+  if (!isDate(day)) throw new HttpError(400, 'Data inválida');
+  const content = String(req.body?.content ?? '');
+  if (content.length > 200000) throw new HttpError(400, 'O bloco de notas passou do limite de 200 mil caracteres');
+  const row = await one(
+    `INSERT INTO notepads (company_id, user_id, day, content) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (user_id, day) DO UPDATE SET content=EXCLUDED.content, updated_at=now()
+     RETURNING to_char(day,'YYYY-MM-DD') AS day, updated_at`, [req.user.company_id, req.user.id, day, content]);
+  res.json(row);
+}));
+
+export async function summarizePad(padId) {
+  const p = await one(
+    `SELECT n.*, to_char(n.day,'YYYY-MM-DD') AS day_s, u.name AS person FROM notepads n JOIN users u ON u.id=n.user_id WHERE n.id=$1`, [padId]);
+  if (!p) throw new HttpError(404, 'Bloco de notas não encontrado');
+  const [biz, chans] = await Promise.all([
+    many('SELECT name FROM businesses WHERE company_id=$1 ORDER BY name', [p.company_id]),
+    many('SELECT name FROM channels WHERE company_id=$1 ORDER BY name', [p.company_id]),
+  ]);
+  try {
+    const summary = await summarizeNotes({ content: p.content, personName: p.person, day: p.day_s,
+      businesses: biz.map((b) => b.name), channels: chans.map((c) => c.name) });
+    await q('UPDATE notepads SET summary=$1, summary_at=now(), summary_error=NULL WHERE id=$2', [JSON.stringify(summary), p.id]);
+  } catch (e) {
+    await q('UPDATE notepads SET summary_error=$1 WHERE id=$2', [e.message.slice(0, 500), p.id]);
+    throw new HttpError(502, e.message);
+  }
+  broadcast(p.company_id, { reason: 'notepad' });
+}
+
+app.post('/api/notepad/:day/summarize', wrap(async (req, res) => {
+  const uid = noteOwner(req);
+  if (!isDate(req.params.day)) throw new HttpError(400, 'Data inválida');
+  if (!aiEnabled()) throw new HttpError(400, 'A IA ainda não foi configurada no servidor (ANTHROPIC_API_KEY)');
+  const p = await one('SELECT id, content FROM notepads WHERE user_id=$1 AND day=$2 AND company_id=$3', [uid, req.params.day, req.user.company_id]);
+  if (!p || !p.content.trim()) throw new HttpError(400, 'Não há anotações neste dia para resumir');
+  await summarizePad(p.id);
+  res.json(await one(`SELECT ${NOTEPAD_COLS} FROM notepads WHERE id=$1`, [p.id]));
+}));
+
+// Resumo automático "no final": dias anteriores com anotações sem resumo (ou alterados depois do resumo)
+let autoBusy = false;
+async function autoSummarize() {
+  if (!aiEnabled() || autoBusy) return;
+  autoBusy = true;
+  try {
+    const pending = await many(
+      `SELECT n.id FROM notepads n JOIN companies c ON c.id=n.company_id
+       WHERE n.content <> ''
+         -- fim do dia: dias anteriores, ou hoje depois do fim da jornada (sem edição nos últimos 15 min)
+         AND (n.day < (now() AT TIME ZONE c.timezone)::date
+              OR (n.day = (now() AT TIME ZONE c.timezone)::date AND (now() AT TIME ZONE c.timezone)::time >= c.work_end))
+         AND n.updated_at < now() - interval '15 minutes'
+         AND (n.summary_at IS NULL OR n.summary_at < n.updated_at)
+         AND (n.summary_error IS NULL OR n.updated_at > now() - interval '1 day')
+       ORDER BY n.day DESC LIMIT 5`);
+    for (const p of pending) { try { await summarizePad(p.id); } catch (e) { console.error('[resumo IA]', e.message); } }
+  } finally { autoBusy = false; }
+}
+setInterval(autoSummarize, 10 * 60 * 1000);
+setTimeout(autoSummarize, 30000);
 
 // ---------- alertas ----------
 app.get('/api/alerts', wrap(async (req, res) => {

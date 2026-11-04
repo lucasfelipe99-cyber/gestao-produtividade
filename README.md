@@ -7,7 +7,8 @@ Sistema SaaS de gestão de tarefas e produtividade para equipes de e-commerce, i
 - **Multiempresa**: cada empresa tem seus dados isolados. Quem cria a conta da empresa vira administrador.
 - **Perfis**: Administrador vê e gerencia todas as tarefas, tempos e indicadores. Colaborador acessa **somente as próprias tarefas, registros de tempo, metas, relatórios e histórico** (iniciar/pausar/finalizar, observações, desempenho próprio).
 - **Empresas atendidas e canais de marketplace**: a mesma equipe pode trabalhar para várias empresas; cada tarefa pode ser vinculada a uma empresa e a um canal (Mercado Livre, Shopee, Amazon...), com filtros, agrupamento, indicadores e exportação por empresa e por canal.
-- **Aba Resumo**: cada colaborador vê o resumo do seu dia (tarefas, atrasadas, tempo apontado, início do dia, próximo lembrete), registra apontamentos (com empresa/canal, fixar, busca) e agenda lembretes; cada lembrete cria automaticamente uma tarefa para a pessoa na data e hora marcadas, que acompanha as alterações do lembrete. Aviso no sino e notificação do navegador na hora do lembrete. Administradores consultam o resumo de qualquer colaborador (somente leitura).
+- **Aba Resumo**: bloco de notas diário de cada colaborador (salva sozinho, inserir horário, histórico por dia) e resumo organizado por IA (Claude) — por empresa/canal, feito, pendências, problemas e números — gerado automaticamente no fim da jornada ou sob demanda. Lembretes para revisar criam uma tarefa na data marcada (um trecho do bloco de notas pode virar lembrete). Administradores leem o resumo de qualquer colaborador.
+  Para ativar a IA: variável `ANTHROPIC_API_KEY` (opcional `AI_MODEL`, padrão `claude-haiku-5-5`).
 - **Permissão de abas**: o administrador escolhe quais abas cada colaborador acessa (bloqueado também na API).
 - **Tarefas diárias e semanais**: visualização em tabela agrupada (status, colaborador ou equipe), Kanban com arrastar e soltar, e calendário mensal.
 - **Subtarefas com tempo próprio**: cada tarefa pode ter subtarefas; o tempo de cada subtarefa compõe o tempo da tarefa principal. Se o cronômetro da tarefa está rodando e uma subtarefa é adicionada, o tempo passa a contar nela imediatamente; ao concluir a subtarefa o cronômetro segue na tarefa principal.
@@ -54,5 +55,6 @@ O arquivo `render.yaml` cria o banco PostgreSQL e o web service. Variáveis nece
 | `DATABASE_URL` | URL de conexão do PostgreSQL |
 | `JWT_SECRET` | Segredo para assinar as sessões |
 | `NODE_ENV` | `production` |
+| `ANTHROPIC_API_KEY` | Chave da API da Anthropic para o resumo por IA (opcional) |
 
 Build: `npm install && npm run build` · Start: `npm start` · Health check: `/healthz`

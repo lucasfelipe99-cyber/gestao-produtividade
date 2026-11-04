@@ -196,3 +196,33 @@ CREATE TABLE IF NOT EXISTS notes (
 );
 CREATE INDEX IF NOT EXISTS notes_user ON notes (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS notes_remind ON notes (company_id, remind_date) WHERE kind = 'reminder';
+
+-- ===== v5: bloco de notas diário com resumo por IA =====
+CREATE TABLE IF NOT EXISTS notepads (
+  id             SERIAL PRIMARY KEY,
+  company_id     INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  user_id        INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day            DATE NOT NULL,
+  content        TEXT NOT NULL DEFAULT '',
+  summary        JSONB,
+  summary_at     TIMESTAMPTZ,
+  summary_error  TEXT,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, day)
+);
+CREATE INDEX IF NOT EXISTS notepads_pending_summary ON notepads (day) WHERE content <> '';
+
+-- Migração: apontamentos avulsos do formato anterior viram texto no bloco de notas do dia (executa uma vez)
+WITH g AS (
+  SELECT n.company_id, n.user_id, (n.created_at AT TIME ZONE c.timezone)::date AS d,
+         string_agg(to_char(n.created_at AT TIME ZONE c.timezone, 'HH24:MI') || ' ' ||
+                    CASE WHEN n.title <> '' THEN n.title || ' — ' ELSE '' END || n.body, E'\n' ORDER BY n.created_at) AS txt
+  FROM notes n JOIN companies c ON c.id = n.company_id
+  WHERE n.kind = 'note'
+  GROUP BY 1, 2, 3
+)
+INSERT INTO notepads (company_id, user_id, day, content)
+SELECT company_id, user_id, d, txt FROM g
+ON CONFLICT (user_id, day) DO UPDATE SET content = notepads.content || E'\n' || EXCLUDED.content, updated_at = now();
+DELETE FROM notes WHERE kind = 'note';

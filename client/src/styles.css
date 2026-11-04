@@ -379,3 +379,25 @@ td.c-biz { padding: 4px 6px; overflow: hidden; }
 .notes-list li.pinned { background: #fff7d6; border-color: #f0d36a; }
 .notes-list li p { margin: 3px 0 4px; font-size: 13.5px; }
 .note-actions .icon-btn.on { color: #c2700a; }
+
+/* Bloco de notas + resumo IA */
+.nb-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.nb-card { display: flex; flex-direction: column; }
+textarea.notebook { width: 100%; min-height: 62vh; resize: vertical; font-size: 14.5px; line-height: 1.65; padding: 14px 16px;
+  border: 1px solid #e3dcae; background: #fffdf3; border-radius: 8px; font-family: inherit; }
+textarea.notebook:focus { border-color: #d9b93c; box-shadow: 0 0 0 3px rgba(253,171,61,.18); }
+textarea.notebook[readonly] { background: #fafbfc; border-color: var(--border); }
+.nb-foot { display: flex; justify-content: space-between; margin-top: 6px; }
+.nb-side { display: flex; flex-direction: column; gap: 16px; }
+.ai-summary { display: flex; flex-direction: column; gap: 12px; }
+.ai-lead { margin: 0; font-size: 14px; line-height: 1.55; background: #f0f6ff; border-radius: 8px; padding: 10px 12px; }
+.ai-sec h4 { margin: 0 0 4px; font-size: 12.5px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
+.ai-sec ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 13.5px; }
+.ai-sec.ok h4 { color: #037f4c; } .ai-sec.warn h4 { color: #a35c00; } .ai-sec.bad h4 { color: #bb3354; }
+.ai-group { margin-bottom: 6px; } .ai-group b { font-size: 13px; }
+.block-mt { display: block; margin-top: 10px; }
+.day-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.day-chip { border: 1px solid var(--border); background: #fff; border-radius: 14px; padding: 3px 10px; font-size: 12.5px; display: inline-flex; gap: 4px; align-items: center; }
+.day-chip.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+.day-chip .ic { color: #00c875; } .day-chip.on .ic { color: #fff; }
+@media (max-width: 1000px) { .nb-grid { grid-template-columns: 1fr; } textarea.notebook { min-height: 45vh; } }
