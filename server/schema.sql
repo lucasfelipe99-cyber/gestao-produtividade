@@ -249,3 +249,21 @@ DO $$ BEGIN
     INSERT INTO app_meta (key) VALUES ('v7_aba_pontuais');
   END IF;
 END $$;
+
+-- Início considerado de um dia específico (ex.: dia em que o sistema começou a ser usado à tarde).
+-- Antes desse horário não conta atraso nem inatividade.
+CREATE TABLE IF NOT EXISTS day_starts (
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  day DATE NOT NULL,
+  start_time TIME NOT NULL,
+  reason TEXT,
+  PRIMARY KEY (company_id, day)
+);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v8_inicio_04_11') THEN
+    INSERT INTO day_starts (company_id, day, start_time, reason)
+      SELECT id, DATE '2026-11-04', TIME '14:10', 'Início do uso do sistema' FROM companies
+      ON CONFLICT (company_id, day) DO NOTHING;
+    INSERT INTO app_meta (key) VALUES ('v8_inicio_04_11');
+  END IF;
+END $$;

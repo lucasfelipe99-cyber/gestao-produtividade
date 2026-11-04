@@ -12,6 +12,7 @@ export default function Timeline() {
   const [date, setDate] = useState(me.today);
   const [user, setUser] = useState('');
   const [cfg, setCfg] = useState(false);
+  const [dayCfg, setDayCfg] = useState(false);
   const { data } = useData(`/timeline?date=${date}${user ? '&user=' + user : ''}`);
   const isToday = date === me.today;
   const anyRunning = data?.people.some((p) => p.entries.some((e) => e.running));
@@ -39,7 +40,9 @@ export default function Timeline() {
         <div>
           <h1>Linha do tempo da jornada</h1>
           <p className="muted">{fmtDateLong(date)}{isToday && ' · hoje'} · jornada {data.work_start} às {data.work_end} · almoço {data.lunch_start}–{data.lunch_end}
-            {isAdmin && <> · <button className="link" onClick={() => setCfg(true)}>alterar horário</button></>}</p>
+            {isAdmin && <> · <button className="link" onClick={() => setCfg(true)}>alterar horário</button></>}
+            {data.day_start && <><br /><span className="tag warn">Início considerado neste dia: {data.day_start.start_time}{data.day_start.reason ? ` · ${data.day_start.reason}` : ''}</span></>}
+            {isAdmin && <> {data.day_start ? '' : <br />}<button className="link" onClick={() => setDayCfg(true)}>{data.day_start ? 'alterar' : 'ajustar início só deste dia'}</button></>}</p>
         </div>
         <div className="row gap wrap">
           {isAdmin && (
@@ -59,16 +62,17 @@ export default function Timeline() {
 
       <div className="kpis">
         <Kpi label="Com apontamento no dia" value={`${s.people_with_time}/${data.people.length}`} icon="users" />
-        <Kpi label="Atrasos na 1ª atividade" value={s.late_count} color={s.late_count ? '#e2445c' : '#00c875'} icon="alert" sub={`após ${data.work_start}`} />
+        <Kpi label="Atrasos na 1ª atividade" value={s.late_count} color={s.late_count ? '#e2445c' : '#00c875'} icon="alert" sub={`após ${data.day_start?.start_time || data.work_start}`} />
         <Kpi label="Atraso médio" value={fmtMin(s.avg_delay_min)} color="#fdab3d" icon="clock" />
-        <Kpi label="Horas trabalhadas" value={fmtMin(s.total_worked_min)} color="#0073ea" icon="clock" />
+        <Kpi label="Horas trabalhadas" value={fmtMin(s.total_worked_min)} color="#0073ea" icon="clock" sub={`jornada esperada ${fmtMin(data.expected_min)} por pessoa`} />
+        <Kpi label="Inatividade" value={fmtMin(s.total_idle_min)} color="#676879" icon="clock" sub="lacunas sem atividade na jornada" />
         <Kpi label="Hora extra" value={fmtMin(s.total_overtime_min)} color="#a25ddc" icon="clock" sub={`fora de ${data.work_start}–${data.work_end} ou no almoço`} />
-        <Kpi label="Jornada esperada" value={fmtMin(data.expected_min)} color="#579bfc" icon="clock" sub={`descontando almoço ${data.lunch_start}–${data.lunch_end}`} />
       </div>
 
       <Card>
         <div className="tl-legend">
           <span><i className="lg-delay" /> Atraso até a 1ª atividade</span>
+          <span><i className="lg-idle" /> Inatividade (lacuna sem atividade)</span>
           <span><i className="lg-extra" /> Fora da jornada (hora extra)</span>
           <span><i className="lg-lunch" /> Almoço de 1h (adiado se houver atividade em andamento às {data.lunch_start}; trabalho nele conta como extra)</span>
           <span><i className="lg-plan" /> Horário previsto de tarefa</span>
@@ -92,6 +96,7 @@ export default function Timeline() {
                       <small>
                         Início <b>{hhmm(m.first_start)}</b>{' '}
                         {m.delay_min > 0 ? <span className="tag danger">+{fmtMin(m.delay_min)} atraso</span> : <span className="tag ok">no horário</span>}
+                        {m.idle_min > 0 && <><br />Inativo <b className="idle-text">{fmtMin(m.idle_min)}</b></>}
                         <br />Trabalhado <b>{fmtMin(m.worked_min)}</b>{m.overtime_min > 0 && <> · extra <b className="purple">{fmtMin(m.overtime_min)}</b></>}
                         <br />Almoço <b>{hhmm(m.lunch_from)}–{hhmm(m.lunch_to)}</b>{m.lunch_delayed_min > 0 && <span className="muted"> (adiado)</span>}
                         {m.lunch_min > 0 && <span className="purple"> · {fmtMin(m.lunch_min)} trabalhando</span>}
@@ -106,7 +111,12 @@ export default function Timeline() {
                       title={`Almoço ${hhmm(m.lunch_from)}–${hhmm(m.lunch_to)}${m.lunch_delayed_min > 0 ? ` (adiado ${fmtMin(m.lunch_delayed_min)} pela atividade em andamento às ${data.lunch_start})` : ''}`}><em>Almoço</em></span>}
                     <span className="tl-work-line" style={{ left: x(ws) }} />
                     <span className="tl-work-line end" style={{ left: x(we) }} />
-                    {m.delay_min > 0 && <span className="tl-delay" style={{ left: x(ws), width: w(ws, m.first_start) }} title={`Atraso de ${fmtMin(m.delay_min)} até a primeira atividade`} />}
+                    {data.day_start && m.start_min > ws && <span className="tl-skip" style={{ left: x(ws), width: w(ws, m.start_min) }} title={`Não considerado: início deste dia ajustado para ${data.day_start.start_time}`} />}
+                    {m.delay_min > 0 && <span className="tl-delay" style={{ left: x(m.start_min ?? ws), width: w(m.start_min ?? ws, m.first_start) }} title={`Atraso de ${fmtMin(m.delay_min)} até a primeira atividade`} />}
+                    {(m.idle_gaps || []).map((g) => (
+                      <span key={g.from} className="tl-idle" style={{ left: x(g.from), width: w(g.from, g.to) }}
+                        title={`Inativo ${hhmm(g.from)}–${hhmm(g.to)} (${fmtMin(g.to - g.from)})`}>{g.to - g.from >= 25 && <em>Inativo</em>}</span>
+                    ))}
                     {p.entries.map((e) => {
                       const end = live(e);
                       return (
@@ -170,6 +180,7 @@ export default function Timeline() {
           </table>
         </div>
       </Card>
+      {dayCfg && <DayStart date={date} current={data.day_start} onClose={() => setDayCfg(false)} />}
       {cfg && <WorkHours start={data.work_start} end={data.work_end} lunchStart={data.lunch_start} lunchEnd={data.lunch_end} onClose={() => setCfg(false)} />}
     </div>
   );
@@ -188,6 +199,27 @@ export function WorkHours({ start, end, lunchStart, lunchEnd, onClose }) {
         <Field label="Fim da jornada"><input type="time" value={f.work_end} onChange={(e) => setF({ ...f, work_end: e.target.value })} /></Field>
         <Field label="Início do almoço"><input type="time" value={f.lunch_start} onChange={(e) => setF({ ...f, lunch_start: e.target.value })} /></Field>
         <Field label="Fim do almoço"><input type="time" value={f.lunch_end} onChange={(e) => setF({ ...f, lunch_end: e.target.value })} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+function DayStart({ date, current, onClose }) {
+  const [t, setT] = useState(current?.start_time || '');
+  const [reason, setReason] = useState(current?.reason || '');
+  const save = async (clear) => {
+    try {
+      await api('/day-start', { method: 'PUT', body: { day: date, start_time: clear ? null : t, reason } });
+      emitLocal(); toast(clear ? 'Ajuste removido' : 'Início do dia ajustado', 'success'); onClose();
+    } catch (e) { toast(e.message, 'error'); }
+  };
+  return (
+    <Modal title={`Início considerado em ${fmtDate(date)}`} onClose={onClose}
+      footer={<>{current && <button className="btn" onClick={() => save(true)}>Remover ajuste</button>}<button className="btn primary" disabled={!t} onClick={() => save(false)}>Salvar</button></>}>
+      <p className="muted small" style={{ margin: 0 }}>Vale só para este dia e para toda a equipe. Antes desse horário não conta atraso nem inatividade (ex.: dia em que começaram a usar o sistema, reunião geral, treinamento).</p>
+      <div className="grid-2">
+        <Field label="Começar a contar às"><input type="time" value={t} onChange={(e) => setT(e.target.value)} /></Field>
+        <Field label="Motivo (opcional)"><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ex.: treinamento" /></Field>
       </div>
     </Modal>
   );

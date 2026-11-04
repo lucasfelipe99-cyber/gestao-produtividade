@@ -426,3 +426,9 @@ textarea.notebook[readonly] { background: #fafbfc; border-color: var(--border); 
 
 .tag.oneoff { background: #e6f4ff; color: #0060c2; }
 .oneoff-banner { display: flex; align-items: center; gap: 10px; background: #e6f4ff; border: 1px solid #b9dcfb; color: #0b4f8a; border-radius: var(--radius); padding: 10px 14px; }
+
+.lg-idle { background: repeating-linear-gradient(45deg, #d5d8df, #d5d8df 3px, #eceef2 3px, #eceef2 6px); }
+.tl-idle { position: absolute; top: 14px; bottom: 14px; background: repeating-linear-gradient(45deg, #d5d8df, #d5d8df 4px, #eceef2 4px, #eceef2 8px); border-radius: 4px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.tl-idle em { font-style: normal; font-size: 11px; color: #676879; font-weight: 600; white-space: nowrap; }
+.tl-skip { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(45deg, #f1f2f4, #f1f2f4 6px, #f8f9fa 6px, #f8f9fa 12px); opacity: .9; }
+.idle-text { color: #676879; }

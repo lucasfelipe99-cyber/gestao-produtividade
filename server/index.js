@@ -841,6 +841,22 @@ app.get('/api/company', wrap(async (req, res) => {
     to_char(lunch_start,'HH24:MI') AS lunch_start, to_char(lunch_end,'HH24:MI') AS lunch_end FROM companies WHERE id=$1`, [req.user.company_id]));
 }));
 
+// início considerado de um dia específico (admin): antes dele não conta atraso nem inatividade
+app.put('/api/day-start', adminOnly, wrap(async (req, res) => {
+  const { day, start_time, reason } = req.body || {};
+  if (!isDate(day)) throw new HttpError(400, 'Data inválida');
+  if (!start_time) {
+    await q('DELETE FROM day_starts WHERE company_id=$1 AND day=$2', [req.user.company_id, day]);
+  } else {
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(start_time)) throw new HttpError(400, 'Horário inválido');
+    await q(`INSERT INTO day_starts (company_id, day, start_time, reason) VALUES ($1,$2,$3,$4)
+      ON CONFLICT (company_id, day) DO UPDATE SET start_time=EXCLUDED.start_time, reason=EXCLUDED.reason`,
+      [req.user.company_id, day, start_time, reason?.trim() || null]);
+  }
+  broadcast(req.user.company_id, { type: 'company' });
+  res.json({ ok: true });
+}));
+
 app.patch('/api/company', adminOnly, wrap(async (req, res) => {
   const { name, work_start, work_end, lunch_start, lunch_end } = req.body || {};
   const re = /^\d{2}:\d{2}$/;

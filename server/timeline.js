@@ -23,11 +23,14 @@ export function effectiveLunch(entries, ls, le) {
 }
 
 // ls/le = almoço: trabalho no almoço conta como hora extra; almoço não conta como ociosidade
-export function dayMetrics(entries, ws, we, ls0 = null, le0 = null) {
+// opts.startMin = início considerado do dia (atraso e inatividade só contam a partir dele)
+// opts.endMin   = até onde contar inatividade (fim da jornada, ou "agora" se o dia está em andamento)
+export function dayMetrics(entries, ws, we, ls0 = null, le0 = null, opts = {}) {
   const lunchWin = effectiveLunch(entries, ls0, le0);
   const ls = lunchWin?.from ?? null, le = lunchWin?.to ?? null;
   const hasLunch = ls != null && le != null && le > ls;
-  if (!entries.length) return { first_start: null, last_end: null, delay_min: 0, worked_min: 0, inside_min: 0, overtime_min: 0, before_min: 0, after_min: 0, lunch_min: 0, idle_min: 0, lunch_from: ls0, lunch_to: le0, lunch_delayed_min: 0 };
+  const startMin = Math.max(ws, opts.startMin ?? ws);
+  if (!entries.length) return { first_start: null, last_end: null, delay_min: 0, worked_min: 0, inside_min: 0, overtime_min: 0, before_min: 0, after_min: 0, lunch_min: 0, idle_min: 0, idle_gaps: [], lunch_from: ls0, lunch_to: le0, lunch_delayed_min: 0, start_min: startMin };
   const sorted = [...entries].sort((a, b) => a.start_min - b.start_min);
   const first = sorted[0].start_min;
   const last = Math.max(...sorted.map((e) => e.end_min));
@@ -42,15 +45,29 @@ export function dayMetrics(entries, ws, we, ls0 = null, le0 = null) {
     before += Math.max(0, Math.min(e.end_min, ws) - e.start_min);
     after += Math.max(0, e.end_min - Math.max(e.start_min, we));
   }
-  // tempo sem apontamento dentro da jornada (sem contar o almoço), entre a 1ª atividade e o fim (ou a última atividade)
-  const winStart = Math.max(ws, first), winEnd = Math.min(we, last);
-  const lunchInWin = hasLunch ? overlap(winStart, winEnd, ls, le) : 0;
-  const idle = Math.max(0, winEnd - winStart - lunchInWin - inside);
+  // lacunas sem apontamento dentro da jornada (fora do almoço), da 1ª atividade até o fim da jornada / agora
+  const gStart = Math.max(startMin, first);
+  const gEnd = Math.min(we, Math.max(last, opts.endMin ?? we));
+  const busy = sorted.map((e) => [e.start_min, e.end_min]);
+  if (hasLunch) busy.push([ls, le]);
+  busy.sort((a, b) => a[0] - b[0]);
+  const gaps = [];
+  let cur = gStart;
+  for (const [a, b] of busy) {
+    if (b <= cur) continue;
+    if (a > cur && a - cur >= 1) gaps.push({ from: Math.round(cur * 10) / 10, to: Math.round(Math.min(a, gEnd) * 10) / 10 });
+    cur = Math.max(cur, b);
+    if (cur >= gEnd) break;
+  }
+  if (gEnd - cur >= 1) gaps.push({ from: Math.round(cur * 10) / 10, to: Math.round(gEnd * 10) / 10 });
+  const idleGaps = gaps.filter((g) => g.to - g.from >= 1);
+  const idle = idleGaps.reduce((s, g) => s + (g.to - g.from), 0);
   return {
-    first_start: first, last_end: last,
-    delay_min: Math.round(Math.max(0, first - ws)),
+    first_start: first, last_end: last, start_min: startMin,
+    delay_min: Math.round(Math.max(0, first - startMin)),
     worked_min: Math.round(worked), inside_min: Math.round(inside), overtime_min: Math.round(before + after + lunch),
     before_min: Math.round(before), after_min: Math.round(after), lunch_min: Math.round(lunch), idle_min: Math.round(idle),
+    idle_gaps: idleGaps,
     lunch_from: ls, lunch_to: le, lunch_delayed_min: lunchWin?.delayed_min || 0,
   };
 }
@@ -60,6 +77,19 @@ export async function timeline({ companyId, date, today, userId }) {
     `SELECT timezone, to_char(work_start,'HH24:MI') AS work_start, to_char(work_end,'HH24:MI') AS work_end,
        to_char(lunch_start,'HH24:MI') AS lunch_start, to_char(lunch_end,'HH24:MI') AS lunch_end FROM companies WHERE id=$1`, [companyId]);
   const tz = c.timezone;
+  const nowRow = await one(`SELECT to_char(now() AT TIME ZONE $1,'YYYY-MM-DD') AS d,
+    EXTRACT(EPOCH FROM ((now() AT TIME ZONE $1) - date_trunc('day', now() AT TIME ZONE $1)))/60 AS m`, [tz]);
+  const starts = await many(`SELECT to_char(day,'YYYY-MM-DD') AS day, to_char(start_time,'HH24:MI') AS start_time, reason
+    FROM day_starts WHERE company_id=$1 AND day BETWEEN $2 AND $3`, [companyId, addDays(date, -6), date]);
+  const startOf = (d) => starts.find((x) => x.day === d);
+  // opções do dia: início considerado e até onde contar inatividade
+  const optsFor = (d) => {
+    const st = startOf(d);
+    const o = { startMin: st ? toMin(st.start_time) : undefined };
+    if (d === nowRow.d) o.endMin = Number(nowRow.m);
+    else if (d > nowRow.d) o.endMin = 0;
+    return o;
+  };
   const ws = toMin(c.work_start), we = toMin(c.work_end), ls = toMin(c.lunch_start), le = toMin(c.lunch_end);
   const from = addDays(date, -6);
   const params = [companyId, from, addDays(date, 1), tz];
@@ -92,12 +122,12 @@ export async function timeline({ companyId, date, today, userId }) {
   const people = users.map((u) => {
     const mine = rows.filter((r) => r.user_id === u.id);
     const todayEntries = mine.filter((r) => r.day === date);
-    const week = days.map((d) => ({ date: d, ...dayMetrics(mine.filter((r) => r.day === d), ws, we, ls, le) }));
+    const week = days.map((d) => ({ date: d, ...dayMetrics(mine.filter((r) => r.day === d), ws, we, ls, le, optsFor(d)) }));
     return {
       id: u.id, name: u.name,
       entries: todayEntries,
       planned: planned.filter((p) => p.assignee_id === u.id).map((p) => ({ ...p, min: toMin(p.scheduled_time) })),
-      metrics: dayMetrics(todayEntries, ws, we, ls, le),
+      metrics: dayMetrics(todayEntries, ws, we, ls, le, optsFor(date)),
       week,
     };
   });
@@ -105,6 +135,7 @@ export async function timeline({ companyId, date, today, userId }) {
   const avg = (k) => (active.length ? Math.round(active.reduce((s, p) => s + p.metrics[k], 0) / active.length) : 0);
   return {
     date, today, work_start: c.work_start, work_end: c.work_end, lunch_start: c.lunch_start, lunch_end: c.lunch_end,
+    day_start: startOf(date) || null,
     ws, we, ls, le, expected_min: (we - ws) - (le - ls), days, people,
     summary: {
       people_with_time: active.length,
@@ -112,6 +143,7 @@ export async function timeline({ companyId, date, today, userId }) {
       avg_delay_min: avg('delay_min'),
       total_worked_min: active.reduce((s, p) => s + p.metrics.worked_min, 0),
       total_overtime_min: active.reduce((s, p) => s + p.metrics.overtime_min, 0),
+      total_idle_min: active.reduce((s, p) => s + p.metrics.idle_min, 0),
     },
   };
 }
