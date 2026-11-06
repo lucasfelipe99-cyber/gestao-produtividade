@@ -18,6 +18,14 @@ export default function Timeline() {
   const anyRunning = data?.people.some((p) => p.entries.some((e) => e.running));
   useTick(30000, isToday && anyRunning);
 
+  const backfill = async () => {
+    try {
+      const r = await api('/timeline/backfill', { method: 'POST', body: { day: date } });
+      emitLocal();
+      toast(r.filled ? `${r.filled} tarefa(s) concluída(s) sem cronômetro receberam tempo estimado (${fmtMin(Math.round(r.seconds / 60))})`
+        : r.candidates ? `${r.candidates} tarefa(s) sem cronômetro, mas os intervalos passam de 2h ou já estão ocupados` : 'Nenhuma tarefa concluída sem cronômetro neste dia', r.filled ? 'success' : 'info');
+    } catch (e) { toast(e.message, 'error'); }
+  };
   if (!data) return <div className="page"><Loading /></div>;
   const { ws, we } = data;
   // eixo: jornada, estendido se houver trabalho antes/depois (hora extra)
@@ -42,7 +50,8 @@ export default function Timeline() {
           <p className="muted">{fmtDateLong(date)}{isToday && ' · hoje'} · jornada {data.work_start} às {data.work_end} · almoço {data.lunch_start}–{data.lunch_end}
             {isAdmin && <> · <button className="link" onClick={() => setCfg(true)}>alterar horário</button></>}
             {data.day_start && <><br /><span className="tag warn">Início considerado neste dia: {data.day_start.start_time}{data.day_start.reason ? ` · ${data.day_start.reason}` : ''}</span></>}
-            {isAdmin && <> {data.day_start ? '' : <br />}<button className="link" onClick={() => setDayCfg(true)}>{data.day_start ? 'alterar' : 'ajustar início só deste dia'}</button></>}</p>
+            {isAdmin && <> {data.day_start ? '' : <br />}<button className="link" onClick={() => setDayCfg(true)}>{data.day_start ? 'alterar' : 'ajustar início só deste dia'}</button></>}
+            {isAdmin && date < me.today && <> · <button className="link" onClick={backfill}>preencher tempo estimado deste dia</button></>}</p>
         </div>
         <div className="row gap wrap">
           {isAdmin && (

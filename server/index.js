@@ -579,24 +579,24 @@ app.post('/api/recurrences/:id/stop', adminOnly, wrap(async (req, res) => {
 // só nas lacunas (nunca sobre tempo real), sem o almoço, e só se o total for de até 2h.
 const INFER_MAX_MIN = 120;
 const hm = (s) => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
-async function inferTime(db, t, userId) {
+async function inferTime(db, t, userId, at = new Date()) {
   if (!t.assignee_id || t.assignee_id !== userId) return 0;
   if ((await db.query('SELECT 1 FROM time_entries WHERE task_id=$1 LIMIT 1', [t.id])).rowCount) return 0;
   const c = (await db.query(
     `SELECT c.timezone AS tz, to_char(c.work_start,'HH24:MI') AS ws, to_char(c.lunch_start,'HH24:MI') AS ls, to_char(c.lunch_end,'HH24:MI') AS le,
-       to_char(now() AT TIME ZONE c.timezone,'YYYY-MM-DD') AS day,
-       EXTRACT(EPOCH FROM ((now() AT TIME ZONE c.timezone) - date_trunc('day', now() AT TIME ZONE c.timezone)))/60 AS now_min,
-       (SELECT to_char(d.start_time,'HH24:MI') FROM day_starts d WHERE d.company_id=c.id AND d.day=(now() AT TIME ZONE c.timezone)::date) AS day_start
-     FROM companies c WHERE c.id=$1`, [t.company_id])).rows[0];
+       to_char($2::timestamptz AT TIME ZONE c.timezone,'YYYY-MM-DD') AS day,
+       EXTRACT(EPOCH FROM (($2::timestamptz AT TIME ZONE c.timezone) - date_trunc('day', $2::timestamptz AT TIME ZONE c.timezone)))/60 AS now_min,
+       (SELECT to_char(d.start_time,'HH24:MI') FROM day_starts d WHERE d.company_id=c.id AND d.day=($2::timestamptz AT TIME ZONE c.timezone)::date) AS day_start
+     FROM companies c WHERE c.id=$1`, [t.company_id, at])).rows[0];
   const end = Number(c.now_min);
   const minOf = (col) => `EXTRACT(EPOCH FROM ((${col} AT TIME ZONE $2) - ($3::date)::timestamp))/60`;
   const ents = (await db.query(
     `SELECT ${minOf('e.started_at')} AS s, ${minOf('COALESCE(e.ended_at, now())')} AS e, e.source FROM time_entries e
-     WHERE e.user_id=$1 AND COALESCE(e.ended_at, now()) > ($3::date::timestamp AT TIME ZONE $2) AND e.started_at < now()`,
+     WHERE e.user_id=$1 AND COALESCE(e.ended_at, now()) > ($3::date::timestamp AT TIME ZONE $2) AND e.started_at < ($3::date::timestamp AT TIME ZONE $2) + interval '1 day'`,
     [userId, c.tz, c.day])).rows.map((r) => ({ start_min: Math.max(0, Number(r.s)), end_min: Number(r.e), source: r.source }));
   const lastDone = (await db.query(
     `SELECT max(${minOf('completed_at')}) AS m FROM tasks WHERE assignee_id=$1 AND id<>$4 AND status='done'
-       AND completed_at >= ($3::date::timestamp AT TIME ZONE $2) AND completed_at <= now()`, [userId, c.tz, c.day, t.id])).rows[0].m;
+       AND completed_at >= ($3::date::timestamp AT TIME ZONE $2) AND completed_at < $5`, [userId, c.tz, c.day, t.id, at])).rows[0].m;
   let start = hm(c.day_start || c.ws);
   for (const e of ents) if (e.end_min <= end + 0.01) start = Math.max(start, e.end_min);
   if (lastDone != null) start = Math.max(start, Number(lastDone));
@@ -621,14 +621,33 @@ async function inferTime(db, t, userId) {
   for (const [a, b] of good) {
     const r = (await db.query(
       `INSERT INTO time_entries (company_id, task_id, user_id, started_at, ended_at, seconds, source)
-       VALUES ($1,$2,$3, ($4::date::timestamp + make_interval(secs => $5)) AT TIME ZONE $7, LEAST(now(), ($4::date::timestamp + make_interval(secs => $6)) AT TIME ZONE $7),
+       VALUES ($1,$2,$3, ($4::date::timestamp + make_interval(secs => $5)) AT TIME ZONE $7, LEAST($8::timestamptz, ($4::date::timestamp + make_interval(secs => $6)) AT TIME ZONE $7),
          GREATEST(1, round($6 - $5)::int), 'inferred') RETURNING seconds, started_at`,
-      [t.company_id, t.id, userId, c.day, a * 60, b * 60, c.tz])).rows[0];
+      [t.company_id, t.id, userId, c.day, a * 60, b * 60, c.tz, at])).rows[0];
     secs += r.seconds;
   }
-  await db.query(`UPDATE tasks SET tracked_seconds=tracked_seconds+$1, started_at=COALESCE(started_at, now() - make_interval(secs => $1)) WHERE id=$2`, [secs, t.id]);
+  await db.query(`UPDATE tasks SET tracked_seconds=tracked_seconds+$1, started_at=COALESCE(started_at, $3::timestamptz - make_interval(secs => $1)) WHERE id=$2`, [secs, t.id, at]);
   return secs;
 }
+// Preenche tempo estimado de um dia já passado: tarefas concluídas sem nenhum registro de tempo,
+// na ordem de conclusão, por colaborador (dia no fuso da empresa)
+export async function backfillInferred(companyId, day) {
+  return tx(async (db) => {
+    const tz = (await db.query('SELECT timezone FROM companies WHERE id=$1', [companyId])).rows[0].timezone;
+    const tasks = (await db.query(
+      `SELECT t.* FROM tasks t WHERE t.company_id=$1 AND t.status='done' AND t.assignee_id IS NOT NULL
+         AND (t.completed_at AT TIME ZONE $3)::date = $2::date
+         AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.task_id=t.id)
+       ORDER BY t.assignee_id, t.completed_at`, [companyId, day, tz])).rows;
+    let n = 0, secs = 0;
+    for (const t of tasks) {
+      const s = await inferTime(db, t, t.assignee_id, t.completed_at);
+      if (s) { n++; secs += s; }
+    }
+    return { candidates: tasks.length, filled: n, seconds: secs };
+  });
+}
+
 // remove tempo estimado (tarefa reaberta ou período substituído por lançamento real)
 async function dropInferred(db, where, params) {
   const rows = (await db.query(`DELETE FROM time_entries WHERE source='inferred' AND ${where} RETURNING task_id, seconds`, params)).rows;
@@ -907,6 +926,15 @@ app.get('/api/timeline', requireTab('linha-do-tempo'), wrap(async (req, res) => 
 app.get('/api/company', wrap(async (req, res) => {
   res.json(await one(`SELECT id, name, timezone, to_char(work_start,'HH24:MI') AS work_start, to_char(work_end,'HH24:MI') AS work_end,
     to_char(lunch_start,'HH24:MI') AS lunch_start, to_char(lunch_end,'HH24:MI') AS lunch_end FROM companies WHERE id=$1`, [req.user.company_id]));
+}));
+
+app.post('/api/timeline/backfill', adminOnly, wrap(async (req, res) => {
+  const { day } = req.body || {};
+  if (!isDate(day)) throw new HttpError(400, 'Data inválida');
+  if (day >= todayIn(req.user.timezone)) throw new HttpError(400, 'Use apenas para dias anteriores');
+  const r = await backfillInferred(req.user.company_id, day);
+  broadcast(req.user.company_id, { type: 'tasks' });
+  res.json(r);
 }));
 
 // início considerado de um dia específico (admin): antes dele não conta atraso nem inatividade
@@ -1419,5 +1447,15 @@ if (fs.existsSync(dist)) {
 }
 
 await migrate();
+// uma vez: preenche o tempo estimado de 05/11 (dia anterior à criação do recurso)
+for (const day of ['2026-11-05']) {
+  const key = `v10_backfill_${day}`;
+  if (!(await one('SELECT 1 AS x FROM app_meta WHERE key=$1', [key]))) {
+    for (const c of await many('SELECT id FROM companies')) {
+      try { console.log('Tempo estimado', day, 'empresa', c.id, await backfillInferred(c.id, day)); } catch (e) { console.error('backfill', e.message); }
+    }
+    await q('INSERT INTO app_meta (key) VALUES ($1) ON CONFLICT DO NOTHING', [key]);
+  }
+}
 startAutomationLoop();
 app.listen(PORT, () => console.log(`Servidor ouvindo na porta ${PORT}`));
