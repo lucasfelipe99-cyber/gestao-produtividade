@@ -595,8 +595,8 @@ app.post('/api/recurrences/:id/stop', adminOnly, wrap(async (req, res) => {
 
 // ---------- tempo estimado (tarefa concluída sem cronômetro) ----------
 // Período = da última conclusão/fim de atividade do colaborador no dia (ou do início da jornada) até agora,
-// só nas lacunas (nunca sobre tempo real), sem o almoço, e só se o total for de até 2h.
-const INFER_MAX_MIN = 120;
+// só nas lacunas (nunca sobre tempo lançado manualmente) e sem o almoço. Sem limite de duração.
+const INFER_MAX_MIN = 24 * 60;
 const hm = (s) => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
 async function inferTime(db, t, userId, at = new Date()) {
   if (!t.assignee_id || t.assignee_id !== userId) return 0;
@@ -1466,9 +1466,9 @@ if (fs.existsSync(dist)) {
 }
 
 await migrate();
-// uma vez: preenche o tempo estimado de 05/11 (dia anterior à criação do recurso)
-for (const day of ['2026-11-05']) {
-  const key = `v10_backfill_${day}`;
+// uma vez: calcula o tempo pela conclusão (sem teto) para os dias desde o início do uso
+for (const day of ['2026-11-04', '2026-11-05', '2026-11-06']) {
+  const key = `v12_backfill_${day}`;
   if (!(await one('SELECT 1 AS x FROM app_meta WHERE key=$1', [key]))) {
     for (const c of await many('SELECT id FROM companies')) {
       try { console.log('Tempo estimado', day, 'empresa', c.id, await backfillInferred(c.id, day)); } catch (e) { console.error('backfill', e.message); }

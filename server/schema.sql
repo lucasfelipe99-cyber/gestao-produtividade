@@ -290,3 +290,11 @@ END $$;
 -- v11: tarefa enviada a outro colaborador (começa no dia da criação, com data final)
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS requested BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS start_date DATE;
+-- v11: "Não realizada" só vale para dias que já passaram (tarefas transferidas antes ficaram 'late' no dia de hoje)
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v11_nao_realizada') THEN
+    UPDATE tasks t SET status = CASE WHEN t.tracked_seconds > 0 THEN 'paused' ELSE 'not_started' END
+      FROM companies c WHERE c.id = t.company_id AND t.status = 'late' AND t.due_date >= (now() AT TIME ZONE c.timezone)::date;
+    INSERT INTO app_meta (key) VALUES ('v11_nao_realizada');
+  END IF;
+END $$;

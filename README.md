@@ -61,3 +61,8 @@ O arquivo `render.yaml` cria o banco PostgreSQL e o web service. Variáveis nece
 | `ANTHROPIC_API_KEY` | Chave da API da Anthropic para o resumo por IA (opcional) |
 
 Build: `npm install && npm run build` · Start: `npm start` · Health check: `/healthz`
+
+## Regras atuais (nov/2026)
+- **Sem cronômetro**: o tempo de cada tarefa é calculado pela hora da conclusão — da conclusão anterior do colaborador (ou do início da jornada, 08:00) até a conclusão desta, sem o almoço. Não há mais cálculo de atraso no início do dia.
+- **Não realizada**: tarefa cujo dia/prazo passou sem conclusão fica como "Não realizada" no próprio dia (nada é transferido). Ainda pode ser finalizada depois.
+- **Enviar para colaborador**: no "Nova tarefa", qualquer pessoa envia uma tarefa a um colega; ela começa no dia do envio e exige data final depois desse dia. Quem enviou acompanha (etiqueta "Enviada p/"), quem recebe vê "De Fulano · até dd/mm".

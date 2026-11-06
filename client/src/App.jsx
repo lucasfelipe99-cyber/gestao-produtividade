@@ -134,7 +134,7 @@ function ActiveTimer() {
   const { openTask } = useApp();
   const { data } = useData('/timer/active');
   useTick(1000, !!data);
-  if (!data) return <div className="timer-chip idle"><Icon name="clock" /> Nenhum cronômetro ativo</div>;
+  if (!data) return null; // cronômetro desativado: só aparece se ainda houver algum rodando de antes
   const secs = data.tracked_seconds + (Date.now() - new Date(data.started_at)) / 1000;
   const act = async (a) => { try { await api(`/tasks/${data.task_id}/${a}`, { method: 'POST' }); emitLocal(); } catch (e) { toast(e.message, 'error'); } };
   return (

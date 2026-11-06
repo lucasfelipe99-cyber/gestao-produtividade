@@ -63,6 +63,7 @@ export default function TaskDrawer({ id, onClose }) {
           <div>
             <small>Tempo utilizado</small>
             <div className={'big-timer mono' + (task.active_started_at ? ' running' : '')}>{fmtClock(secs)}</div>
+            {!task.active_started_at && <small className="muted">Calculado pela hora da conclusão (desde a conclusão anterior ou do início da jornada)</small>}
             {estSecs > 0 && <Progress value={(secs / estSecs) * 100} color={secs > estSecs ? '#e2445c' : '#0073ea'} label={`${fmtMin(task.estimated_minutes)} estimado`} />}
             {task.active_started_at && <small className="muted">Cronômetro ativo com {task.active_user_name} desde {fmtDateTime(task.active_started_at)}
               {task.active_subtask_title ? <> · subtarefa <b>{task.active_subtask_title}</b></> : ''}</small>}
@@ -193,7 +194,7 @@ function TimeTab({ task, entries, subtasks }) {
       {task.status !== 'cancelled' && (
         <div className="manual-box">
           <h4>Lançamento manual de horário</h4>
-          <p className="muted small">Use quando não tiver usado os botões Iniciar/Finalizar. O tempo é calculado automaticamente.</p>
+          <p className="muted small">Use para corrigir o horário de uma tarefa (substitui o tempo calculado pela conclusão no mesmo período).</p>
           <div className="grid-2">
             <Field label="Data e horário de início"><input type="datetime-local" value={f.start} onChange={(e) => setF({ ...f, start: e.target.value })} /></Field>
             <Field label="Data e horário de finalização"><input type="datetime-local" value={f.end} onChange={(e) => setF({ ...f, end: e.target.value })} /></Field>
@@ -229,7 +230,7 @@ function TimeTab({ task, entries, subtasks }) {
           {entries.map((e) => (
             <tr key={e.id}>
               <td>{e.user_name}</td><td>{e.subtask_title || <span className="muted">—</span>}</td><td>{fmtDateTime(e.started_at)}</td><td>{e.ended_at ? fmtDateTime(e.ended_at) : <span className="tag ok">em andamento</span>}</td>
-              <td>{e.ended_at ? fmtDur(e.seconds) : '—'}</td><td>{e.source === 'manual' ? 'Manual' : 'Cronômetro'}</td>
+              <td>{e.ended_at ? fmtDur(e.seconds) : '—'}</td><td>{e.source === 'manual' ? 'Manual' : e.source === 'inferred' ? 'Pela conclusão' : 'Cronômetro'}</td>
               {isAdmin && <td>{e.ended_at && <button className="icon-btn sm" onClick={() => remove(e.id)} title="Remover"><Icon name="trash" size={14} /></button>}</td>}
             </tr>
           ))}
@@ -342,10 +343,10 @@ function Subtasks({ task, subtasks }) {
               <input type="checkbox" checked={s.done} disabled={!canAct}
                 onChange={() => call(`/subtasks/${s.id}/${s.done ? 'reopen' : 'finish'}`)} title={s.done ? 'Reabrir' : 'Concluir'} />
               <span className="grow st-title" onDoubleClick={() => canAct && rename(s)}>{s.title}</span>
-              <span className={'timer-cell' + (on ? ' running' : '')}>{on && <span className="pulse" />}{on ? fmtClock(live(s)) : fmtDur(live(s))}</span>
+              {(on || live(s) > 0) && <span className={'timer-cell' + (on ? ' running' : '')}>{on && <span className="pulse" />}{on ? fmtClock(live(s)) : fmtDur(live(s))}</span>}
               {canAct && task.status !== 'cancelled' && (
                 on ? <button className="btn xs finish" onClick={() => call(`/subtasks/${s.id}/finish`)} title="Concluir subtarefa (o cronômetro segue na tarefa)"><Icon name="check" size={13} /></button>
-                  : !s.done && <button className="btn xs start" onClick={() => call(`/subtasks/${s.id}/start`)} title={myTimerHere ? 'Mudar o cronômetro para esta subtarefa' : 'Iniciar subtarefa'}><Icon name="play" size={13} /></button>
+                  : null
               )}
               {canAct && <button className="icon-btn sm" onClick={() => remove(s)} title="Remover"><Icon name="trash" size={13} /></button>}
             </li>
@@ -355,7 +356,7 @@ function Subtasks({ task, subtasks }) {
       {canAct && task.status !== 'cancelled' && (
         <div className="row gap-s">
           <input className="grow" value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()}
-            placeholder={myTimerHere ? 'Nova subtarefa (começa a contar o tempo na hora)' : 'Adicionar subtarefa'} />
+            placeholder="Adicionar subtarefa" />
           <button className="btn primary sm" onClick={add}><Icon name="plus" size={14} /></button>
         </div>
       )}

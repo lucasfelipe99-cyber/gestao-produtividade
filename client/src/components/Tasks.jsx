@@ -49,11 +49,11 @@ export function TaskButtons({ task, compact }) {
   const running = !!task.active_started_at;
   const mineRunning = running && task.active_user_id === me.id;
   const stop = (e) => e.stopPropagation();
+  // quem enviou a tarefa para outro colaborador só acompanha
+  if (task.requested && task.assignee_id !== me.id && me.role !== 'admin' && task.status !== 'done') return <span className="muted small">Aguardando {task.assignee_name?.split(' ')[0]}</span>;
+  // sem cronômetro: o tempo vem da hora da conclusão (pausar só aparece se ainda houver um cronômetro antigo rodando)
   return (
     <span className="task-btns" onClick={stop}>
-      {task.status !== 'done' && !running && (
-        <button className="btn xs start" onClick={() => taskAction(task.id, 'start')} title="Iniciar tarefa"><Icon name="play" size={13} />{!compact && (task.status === 'paused' ? 'Retomar' : 'Iniciar')}</button>
-      )}
       {running && (mineRunning || me.role === 'admin') && (
         <button className="btn xs pause" onClick={() => taskAction(task.id, 'pause')} title="Pausar"><Icon name="pause" size={13} />{!compact && 'Pausar'}</button>
       )}

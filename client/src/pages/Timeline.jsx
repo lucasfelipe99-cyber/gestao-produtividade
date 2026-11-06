@@ -22,8 +22,8 @@ export default function Timeline() {
     try {
       const r = await api('/timeline/backfill', { method: 'POST', body: { day: date } });
       emitLocal();
-      toast(r.filled ? `${r.filled} tarefa(s) concluída(s) sem cronômetro receberam tempo estimado (${fmtMin(Math.round(r.seconds / 60))})`
-        : r.candidates ? `${r.candidates} tarefa(s) sem cronômetro, mas os intervalos passam de 2h ou já estão ocupados` : 'Nenhuma tarefa concluída sem cronômetro neste dia', r.filled ? 'success' : 'info');
+      toast(r.filled ? `${r.filled} tarefa(s) concluída(s) sem cronômetro receberam tempo pela conclusão (${fmtMin(Math.round(r.seconds / 60))})`
+        : r.candidates ? `${r.candidates} tarefa(s) sem tempo, mas o intervalo já está ocupado` : 'Nenhuma tarefa concluída sem tempo neste dia', r.filled ? 'success' : 'info');
     } catch (e) { toast(e.message, 'error'); }
   };
   if (!data) return <div className="page"><Loading /></div>;
@@ -51,7 +51,7 @@ export default function Timeline() {
             {isAdmin && <> · <button className="link" onClick={() => setCfg(true)}>alterar horário</button></>}
             {data.day_start && <><br /><span className="tag warn">Início considerado neste dia: {data.day_start.start_time}{data.day_start.reason ? ` · ${data.day_start.reason}` : ''}</span></>}
             {isAdmin && <> {data.day_start ? '' : <br />}<button className="link" onClick={() => setDayCfg(true)}>{data.day_start ? 'alterar' : 'ajustar início só deste dia'}</button></>}
-            {isAdmin && date < me.today && <> · <button className="link" onClick={backfill}>preencher tempo estimado deste dia</button></>}</p>
+            {isAdmin && date < me.today && <> · <button className="link" onClick={backfill}>recalcular tempo pela conclusão</button></>}</p>
         </div>
         <div className="row gap wrap">
           {isAdmin && (
@@ -71,8 +71,7 @@ export default function Timeline() {
 
       <div className="kpis">
         <Kpi label="Com apontamento no dia" value={`${s.people_with_time}/${data.people.length}`} icon="users" />
-        <Kpi label="Atrasos na 1ª atividade" value={s.late_count} color={s.late_count ? '#e2445c' : '#00c875'} icon="alert" sub={`após ${data.day_start?.start_time || data.work_start}`} />
-        <Kpi label="Atraso médio" value={fmtMin(s.avg_delay_min)} color="#fdab3d" icon="clock" />
+        <Kpi label="Tarefas concluídas" value={data.people.reduce((a, p) => a + p.done.length, 0)} color="#00c875" icon="check" sub="no dia, por toda a equipe" />
         <Kpi label="Horas trabalhadas" value={fmtMin(s.total_worked_min)} color="#0073ea" icon="clock" sub={`jornada esperada ${fmtMin(data.expected_min)} por pessoa`} />
         <Kpi label="Inatividade" value={fmtMin(s.total_idle_min)} color="#676879" icon="clock" sub="lacunas sem atividade na jornada" />
         <Kpi label="Hora extra" value={fmtMin(s.total_overtime_min)} color="#a25ddc" icon="clock" sub={`fora de ${data.work_start}–${data.work_end} ou no almoço`} />
@@ -80,9 +79,8 @@ export default function Timeline() {
 
       <Card>
         <div className="tl-legend">
-          <span><i className="lg-delay" /> Atraso até a 1ª atividade</span>
           <span><i className="lg-idle" /> Inatividade (lacuna sem atividade)</span>
-          <span><i className="lg-inferred" /> Tempo estimado (concluída sem cronômetro)</span>
+          <span><i className="lg-inferred" /> Tempo pela conclusão (da conclusão anterior até esta)</span>
           <span><i className="lg-extra" /> Fora da jornada (hora extra)</span>
           <span><i className="lg-lunch" /> Almoço de 1h (adiado se houver atividade em andamento às {data.lunch_start}; trabalho nele conta como extra)</span>
           <span><i className="lg-plan" /> Horário previsto de tarefa</span>
@@ -105,12 +103,10 @@ export default function Timeline() {
                     <div className="row gap-s"><Avatar name={p.name} id={p.id} size={26} /><b>{p.name}</b></div>
                     {p.entries.length ? (
                       <small>
-                        Início <b>{hhmm(m.first_start)}</b>{' '}
-                        {m.delay_min > 0 ? <span className="tag danger">+{fmtMin(m.delay_min)} atraso</span> : <span className="tag ok">no horário</span>}
-                        {m.idle_min > 0 && <><br />Inativo <b className="idle-text">{fmtMin(m.idle_min)}</b></>}
-                        <br />Trabalhado <b>{fmtMin(m.worked_min)}</b>{m.overtime_min > 0 && <> · extra <b className="purple">{fmtMin(m.overtime_min)}</b></>}
+                        Trabalhado <b>{fmtMin(m.worked_min)}</b>{m.overtime_min > 0 && <> · extra <b className="purple">{fmtMin(m.overtime_min)}</b></>}
                         <br />Almoço <b>{hhmm(m.lunch_from)}–{hhmm(m.lunch_to)}</b>{m.lunch_delayed_min > 0 && <span className="muted"> (adiado)</span>}
                         {m.lunch_min > 0 && <span className="purple"> · {fmtMin(m.lunch_min)} trabalhando</span>}
+                        {m.idle_min > 0 && <><br />Inativo <b className="idle-text">{fmtMin(m.idle_min)}</b></>}
                       </small>
                     ) : <small className="muted">Sem apontamento</small>}
                     {p.done.length > 0 && <small className="block muted">{p.done.length} concluída(s) · última às <b>{hhmm(p.done[p.done.length - 1].min)}</b></small>}
@@ -124,7 +120,6 @@ export default function Timeline() {
                     <span className="tl-work-line" style={{ left: x(ws) }} />
                     <span className="tl-work-line end" style={{ left: x(we) }} />
                     {data.day_start && m.start_min > ws && <span className="tl-skip" style={{ left: x(ws), width: w(ws, m.start_min) }} title={`Não considerado: início deste dia ajustado para ${data.day_start.start_time}`} />}
-                    {m.delay_min > 0 && <span className="tl-delay" style={{ left: x(m.start_min ?? ws), width: w(m.start_min ?? ws, m.first_start) }} title={`Atraso de ${fmtMin(m.delay_min)} até a primeira atividade`} />}
                     {(m.idle_gaps || []).map((g) => (
                       <span key={g.from} className="tl-idle" style={{ left: x(g.from), width: w(g.from, g.to) }}
                         title={`Inativo ${hhmm(g.from)}–${hhmm(g.to)} (${fmtMin(g.to - g.from)})`}>{g.to - g.from >= 25 && <em>Inativo</em>}</span>
@@ -134,7 +129,7 @@ export default function Timeline() {
                       return (
                         <button key={e.id} className={'tl-block' + (e.running ? ' running' : '') + (e.source === 'manual' ? ' manual' : '') + (e.source === 'inferred' ? ' inferred' : '')}
                           style={{ left: x(e.start_min), width: `max(3px, ${w(e.start_min, end)})`, background: e.color }}
-                          title={`${e.task_title}${e.subtask_title ? ' › ' + e.subtask_title : ''}\n${hhmm(e.start_min)}–${e.running ? 'agora' : hhmm(end)} (${fmtMin(end - e.start_min)})${e.source === 'manual' ? ' · lançamento manual' : e.source === 'inferred' ? ' · tempo estimado (concluída sem cronômetro)' : ''}`}
+                          title={`${e.task_title}${e.subtask_title ? ' › ' + e.subtask_title : ''}\n${hhmm(e.start_min)}–${e.running ? 'agora' : hhmm(end)} (${fmtMin(end - e.start_min)})${e.source === 'manual' ? ' · lançamento manual' : e.source === 'inferred' ? ' · calculado pela conclusão' : ''}`}
                           onClick={() => openTask(e.task_id)}>
                           <span>{e.subtask_title || e.task_title}</span>
                         </button>
@@ -158,20 +153,19 @@ export default function Timeline() {
         </div>
       </Card>
 
-      <Card title="Últimos 7 dias · início da 1ª atividade e hora extra">
+      <Card title="Últimos 7 dias · tempo trabalhado e hora extra">
         <div className="table-scroll">
           <table className="simple tl-week">
             <thead>
               <tr>
                 <th>Colaborador</th>
                 {data.days.map((d) => <th key={d} className={d === date ? 'sel' : ''}>{fmtWeekday(d)} {fmtDate(d)}</th>)}
-                <th>Dias com atraso</th><th>Atraso total</th><th>Hora extra</th>
+                <th>Total trabalhado</th><th>Hora extra</th>
               </tr>
             </thead>
             <tbody>
               {data.people.map((p) => {
                 const worked = p.week.filter((d) => d.first_start != null);
-                const lateDays = worked.filter((d) => d.delay_min > 0);
                 return (
                   <tr key={p.id}>
                     <td><span className="row gap-s"><Avatar name={p.name} id={p.id} size={22} />{p.name}</span></td>
@@ -179,15 +173,13 @@ export default function Timeline() {
                       <td key={d.date} className={d.date === date ? 'sel' : ''} onClick={() => setDate(d.date)} style={{ cursor: 'pointer' }}>
                         {d.first_start == null ? <span className="muted">—</span> : (
                           <>
-                            <b className={d.delay_min > 0 ? 'danger-text' : 'ok-text'}>{hhmm(d.first_start)}</b>
-                            {d.delay_min > 0 && <small className="danger-text"> +{fmtMin(d.delay_min)}</small>}
-                            <br /><small className="muted">{fmtMin(d.worked_min)}{d.overtime_min > 0 && <span className="purple"> · +{fmtMin(d.overtime_min)} extra</span>}</small>
+                            <b>{fmtMin(d.worked_min)}</b>
+                            {d.overtime_min > 0 && <><br /><small className="purple">+{fmtMin(d.overtime_min)} extra</small></>}
                           </>
                         )}
                       </td>
                     ))}
-                    <td>{lateDays.length}/{worked.length}</td>
-                    <td className={lateDays.length ? 'danger-text' : ''}>{fmtMin(lateDays.reduce((a, d) => a + d.delay_min, 0))}</td>
+                    <td><b>{fmtMin(worked.reduce((a, d) => a + d.worked_min, 0))}</b></td>
                     <td className="purple">{fmtMin(p.week.reduce((a, d) => a + d.overtime_min, 0))}</td>
                   </tr>
                 );

@@ -64,7 +64,7 @@ export function dayMetrics(entries, ws, we, ls0 = null, le0 = null, opts = {}) {
   const idle = idleGaps.reduce((s, g) => s + (g.to - g.from), 0);
   return {
     first_start: first, last_end: last, start_min: startMin,
-    delay_min: Math.round(Math.max(0, first - startMin)),
+    delay_min: 0, // atraso não é mais calculado: a 1ª tarefa conta do início da jornada até a conclusão
     worked_min: Math.round(worked), inside_min: Math.round(inside), overtime_min: Math.round(before + after + lunch),
     before_min: Math.round(before), after_min: Math.round(after), lunch_min: Math.round(lunch), idle_min: Math.round(idle),
     idle_gaps: idleGaps,
