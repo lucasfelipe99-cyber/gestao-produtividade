@@ -139,11 +139,12 @@ export function TaskTable({ tasks, groupBy = 'status', showDate = false }) {
       }[groupBy];
       const k = G[0] || 0;
       const label = G[1] || G[2];
-      if (!map.has(k)) map.set(k, { key: k, label, items: [] });
+      if (!map.has(k)) map.set(k, { key: k, label, items: [], color: groupBy === 'business' && t.business_id ? t.business_color : null });
       map.get(k).items.push(t);
     }
-    groups = [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
-    groups.forEach((g, i) => (g.color = ['#0073ea', '#a25ddc', '#00c875', '#fdab3d', '#e2445c', '#579bfc'][i % 6]));
+    // grupos "Sem ..." vão para o fim
+    groups = [...map.values()].sort((a, b) => (a.key === 0) - (b.key === 0) || a.label.localeCompare(b.label));
+    groups.forEach((g, i) => (g.color = g.color || (g.key === 0 ? '#c4c4c4' : ['#0073ea', '#a25ddc', '#00c875', '#fdab3d', '#e2445c', '#579bfc'][i % 6])));
   }
   return (
     <div className="board">

@@ -7,7 +7,8 @@ import { TaskTable, Kanban, CalendarView, TaskFilters, qs } from '../components/
 import TaskForm from '../components/TaskForm.jsx';
 
 const TYPES = [['all', 'Todas'], ['daily', 'Diárias'], ['weekly', 'Semanais'], ['oneoff', 'Pontuais']];
-const DEFAULT_GROUP = { all: 'kind', daily: 'status', weekly: 'assignee', oneoff: 'deadline' };
+// padrão: separado por empresa (cada cliente em um grupo)
+const DEFAULT_GROUP = { all: 'business', daily: 'business', weekly: 'business', oneoff: 'business' };
 const ls = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch { /* */ } return null; };
 
 // Aba única de tarefas: diárias do dia, semanais da semana e pontuais em aberto
@@ -84,9 +85,9 @@ export default function AllTasks() {
         <Segmented value={view} onChange={changeView} options={[['table', 'Tabela', 'list'], ['kanban', 'Kanban', 'kanban'], ['calendar', 'Calendário', 'calendar']]} />
         {view === 'table' && (
           <select value={group} onChange={(e) => setGroup(e.target.value)} className="sm">
-            <option value="kind">Agrupar por tipo</option><option value="status">Agrupar por status</option><option value="deadline">Agrupar por prazo</option>
+            <option value="business">Agrupar por empresa</option><option value="kind">Agrupar por tipo</option><option value="status">Agrupar por status</option><option value="deadline">Agrupar por prazo</option>
             {isAdmin && <option value="assignee">Agrupar por colaborador</option>}
-            <option value="team">Agrupar por equipe</option><option value="business">Agrupar por empresa</option><option value="channel">Agrupar por canal</option>
+            <option value="team">Agrupar por equipe</option><option value="channel">Agrupar por canal</option>
           </select>
         )}
         <TaskFilters filters={filters} setFilters={setFilters} extra={type === 'oneoff' && (
