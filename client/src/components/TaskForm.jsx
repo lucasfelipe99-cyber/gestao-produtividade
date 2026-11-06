@@ -37,13 +37,15 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
   };
 
   return (
-    <Modal title={editing ? 'Editar tarefa' : isAdmin ? 'Nova tarefa' : 'Adicionar tarefa ao meu dia'} onClose={onClose} wide
+    <Modal title={editing ? 'Editar tarefa' : 'Nova tarefa'} onClose={onClose} wide
       footer={<><button className="btn" onClick={onClose}>Cancelar</button><button className="btn primary" disabled={busy} onClick={save}>{editing ? 'Salvar alterações' : 'Criar tarefa'}</button></>}>
       <div className="grid-form">
+        <div className="kind-pick">
+          {[['daily', 'Diária', 'Para um dia; pode se repetir'], ['weekly', 'Semanal', 'Para a semana; pode se repetir'], ['oneoff', 'Pontual', 'Avulsa, com prazo de entrega']].map(([k, l, d]) => (
+            <button type="button" key={k} className={f.kind === k ? 'on' : ''} onClick={() => setF({ ...f, kind: k, recurrence: k === 'oneoff' ? '' : f.recurrence })}><b>{l}</b><small>{d}</small></button>
+          ))}
+        </div>
         <Field label="Nome da tarefa *"><input autoFocus value={f.title} onChange={set('title')} placeholder="Ex.: Atualizar preços no Mercado Livre" /></Field>
-        <Field label="Tipo">
-          <select value={f.kind} onChange={set('kind')}><option value="daily">Diária</option><option value="weekly">Semanal</option><option value="oneoff">Pontual (avulsa, com prazo)</option></select>
-        </Field>
         <Field label="Descrição detalhada" ><textarea rows={3} value={f.description} onChange={set('description')} /></Field>
         <Field label="Empresa">
           <select value={f.business_id || ''} onChange={set('business_id')}>
@@ -71,7 +73,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
           </select>
         </Field>
         </>)}
-        <Field label={f.kind === 'daily' ? 'Data de execução' : f.kind === 'oneoff' ? 'Prazo de entrega' : 'Prazo de conclusão'}><input type="date" value={f.due_date} onChange={set('due_date')} /></Field>
+        <Field label={f.kind === 'daily' ? 'Data de execução' : f.kind === 'oneoff' ? 'Prazo de entrega' : 'Prazo de conclusão (semana desta data)'}><input type="date" value={f.due_date} onChange={set('due_date')} /></Field>
         <Field label="Horário previsto"><input type="time" value={f.scheduled_time} onChange={set('scheduled_time')} /></Field>
         <Field label="Prioridade">
           <select value={f.priority} onChange={set('priority')}>{Object.entries(PRIORITY).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select>

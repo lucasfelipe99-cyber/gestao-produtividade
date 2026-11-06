@@ -189,7 +189,8 @@ export async function report({ companyId, tz, from, to, userId, status, dims }) 
   const summary = await one(
     `SELECT count(*)::int AS tasks, count(*) FILTER (WHERE status='done')::int AS done,
        COALESCE(sum(estimated_minutes),0)::int AS estimated_minutes FROM tasks t WHERE ${f.where}`, f.params);
-  const timeTotal = await one(`SELECT COALESCE(sum(e.seconds),0)::int AS seconds FROM time_entries e JOIN tasks t ON t.id=e.task_id WHERE ${ef.where}`, ef.params);
+  const timeTotal = await one(`SELECT COALESCE(sum(e.seconds),0)::int AS seconds,
+    COALESCE(sum(e.seconds) FILTER (WHERE e.source='inferred'),0)::int AS inferred_seconds FROM time_entries e JOIN tasks t ON t.id=e.task_id WHERE ${ef.where}`, ef.params);
 
   const byCategory = await many(
     `SELECT COALESCE(c.name,'Sem categoria') AS category, COALESCE(c.color,'#c4c4c4') AS color,
@@ -198,7 +199,8 @@ export async function report({ companyId, tz, from, to, userId, status, dims }) 
      WHERE ${ef.where} GROUP BY 1,2 ORDER BY seconds DESC`, ef.params);
 
   const byUser = await many(
-    `SELECT u.name AS user, count(DISTINCT e.task_id)::int AS tasks, COALESCE(sum(e.seconds),0)::int AS seconds
+    `SELECT u.name AS user, count(DISTINCT e.task_id)::int AS tasks, COALESCE(sum(e.seconds),0)::int AS seconds,
+       COALESCE(sum(e.seconds) FILTER (WHERE e.source='inferred'),0)::int AS inferred_seconds
      FROM time_entries e JOIN tasks t ON t.id=e.task_id JOIN users u ON u.id=e.user_id
      WHERE ${ef.where} GROUP BY 1 ORDER BY seconds DESC`, ef.params);
 
@@ -245,5 +247,5 @@ export async function report({ companyId, tz, from, to, userId, status, dims }) 
   const evolution = await dailySeries({ companyId, tz, from, to, userId, dims });
   const users = await perUser({ companyId, tz, from, to, userId, dims });
   const bd = await breakdowns({ companyId, from, to, tz, userId, dims });
-  return { summary: { ...summary, seconds: timeTotal.seconds }, byCategory, byUser, topActivities, lateByCategory, mostLate, estVsActual, evolution, users, tasks, ...bd };
+  return { summary: { ...summary, seconds: timeTotal.seconds, inferred_seconds: timeTotal.inferred_seconds }, byCategory, byUser, topActivities, lateByCategory, mostLate, estVsActual, evolution, users, tasks, ...bd };
 }

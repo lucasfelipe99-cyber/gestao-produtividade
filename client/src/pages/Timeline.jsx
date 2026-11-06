@@ -73,6 +73,7 @@ export default function Timeline() {
         <div className="tl-legend">
           <span><i className="lg-delay" /> Atraso até a 1ª atividade</span>
           <span><i className="lg-idle" /> Inatividade (lacuna sem atividade)</span>
+          <span><i className="lg-inferred" /> Tempo estimado (concluída sem cronômetro)</span>
           <span><i className="lg-extra" /> Fora da jornada (hora extra)</span>
           <span><i className="lg-lunch" /> Almoço de 1h (adiado se houver atividade em andamento às {data.lunch_start}; trabalho nele conta como extra)</span>
           <span><i className="lg-plan" /> Horário previsto de tarefa</span>
@@ -120,9 +121,9 @@ export default function Timeline() {
                     {p.entries.map((e) => {
                       const end = live(e);
                       return (
-                        <button key={e.id} className={'tl-block' + (e.running ? ' running' : '') + (e.source === 'manual' ? ' manual' : '')}
+                        <button key={e.id} className={'tl-block' + (e.running ? ' running' : '') + (e.source === 'manual' ? ' manual' : '') + (e.source === 'inferred' ? ' inferred' : '')}
                           style={{ left: x(e.start_min), width: `max(3px, ${w(e.start_min, end)})`, background: e.color }}
-                          title={`${e.task_title}${e.subtask_title ? ' › ' + e.subtask_title : ''}\n${hhmm(e.start_min)}–${e.running ? 'agora' : hhmm(end)} (${fmtMin(end - e.start_min)})${e.source === 'manual' ? ' · lançamento manual' : ''}`}
+                          title={`${e.task_title}${e.subtask_title ? ' › ' + e.subtask_title : ''}\n${hhmm(e.start_min)}–${e.running ? 'agora' : hhmm(end)} (${fmtMin(end - e.start_min)})${e.source === 'manual' ? ' · lançamento manual' : e.source === 'inferred' ? ' · tempo estimado (concluída sem cronômetro)' : ''}`}
                           onClick={() => openTask(e.task_id)}>
                           <span>{e.subtask_title || e.task_title}</span>
                         </button>

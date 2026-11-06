@@ -267,3 +267,22 @@ DO $$ BEGIN
     INSERT INTO app_meta (key) VALUES ('v8_inicio_04_11');
   END IF;
 END $$;
+
+-- v9: abas de tarefas unificadas em "tarefas"
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v9_aba_tarefas') THEN
+    UPDATE users SET allowed_tabs = array_append(array_remove(array_remove(array_remove(allowed_tabs, 'diarias'), 'semanais'), 'pontuais'), 'tarefas')
+      WHERE allowed_tabs IS NOT NULL AND allowed_tabs && ARRAY['diarias','semanais','pontuais'];
+    UPDATE users SET allowed_tabs = array_remove(array_remove(array_remove(allowed_tabs, 'diarias'), 'semanais'), 'pontuais')
+      WHERE allowed_tabs IS NOT NULL;
+    INSERT INTO app_meta (key) VALUES ('v9_aba_tarefas');
+  END IF;
+END $$;
+
+-- v9: tempo estimado (tarefa concluída sem cronômetro)
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'time_entries_source_check' AND pg_get_constraintdef(oid) LIKE '%inferred%') THEN
+    ALTER TABLE time_entries DROP CONSTRAINT IF EXISTS time_entries_source_check;
+    ALTER TABLE time_entries ADD CONSTRAINT time_entries_source_check CHECK (source IN ('timer','manual','inferred'));
+  END IF;
+END $$;

@@ -4,15 +4,13 @@ import { api, connectLive, disconnectLive, useData, onToast, toast, useTick, fmt
 import { Icon, Avatar, Modal, Field } from './ui.jsx';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
-import Daily from './pages/Daily.jsx';
-import Weekly from './pages/Weekly.jsx';
+import AllTasks from './pages/AllTasks.jsx';
 import Goals from './pages/Goals.jsx';
 import Reports from './pages/Reports.jsx';
 import Team from './pages/Team.jsx';
 import History from './pages/History.jsx';
 import Timeline from './pages/Timeline.jsx';
 import Summary from './pages/Summary.jsx';
-import Oneoff from './pages/Oneoff.jsx';
 import TaskDrawer from './components/TaskDrawer.jsx';
 
 const Ctx = createContext(null);
@@ -55,9 +53,7 @@ function Shell({ me, onLogout }) {
   const ALL = [
     ['/', 'dashboard', isAdmin ? 'Dashboard' : 'Meu painel', 'dashboard', <Dashboard />],
     ['/resumo', 'note', 'Resumo', null, <Summary />],
-    ['/diarias', 'today', 'Tarefas diárias', 'diarias', <Daily />],
-    ['/semanais', 'week', 'Tarefas semanais', 'semanais', <Weekly />],
-    ['/pontuais', 'target', 'Tarefas pontuais', 'pontuais', <Oneoff />],
+    ['/tarefas', 'today', 'Tarefas', 'tarefas', <AllTasks />],
     ['/linha-do-tempo', 'timeline', 'Linha do tempo', 'linha-do-tempo', <Timeline />],
     ['/metas', 'target', 'Metas e atingimento', 'metas', <Goals />],
     ['/relatorios', 'chart', 'Relatórios', 'relatorios', <Reports />],
@@ -96,6 +92,9 @@ function Shell({ me, onLogout }) {
           <div className="content">
             <Routes>
               {nav.map(([to, , , , el]) => <Route key={to} path={to} element={el} />)}
+              <Route path="/diarias" element={<Navigate to="/tarefas?tipo=daily" replace />} />
+              <Route path="/semanais" element={<Navigate to="/tarefas?tipo=weekly" replace />} />
+              <Route path="/pontuais" element={<Navigate to="/tarefas?tipo=oneoff" replace />} />
               <Route path="*" element={<Navigate to={home} />} />
             </Routes>
           </div>

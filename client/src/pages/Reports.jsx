@@ -39,7 +39,8 @@ export default function Reports() {
           <div className="kpis">
             <Kpi label="Tarefas no período" value={data.summary.tasks} icon="list" />
             <Kpi label="Tarefas realizadas" value={data.summary.done} color="#00c875" icon="check" />
-            <Kpi label="Tempo apontado" value={fmtDur(data.summary.seconds)} color="#a25ddc" icon="clock" />
+            <Kpi label="Tempo apontado" value={fmtDur(data.summary.seconds)} color="#a25ddc" icon="clock"
+              sub={data.summary.inferred_seconds ? `${fmtDur(data.summary.inferred_seconds)} estimado (sem cronômetro)` : 'todo pelo cronômetro ou manual'} />
             <Kpi label="Estimado x realizado (concluídas)" value={fmtMin(data.estVsActual.actual_minutes)}
               color={data.estVsActual.actual_minutes > data.estVsActual.estimated_minutes ? '#e2445c' : '#00c875'} icon="target"
               sub={`de ${fmtMin(data.estVsActual.estimated_minutes)} estimados` + (data.estVsActual.estimated_minutes ? ` · ${Math.round((data.estVsActual.actual_minutes / data.estVsActual.estimated_minutes) * 100)}%` : '')} />
@@ -64,11 +65,12 @@ export default function Reports() {
             <Card title="Tempo gasto por colaborador" className="span-1">
               {data.byUser.length ? (
                 <ResponsiveContainer width="100%" height={260}>
-                  <BarChart layout="vertical" data={data.byUser}>
+                  <BarChart layout="vertical" data={data.byUser.map((u) => ({ ...u, real: u.seconds - (u.inferred_seconds || 0) }))}>
                     <XAxis type="number" tickFormatter={hoursTick} tick={{ fontSize: 11 }} />
                     <YAxis type="category" dataKey="user" width={90} tick={{ fontSize: 12 }} />
                     <Tooltip {...tip} formatter={(v) => fmtDur(v)} />
-                    <Bar dataKey="seconds" name="Tempo" fill="#0073ea" radius={[0, 4, 4, 0]} />
+                    <Bar dataKey="real" name="Cronômetro/manual" stackId="t" fill="#0073ea" />
+                    <Bar dataKey="inferred_seconds" name="Estimado (sem cronômetro)" stackId="t" fill="#9cc3f5" radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : <Empty>Sem tempo registrado.</Empty>}

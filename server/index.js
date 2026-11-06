@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { pool, q, one, many, tx, migrate, logEvent, subscribe, broadcast } from './db.js';
 import { runAutomationForCompany, startAutomationLoop, ensureAutomation, insertTaskFromTemplate, generateRecurrence, nextOccurrence, RECURRENCE_HORIZON_DAYS } from './automation.js';
-import { timeline } from './timeline.js';
+import { timeline, effectiveLunch } from './timeline.js';
 import { aiEnabled, summarizeNotes } from './ai.js';
 import { dashboard, report, attainment, perUser, weeklySeries } from './metrics.js';
 import { todayIn, addDays, weekStart, isDate, isBusinessDay, addMonths } from './dates.js';
@@ -57,7 +57,7 @@ async function auth(req, _res, next) {
 }
 const adminOnly = (req, _res, next) => (isAdmin(req.user) ? next() : next(new HttpError(403, 'Apenas administradores')));
 // Abas do sistema que o administrador pode liberar/bloquear por colaborador
-export const TABS = ['dashboard', 'diarias', 'semanais', 'pontuais', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
+export const TABS = ['dashboard', 'tarefas', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
 const canTab = (u, tab) => isAdmin(u) || !u.allowed_tabs || u.allowed_tabs.includes(tab);
 const requireTab = (tab) => (req, _res, next) => (canTab(req.user, tab) ? next() : next(new HttpError(403, 'Você não tem acesso a esta área')));
 
@@ -314,7 +314,7 @@ app.get('/api/tasks', wrap(async (req, res) => {
   const { from, to, week, assignee, status, category, team, mine, business, channel } = req.query;
   let { kind } = req.query;
   // colaborador só recebe os tipos de tarefa das abas liberadas para ele
-  const kinds = [['daily', 'diarias'], ['weekly', 'semanais'], ['oneoff', 'pontuais']].filter(([, tab]) => canTab(u, tab)).map(([k]) => k);
+  const kinds = canTab(u, 'tarefas') ? ['daily', 'weekly', 'oneoff'] : [];
   if (!kinds.length) throw new HttpError(403, 'Você não tem acesso às tarefas');
   if (kind && !kinds.includes(kind)) return res.json([]);
   const params = [u.company_id, today];
@@ -447,8 +447,9 @@ app.patch('/api/tasks/:id', wrap(async (req, res) => {
     }
     if (data.status && data.status !== t.status) {
       if (data.status === 'done') data.completed_at = new Date();
-      else if (t.status === 'done') data.completed_at = null;
+      else if (t.status === 'done') { data.completed_at = null; await dropInferred(db, 'task_id=$1', [t.id]); }
       if (['done', 'paused', 'cancelled', 'not_started'].includes(data.status)) await closeOpenEntries(db, t);
+      if (data.status === 'done') await inferTime(db, t, u.id);
     }
     const diff = {};
     for (const [k, v] of Object.entries(data)) {
@@ -572,6 +573,69 @@ app.post('/api/recurrences/:id/stop', adminOnly, wrap(async (req, res) => {
 }));
 
 // ---------- controle de tempo ----------
+
+// ---------- tempo estimado (tarefa concluída sem cronômetro) ----------
+// Período = da última conclusão/fim de atividade do colaborador no dia (ou do início da jornada) até agora,
+// só nas lacunas (nunca sobre tempo real), sem o almoço, e só se o total for de até 2h.
+const INFER_MAX_MIN = 120;
+const hm = (s) => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
+async function inferTime(db, t, userId) {
+  if (!t.assignee_id || t.assignee_id !== userId) return 0;
+  if ((await db.query('SELECT 1 FROM time_entries WHERE task_id=$1 LIMIT 1', [t.id])).rowCount) return 0;
+  const c = (await db.query(
+    `SELECT c.timezone AS tz, to_char(c.work_start,'HH24:MI') AS ws, to_char(c.lunch_start,'HH24:MI') AS ls, to_char(c.lunch_end,'HH24:MI') AS le,
+       to_char(now() AT TIME ZONE c.timezone,'YYYY-MM-DD') AS day,
+       EXTRACT(EPOCH FROM ((now() AT TIME ZONE c.timezone) - date_trunc('day', now() AT TIME ZONE c.timezone)))/60 AS now_min,
+       (SELECT to_char(d.start_time,'HH24:MI') FROM day_starts d WHERE d.company_id=c.id AND d.day=(now() AT TIME ZONE c.timezone)::date) AS day_start
+     FROM companies c WHERE c.id=$1`, [t.company_id])).rows[0];
+  const end = Number(c.now_min);
+  const minOf = (col) => `EXTRACT(EPOCH FROM ((${col} AT TIME ZONE $2) - ($3::date)::timestamp))/60`;
+  const ents = (await db.query(
+    `SELECT ${minOf('e.started_at')} AS s, ${minOf('COALESCE(e.ended_at, now())')} AS e, e.source FROM time_entries e
+     WHERE e.user_id=$1 AND COALESCE(e.ended_at, now()) > ($3::date::timestamp AT TIME ZONE $2) AND e.started_at < now()`,
+    [userId, c.tz, c.day])).rows.map((r) => ({ start_min: Math.max(0, Number(r.s)), end_min: Number(r.e), source: r.source }));
+  const lastDone = (await db.query(
+    `SELECT max(${minOf('completed_at')}) AS m FROM tasks WHERE assignee_id=$1 AND id<>$4 AND status='done'
+       AND completed_at >= ($3::date::timestamp AT TIME ZONE $2) AND completed_at <= now()`, [userId, c.tz, c.day, t.id])).rows[0].m;
+  let start = hm(c.day_start || c.ws);
+  for (const e of ents) if (e.end_min <= end + 0.01) start = Math.max(start, e.end_min);
+  if (lastDone != null) start = Math.max(start, Number(lastDone));
+  if (end - start < 1) return 0;
+  const lunch = effectiveLunch(ents.filter((e) => e.source !== 'inferred'), hm(c.ls), hm(c.le));
+  const busy = ents.map((e) => [e.start_min, e.end_min]);
+  if (lunch) busy.push([lunch.from, lunch.to]);
+  busy.sort((a, b) => a[0] - b[0]);
+  const segs = [];
+  let cur = start;
+  for (const [a, b] of busy) {
+    if (b <= cur) continue;
+    if (a >= end) break;
+    if (a > cur) segs.push([cur, a]);
+    cur = Math.max(cur, b);
+  }
+  if (end > cur) segs.push([cur, end]);
+  const good = segs.filter(([a, b]) => b - a >= 1);
+  const total = good.reduce((s, [a, b]) => s + (b - a), 0);
+  if (total < 1 || total > INFER_MAX_MIN) return 0;
+  let secs = 0;
+  for (const [a, b] of good) {
+    const r = (await db.query(
+      `INSERT INTO time_entries (company_id, task_id, user_id, started_at, ended_at, seconds, source)
+       VALUES ($1,$2,$3, ($4::date::timestamp + make_interval(secs => $5)) AT TIME ZONE $7, LEAST(now(), ($4::date::timestamp + make_interval(secs => $6)) AT TIME ZONE $7),
+         GREATEST(1, round($6 - $5)::int), 'inferred') RETURNING seconds, started_at`,
+      [t.company_id, t.id, userId, c.day, a * 60, b * 60, c.tz])).rows[0];
+    secs += r.seconds;
+  }
+  await db.query(`UPDATE tasks SET tracked_seconds=tracked_seconds+$1, started_at=COALESCE(started_at, now() - make_interval(secs => $1)) WHERE id=$2`, [secs, t.id]);
+  return secs;
+}
+// remove tempo estimado (tarefa reaberta ou período substituído por lançamento real)
+async function dropInferred(db, where, params) {
+  const rows = (await db.query(`DELETE FROM time_entries WHERE source='inferred' AND ${where} RETURNING task_id, seconds`, params)).rows;
+  for (const r of rows) await db.query('UPDATE tasks SET tracked_seconds=GREATEST(0, tracked_seconds-$1) WHERE id=$2', [r.seconds, r.task_id]);
+  return rows.length;
+}
+
 async function applyClosed(db, taskId, rows) {
   const add = rows.reduce((s, r) => s + r.seconds, 0);
   if (add) await db.query('UPDATE tasks SET tracked_seconds=tracked_seconds+$1 WHERE id=$2', [add, taskId]);
@@ -615,8 +679,9 @@ app.post('/api/tasks/:id/start', wrap(async (req, res) => {
     }
     const otherUser = (await db.query('SELECT 1 FROM time_entries WHERE task_id=$1 AND ended_at IS NULL', [t.id])).rowCount;
     if (otherUser) throw new HttpError(409, 'Outro colaborador está com o cronômetro desta tarefa ativo');
-    await db.query(`INSERT INTO time_entries (company_id, task_id, user_id, started_at, source) VALUES ($1,$2,$3,now(),'timer')`, [u.company_id, t.id, u.id]);
     const wasDone = t.status === 'done';
+    if (wasDone) await dropInferred(db, 'task_id=$1', [t.id]);
+    await db.query(`INSERT INTO time_entries (company_id, task_id, user_id, started_at, source) VALUES ($1,$2,$3,now(),'timer')`, [u.company_id, t.id, u.id]);
     await db.query(
       `UPDATE tasks SET status='in_progress', started_at=COALESCE(started_at, now()), completed_at=NULL, updated_at=now() WHERE id=$1`, [t.id]);
     const action = wasDone ? 'reopened' : t.status === 'paused' ? 'resumed' : 'started';
@@ -650,10 +715,11 @@ app.post('/api/tasks/:id/finish', wrap(async (req, res) => {
     const open = (await db.query('SELECT user_id FROM time_entries WHERE task_id=$1 AND ended_at IS NULL', [t.id])).rows[0];
     if (open && open.user_id !== u.id && !isAdmin(u)) throw new HttpError(403, 'Outro colaborador está com o cronômetro ativo nesta tarefa');
     const secs = await closeOpenEntries(db, t);
+    const inferred = await inferTime(db, t, u.id);
     const r = (await db.query(
       `UPDATE tasks SET status='done', completed_at=now(), updated_at=now() WHERE id=$1 RETURNING tracked_seconds`, [t.id])).rows[0];
     await logEvent(db, { companyId: u.company_id, taskId: t.id, taskTitle: t.title, userId: u.id, action: 'finished',
-      details: { last_period_seconds: secs, total_seconds: r.tracked_seconds } });
+      details: { last_period_seconds: secs, total_seconds: r.tracked_seconds, ...(inferred && { inferred_seconds: inferred }) } });
     if (t.parent_task_id) await logEvent(db, { companyId: u.company_id, taskId: t.parent_task_id, userId: u.id, action: 'partner_delivered', details: { partner_task: t.title } });
   });
   changed(req);
@@ -675,6 +741,8 @@ app.post('/api/tasks/:id/manual-time', wrap(async (req, res) => {
     const t = await loadTask(db, req, req.params.id, { forUpdate: true });
     if (t.status === 'cancelled') throw new HttpError(400, 'Tarefa cancelada');
     await assertRefs(db, u.company_id, { assignee_id: who });
+    // lançamento real substitui tempo estimado no mesmo período
+    await dropInferred(db, 'user_id=$1 AND tstzrange(started_at, ended_at) && tstzrange($2,$3)', [who, s, e]);
     const overlap = (await db.query(
       `SELECT 1 FROM time_entries WHERE user_id=$1 AND tstzrange(started_at, COALESCE(ended_at, now())) && tstzrange($2,$3)`, [who, s, e])).rowCount;
     if (overlap) throw new HttpError(409, 'Esse período se sobrepõe a outro registro de tempo do colaborador');

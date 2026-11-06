@@ -56,11 +56,13 @@ export function TaskButtons({ task, compact }) {
   );
 }
 
-function Badges({ task, showKind }) {
+const KIND_TAG = { daily: ['Diária', 'k-daily'], weekly: ['Semanal', 'k-weekly'], oneoff: ['Pontual', 'k-oneoff'] };
+function Badges({ task, showKind = true }) {
+  const k = KIND_TAG[task.kind];
   return (
     <span className="badges">
+      {showKind && k && <span className={'tag kind ' + k[1]}>{k[0]}</span>}
       {task.carried && <span className="tag warn" title="Pendência de semana anterior">Pendência anterior</span>}
-      {task.kind === 'oneoff' && showKind && <span className="tag oneoff">Pontual</span>}
       {task.rollover_count > 0 && <span className="tag warn" title={`Planejada para ${fmtDate(task.planned_date)}`}>Transferida {task.rollover_count}x</span>}
       {task.overdue && !task.carried && !task.rollover_count && <span className="tag danger">Vencida</span>}
       {task.recurrence_id && <span className="tag" title="Tarefa recorrente"><Icon name="repeat" size={12} /></span>}
@@ -105,6 +107,9 @@ export function TaskTable({ tasks, groupBy = 'status', showDate = false }) {
       ['done', 'Concluídas', '#00c875', (t) => t.status === 'done'],
     ];
     groups = B.map(([key, label, color, fn]) => ({ key, label, color, items: tasks.filter(fn) })).filter((g) => g.items.length);
+  } else if (groupBy === 'kind') {
+    groups = [['daily', 'Diárias', '#0073ea'], ['weekly', 'Semanais', '#a25ddc'], ['oneoff', 'Pontuais', '#00a9b5']]
+      .map(([key, label, color]) => ({ key, label, color, items: tasks.filter((t) => t.kind === key) })).filter((g) => g.items.length);
   } else if (groupBy === 'status') {
     groups = STATUS_ORDER.map((s) => ({ key: s, label: STATUS[s].label, color: STATUS[s].color, items: tasks.filter((t) => t.status === s) })).filter((g) => g.items.length);
   } else {
