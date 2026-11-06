@@ -298,3 +298,25 @@ DO $$ BEGIN
     INSERT INTO app_meta (key) VALUES ('v11_nao_realizada');
   END IF;
 END $$;
+
+-- v13: mural de clientes (comentários gerais e pontos de reunião, visível a toda a equipe)
+CREATE TABLE IF NOT EXISTS client_posts (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  business_id INTEGER REFERENCES businesses(id) ON DELETE CASCADE,  -- NULL = geral (todos os clientes)
+  parent_id INTEGER REFERENCES client_posts(id) ON DELETE CASCADE,  -- resposta
+  author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL DEFAULT 'comment' CHECK (kind IN ('comment','meeting')),
+  meeting_date DATE,
+  body TEXT NOT NULL,
+  pinned BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS client_posts_biz ON client_posts (company_id, business_id, created_at DESC);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v13_aba_clientes') THEN
+    UPDATE users SET allowed_tabs = array_append(allowed_tabs, 'clientes') WHERE allowed_tabs IS NOT NULL AND NOT 'clientes' = ANY(allowed_tabs);
+    INSERT INTO app_meta (key) VALUES ('v13_aba_clientes');
+  END IF;
+END $$;

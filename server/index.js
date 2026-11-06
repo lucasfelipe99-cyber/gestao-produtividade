@@ -57,7 +57,7 @@ async function auth(req, _res, next) {
 }
 const adminOnly = (req, _res, next) => (isAdmin(req.user) ? next() : next(new HttpError(403, 'Apenas administradores')));
 // Abas do sistema que o administrador pode liberar/bloquear por colaborador
-export const TABS = ['dashboard', 'tarefas', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
+export const TABS = ['dashboard', 'tarefas', 'clientes', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
 const canTab = (u, tab) => isAdmin(u) || !u.allowed_tabs || u.allowed_tabs.includes(tab);
 const requireTab = (tab) => (req, _res, next) => (canTab(req.user, tab) ? next() : next(new HttpError(403, 'Você não tem acesso a esta área')));
 
@@ -954,6 +954,83 @@ app.post('/api/timeline/backfill', adminOnly, wrap(async (req, res) => {
   const r = await backfillInferred(req.user.company_id, day);
   broadcast(req.user.company_id, { type: 'tasks' });
   res.json(r);
+}));
+
+
+// ---------- mural de clientes ----------
+const POST_SELECT = `SELECT p.id, p.business_id, p.parent_id, p.author_id, u.name AS author_name, p.kind,
+    to_char(p.meeting_date,'YYYY-MM-DD') AS meeting_date, p.body, p.pinned, p.created_at, p.updated_at
+  FROM client_posts p LEFT JOIN users u ON u.id=p.author_id`;
+app.get('/api/client-posts/summary', requireTab('clientes'), wrap(async (req, res) => {
+  res.json(await many(
+    `SELECT p.business_id, count(*) FILTER (WHERE p.parent_id IS NULL)::int AS posts,
+       count(*) FILTER (WHERE p.kind='meeting' AND p.parent_id IS NULL)::int AS meetings, max(p.created_at) AS last_at
+     FROM client_posts p WHERE p.company_id=$1 GROUP BY p.business_id`, [req.user.company_id]));
+}));
+app.get('/api/client-posts', requireTab('clientes'), wrap(async (req, res) => {
+  const b = req.query.business;
+  const params = [req.user.company_id];
+  let where = 'p.company_id=$1 AND p.parent_id IS NULL';
+  if (b === 'general') where += ' AND p.business_id IS NULL';
+  else if (b && b !== 'all') { params.push(parseInt(b, 10)); where += ` AND p.business_id=$${params.length}`; }
+  if (req.query.kind === 'meeting') where += " AND p.kind='meeting'";
+  if (req.query.q) { params.push(`%${String(req.query.q).slice(0, 100)}%`); where += ` AND (p.body ILIKE $${params.length} OR EXISTS (SELECT 1 FROM client_posts r WHERE r.parent_id=p.id AND r.body ILIKE $${params.length}))`; }
+  const posts = await many(`${POST_SELECT} WHERE ${where} ORDER BY p.pinned DESC, COALESCE(p.meeting_date, p.created_at::date) DESC, p.created_at DESC LIMIT 200`, params);
+  const ids = posts.map((p) => p.id);
+  const replies = ids.length ? await many(`${POST_SELECT} WHERE p.parent_id = ANY($1::int[]) ORDER BY p.created_at`, [ids]) : [];
+  for (const p of posts) p.replies = replies.filter((r) => r.parent_id === p.id);
+  res.json(posts);
+}));
+app.post('/api/client-posts', requireTab('clientes'), wrap(async (req, res) => {
+  const u = req.user;
+  const body = String(req.body?.body || '').trim();
+  if (!body) throw new HttpError(400, 'Escreva o comentário');
+  let businessId = req.body?.business_id ? parseInt(req.body.business_id, 10) : null;
+  const parentId = req.body?.parent_id ? parseInt(req.body.parent_id, 10) : null;
+  let kind = req.body?.kind === 'meeting' ? 'meeting' : 'comment';
+  let meetingDate = kind === 'meeting' ? (isDate(req.body?.meeting_date) ? req.body.meeting_date : todayIn(u.timezone)) : null;
+  if (parentId) {
+    const parent = await one('SELECT business_id FROM client_posts WHERE id=$1 AND company_id=$2 AND parent_id IS NULL', [parentId, u.company_id]);
+    if (!parent) throw new HttpError(404, 'Comentário não encontrado');
+    businessId = parent.business_id; kind = 'comment'; meetingDate = null;
+  } else if (businessId && !(await one('SELECT 1 AS x FROM businesses WHERE id=$1 AND company_id=$2', [businessId, u.company_id]))) {
+    throw new HttpError(400, 'Empresa inválida');
+  }
+  const r = await one(`INSERT INTO client_posts (company_id, business_id, parent_id, author_id, kind, meeting_date, body) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    [u.company_id, businessId, parentId, u.id, kind, meetingDate, body.slice(0, 20000)]);
+  broadcast(u.company_id, { type: 'client_posts' });
+  res.json(r);
+}));
+async function loadPost(req) {
+  const p = await one('SELECT * FROM client_posts WHERE id=$1 AND company_id=$2', [req.params.id, req.user.company_id]);
+  if (!p) throw new HttpError(404, 'Comentário não encontrado');
+  return p;
+}
+app.patch('/api/client-posts/:id', requireTab('clientes'), wrap(async (req, res) => {
+  const p = await loadPost(req);
+  const b = req.body || {};
+  const onlyPin = Object.keys(b).length === 1 && 'pinned' in b;
+  if (!onlyPin && p.author_id !== req.user.id && !isAdmin(req.user)) throw new HttpError(403, 'Só quem escreveu (ou um administrador) pode editar');
+  const sets = [], params = [];
+  const add = (k, v) => { params.push(v); sets.push(`${k}=$${params.length}`); };
+  if ('body' in b) { const t = String(b.body || '').trim(); if (!t) throw new HttpError(400, 'O comentário não pode ficar vazio'); add('body', t.slice(0, 20000)); }
+  if ('pinned' in b && !p.parent_id) add('pinned', !!b.pinned);
+  if (!p.parent_id && 'kind' in b) add('kind', b.kind === 'meeting' ? 'meeting' : 'comment');
+  if (!p.parent_id && 'meeting_date' in b) add('meeting_date', isDate(b.meeting_date) ? b.meeting_date : null);
+  if (!p.parent_id && 'business_id' in b) add('business_id', b.business_id ? parseInt(b.business_id, 10) : null);
+  if (!sets.length) throw new HttpError(400, 'Nada para atualizar');
+  if (!onlyPin) sets.push('updated_at=now()');
+  params.push(p.id);
+  await q(`UPDATE client_posts SET ${sets.join(',')} WHERE id=$${params.length}`, params);
+  broadcast(req.user.company_id, { type: 'client_posts' });
+  res.json({ ok: true });
+}));
+app.delete('/api/client-posts/:id', requireTab('clientes'), wrap(async (req, res) => {
+  const p = await loadPost(req);
+  if (p.author_id !== req.user.id && !isAdmin(req.user)) throw new HttpError(403, 'Só quem escreveu (ou um administrador) pode excluir');
+  await q('DELETE FROM client_posts WHERE id=$1', [p.id]);
+  broadcast(req.user.company_id, { type: 'client_posts' });
+  res.json({ ok: true });
 }));
 
 // início considerado de um dia específico (admin): antes dele não conta atraso nem inatividade
