@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { api, toast, emitLocal, PRIORITY } from '../lib.js';
+import { api, toast, emitLocal, PRIORITY, useData, addDays, fmtDate } from '../lib.js';
 import { Modal, Field } from '../ui.jsx';
 import { useApp } from '../App.jsx';
 
@@ -13,23 +13,33 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
     scheduled_time: initial.scheduled_time ? initial.scheduled_time.slice(0, 5) : '',
   });
   const [busy, setBusy] = useState(false);
+  // "Enviar para colaborador": tarefa para outra pessoa, começa hoje e tem data final (depois de hoje)
+  const [mode, setMode] = useState(initial.mode === 'request' ? 'request' : 'normal');
+  const [requestTo, setRequestTo] = useState('');
+  const directory = useData(!editing && !isAdmin ? '/users/directory' : null);
+  const people = (isAdmin ? activeUsers : directory.data || []).filter((u) => u.id !== me.id);
+  const tomorrow = addDays(me.today, 1);
+  const isReq = mode === 'request';
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
   const [estH, setEstH] = useState(f.estimated_minutes ? Math.floor(f.estimated_minutes / 60) : '');
   const [estM, setEstM] = useState(f.estimated_minutes ? f.estimated_minutes % 60 : '');
 
   const save = async () => {
     if (!f.title.trim()) return toast('Informe o nome da tarefa', 'error');
+    if (isReq && !requestTo) return toast('Escolha para qual colaborador enviar', 'error');
+    if (isReq && (!f.due_date || f.due_date <= me.today)) return toast('A data final precisa ser depois de hoje', 'error');
     setBusy(true);
     const body = {
       title: f.title, description: f.description, kind: f.kind, assignee_id: f.assignee_id || null, team_id: f.team_id || null,
       category_id: f.category_id || null, business_id: f.business_id || null, channel_id: f.channel_id || null, priority: f.priority, due_date: f.due_date, scheduled_time: f.scheduled_time || null,
       estimated_minutes: (Number(estH) || 0) * 60 + (Number(estM) || 0), shared: f.shared,
     };
-    if (!editing) { body.recurrence = f.kind === 'oneoff' ? null : f.recurrence || null; body.notes = f.notes; }
+    if (!editing) { body.recurrence = f.kind === 'oneoff' || isReq ? null : f.recurrence || null; body.notes = f.notes; }
+    if (isReq) { body.request_to = requestTo; body.kind = 'oneoff'; body.assignee_id = null; }
     if (editing && initial.recurrence_id) body.apply_to_series = !!f.apply_to_series;
     try {
       const t = editing ? await api(`/tasks/${initial.id}`, { method: 'PATCH', body }) : await api('/tasks', { method: 'POST', body });
-      toast(editing ? 'Tarefa atualizada' : t.generated ? `Tarefa criada · ${t.generated + 1} ocorrências programadas nos próximos 3 meses` : 'Tarefa criada', 'success');
+      toast(editing ? 'Tarefa atualizada' : isReq ? `Tarefa enviada para ${t.assignee_name}` : t.generated ? `Tarefa criada · ${t.generated + 1} ocorrências programadas nos próximos 3 meses` : 'Tarefa criada', 'success');
       emitLocal();
       onSaved?.(t);
       onClose();
@@ -37,14 +47,33 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
   };
 
   return (
-    <Modal title={editing ? 'Editar tarefa' : 'Nova tarefa'} onClose={onClose} wide
-      footer={<><button className="btn" onClick={onClose}>Cancelar</button><button className="btn primary" disabled={busy} onClick={save}>{editing ? 'Salvar alterações' : 'Criar tarefa'}</button></>}>
+    <Modal title={editing ? 'Editar tarefa' : isReq ? 'Enviar tarefa para colaborador' : 'Nova tarefa'} onClose={onClose} wide
+      footer={<><button className="btn" onClick={onClose}>Cancelar</button><button className="btn primary" disabled={busy} onClick={save}>{editing ? 'Salvar alterações' : isReq ? 'Enviar tarefa' : 'Criar tarefa'}</button></>}>
       <div className="grid-form">
-        <div className="kind-pick">
+        {!(editing && initial.requested) && (
+        <div className={'kind-pick' + (editing ? ' three' : '')}>
           {[['daily', 'Diária', 'Para um dia; pode se repetir'], ['weekly', 'Semanal', 'Para a semana; pode se repetir'], ['oneoff', 'Pontual', 'Avulsa, com prazo de entrega']].map(([k, l, d]) => (
-            <button type="button" key={k} className={f.kind === k ? 'on' : ''} onClick={() => setF({ ...f, kind: k, recurrence: k === 'oneoff' ? '' : f.recurrence })}><b>{l}</b><small>{d}</small></button>
+            <button type="button" key={k} className={!isReq && f.kind === k ? 'on' : ''} onClick={() => { setMode('normal'); setF({ ...f, kind: k, recurrence: k === 'oneoff' ? '' : f.recurrence }); }}><b>{l}</b><small>{d}</small></button>
           ))}
+          {!editing && (
+            <button type="button" className={'req' + (isReq ? ' on' : '')} onClick={() => { setMode('request'); setF({ ...f, kind: 'oneoff', recurrence: '', due_date: f.due_date > me.today ? f.due_date : tomorrow }); }}>
+              <b>Enviar para colaborador</b><small>Começa hoje, com data final</small>
+            </button>
+          )}
         </div>
+        )}
+        {isReq && (
+          <div className="req-box">
+            <Field label="Enviar para *">
+              <select value={requestTo} onChange={(e) => setRequestTo(e.target.value)}>
+                <option value="">— Escolha o colaborador —</option>
+                {people.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Início"><input value={`${fmtDate(me.today)} (hoje)`} disabled /></Field>
+            <Field label="Data final *" hint="Precisa ser depois de hoje"><input type="date" min={tomorrow} value={f.due_date} onChange={set('due_date')} /></Field>
+          </div>
+        )}
         <Field label="Nome da tarefa *"><input autoFocus value={f.title} onChange={set('title')} placeholder="Ex.: Atualizar preços no Mercado Livre" /></Field>
         <Field label="Descrição detalhada" ><textarea rows={3} value={f.description} onChange={set('description')} /></Field>
         <Field label="Empresa">
@@ -59,7 +88,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
             {channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </Field>
-        {isAdmin && (<>
+        {isAdmin && !isReq && (<>
         <Field label="Responsável">
           <select value={f.assignee_id || ''} onChange={set('assignee_id')}>
             <option value="">— Sem responsável (só administradores veem) —</option>
@@ -73,7 +102,7 @@ export default function TaskForm({ initial = {}, onClose, onSaved }) {
           </select>
         </Field>
         </>)}
-        <Field label={f.kind === 'daily' ? 'Data de execução' : f.kind === 'oneoff' ? 'Prazo de entrega' : 'Prazo de conclusão (semana desta data)'}><input type="date" value={f.due_date} onChange={set('due_date')} /></Field>
+        {!isReq && <Field label={initial.requested ? 'Data final' : f.kind === 'daily' ? 'Data de execução' : f.kind === 'oneoff' ? 'Prazo de entrega' : 'Prazo de conclusão (semana desta data)'}><input type="date" min={initial.requested ? addDays(initial.start_date?.slice(0, 10) || me.today, 1) : undefined} value={f.due_date} onChange={set('due_date')} /></Field>}
         <Field label="Horário previsto"><input type="time" value={f.scheduled_time} onChange={set('scheduled_time')} /></Field>
         <Field label="Prioridade">
           <select value={f.priority} onChange={set('priority')}>{Object.entries(PRIORITY).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select>

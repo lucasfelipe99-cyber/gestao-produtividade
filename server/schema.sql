@@ -286,3 +286,7 @@ DO $$ BEGIN
     ALTER TABLE time_entries ADD CONSTRAINT time_entries_source_check CHECK (source IN ('timer','manual','inferred'));
   END IF;
 END $$;
+
+-- v11: tarefa enviada a outro colaborador (começa no dia da criação, com data final)
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS requested BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS start_date DATE;

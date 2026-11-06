@@ -72,7 +72,7 @@ export const STATUS = {
   in_progress: { label: 'Em andamento', color: '#fdab3d' },
   paused: { label: 'Pausada', color: '#a25ddc' },
   done: { label: 'Concluída', color: '#00c875' },
-  late: { label: 'Atrasada', color: '#e2445c' },
+  late: { label: 'Não realizada', color: '#5f6377' },
   cancelled: { label: 'Cancelada', color: '#676879' },
 };
 export const STATUS_ORDER = ['late', 'in_progress', 'paused', 'not_started', 'done', 'cancelled'];
@@ -87,7 +87,7 @@ export const ACTIONS = {
   created: 'criou a tarefa', created_by_recurrence: 'gerou pela recorrência', started: 'iniciou a tarefa', resumed: 'retomou a tarefa',
   reopened: 'reabriu a tarefa', paused: 'pausou a tarefa', finished: 'finalizou a tarefa', manual_time: 'lançou horário manual',
   status_changed: 'alterou o status', updated: 'editou a tarefa', cancelled: 'cancelou a tarefa', deleted: 'excluiu a tarefa',
-  rolled_over: 'transferiu para o próximo dia útil', marked_late: 'marcou como atrasada',
+  rolled_over: 'transferiu para o próximo dia útil', marked_late: 'marcou como não realizada',
   note_added: 'registrou uma observação', time_removed: 'removeu um registro de tempo',
   subtask_added: 'adicionou a subtarefa', subtask_started: 'iniciou a subtarefa', subtask_finished: 'concluiu a subtarefa',
   subtask_reopened: 'reabriu a subtarefa', subtask_removed: 'removeu a subtarefa',

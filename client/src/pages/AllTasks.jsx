@@ -32,7 +32,7 @@ export default function AllTasks() {
   const weekly = useData(`/tasks?${qs({ kind: 'weekly', week: ws, ...filters })}`);
   const oneoff = useData(`/tasks?${qs({ kind: 'oneoff', ...filters })}`);
   const cal = useData(isCal ? `/tasks?${qs({ ...(type !== 'all' && { kind: type }), from: monthStart(date), to: monthEnd(date), ...filters })}` : null);
-  const late = useData(`/tasks?${qs({ kind: 'daily', to: addDays(me.today, -1), ...filters, status: 'overdue' })}`);
+  const late = useData(`/tasks?${qs({ kind: 'daily', to: addDays(me.today, -1), ...filters, status: 'late' })}`);
   const lateList = (late.data || []).filter((t) => t.due_date < me.today);
 
   // pontuais: em aberto + concluídas no dia escolhido (ou nos últimos 30 dias, se o filtro for "Pontuais")
@@ -97,8 +97,8 @@ export default function AllTasks() {
       {!isCal && ['all', 'daily'].includes(type) && lateList.length > 0 && (
         <div className="late-banner">
           <Icon name="alert" size={18} />
-          <span className="grow"><b>{lateList.length} atividade(s) diária(s) atrasada(s)</b> de dias anteriores ainda não concluída(s)</span>
-          <button className="btn sm" onClick={() => setShowLate(!showLate)}>{showLate ? 'Ocultar' : 'Ver atrasadas'}</button>
+          <span className="grow"><b>{lateList.length} tarefa(s) não realizada(s)</b> em dias anteriores</span>
+          <button className="btn sm" onClick={() => setShowLate(!showLate)}>{showLate ? 'Ocultar' : 'Ver não realizadas'}</button>
         </div>
       )}
       {showLate && !isCal && lateList.length > 0 && <div className="late-list"><TaskTable tasks={lateList} groupBy="assignee" showDate /></div>}

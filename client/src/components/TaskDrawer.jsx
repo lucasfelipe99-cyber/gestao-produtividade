@@ -396,7 +396,7 @@ function Partners({ task }) {
                 <small className="muted">{p.assignee_name} · prazo {fmtDateFull(p.due_date)}{p.scheduled_time ? ` às ${p.scheduled_time}` : ''}</small>
               </div>
               <span className={'tag ' + (p.status === 'done' ? 'ok' : p.late ? 'danger' : 'warn')}>
-                {p.status === 'done' ? 'Entregue' : p.late ? 'Atrasada' : STATUS[p.status]?.label}
+                {p.status === 'done' ? 'Entregue' : p.late ? 'Não realizada' : STATUS[p.status]?.label}
               </span>
             </li>
           ))}

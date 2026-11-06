@@ -65,7 +65,7 @@ const requireTab = (tab) => (req, _res, next) => (canTab(req.user, tab) ? next()
 function visibilitySql(user, alias = 't', startIdx) {
   if (isAdmin(user)) return { sql: 'TRUE', params: [] };
   return {
-    sql: `${alias}.assignee_id=$${startIdx}`,
+    sql: `(${alias}.assignee_id=$${startIdx} OR (${alias}.requested AND ${alias}.created_by=$${startIdx}))`,
     params: [user.id],
   };
 }
@@ -380,7 +380,17 @@ app.get('/api/tasks/:id', wrap(async (req, res) => {
 app.post('/api/tasks', wrap(async (req, res) => {
   const data = cleanTask(req.body || {});
   data.kind = data.kind || 'daily';
-  if (!isAdmin(req.user)) { // colaborador: tarefa sempre dele, sem recorrência
+  const requestTo = req.body?.request_to ? parseInt(req.body.request_to, 10) : null;
+  if (requestTo) {
+    // tarefa enviada a outro colaborador: começa hoje e precisa de data final depois de hoje
+    const today = todayIn(req.user.timezone);
+    if (requestTo === req.user.id) throw new HttpError(400, 'Escolha outro colaborador para enviar a tarefa');
+    if (!data.due_date || data.due_date <= today) throw new HttpError(400, 'Informe a data final: ela precisa ser depois de hoje');
+    const to = await one('SELECT id, team_id FROM users WHERE id=$1 AND company_id=$2 AND active', [requestTo, req.user.company_id]);
+    if (!to) throw new HttpError(400, 'Colaborador inválido');
+    Object.assign(data, { kind: 'oneoff', assignee_id: to.id, team_id: to.team_id || null, requested: true, start_date: today });
+    req.body.recurrence = null;
+  } else if (!isAdmin(req.user)) { // colaborador: tarefa sempre dele, sem recorrência
     data.assignee_id = req.user.id;
     data.team_id = req.user.team_id || null;
     req.body.recurrence = null;
@@ -400,10 +410,14 @@ app.post('/api/tasks', wrap(async (req, res) => {
       recId = rec.id;
     }
     const t = await insertTaskFromTemplate(db, req.user.company_id, data, data.due_date, recId, req.user.id);
+    if (data.requested) {
+      await db.query('UPDATE tasks SET requested=true, start_date=$1 WHERE id=$2', [data.start_date, t.id]);
+      t.requested = true;
+    }
     let generated = 0;
     if (rec) generated = await generateRecurrence(db, req.user.company_id, rec, todayIn(req.user.timezone));
     await logEvent(db, { companyId: req.user.company_id, taskId: t.id, taskTitle: t.title, userId: req.user.id, action: 'created',
-      details: { recurrence: recurrence || null, generated } });
+      details: { recurrence: recurrence || null, generated, ...(data.requested && { requested_to: data.assignee_id, due_date: data.due_date }) } });
     t.generated = generated;
     return t;
   });
@@ -421,7 +435,11 @@ app.patch('/api/tasks/:id', wrap(async (req, res) => {
   const u = req.user;
   let data = cleanTask(req.body || {}, { partial: true });
   const applySeries = isAdmin(u) && !!req.body?.apply_to_series;
-  const own = !isAdmin(u) && (await one('SELECT 1 AS ok FROM tasks WHERE id=$1 AND created_by=$2 AND assignee_id=$2', [req.params.id, u.id]))?.ok;
+  const own = !isAdmin(u) && (await one('SELECT 1 AS ok FROM tasks WHERE id=$1 AND created_by=$2 AND (assignee_id=$2 OR requested)', [req.params.id, u.id]))?.ok;
+  if (data.due_date) {
+    const rq = await one('SELECT requested, to_char(start_date,\'YYYY-MM-DD\') AS start_date FROM tasks WHERE id=$1', [req.params.id]);
+    if (rq?.requested && data.due_date <= rq.start_date) throw new HttpError(400, 'A data final precisa ser depois do dia em que a tarefa foi enviada');
+  }
   if (!isAdmin(u) && own) {
     // tarefa criada pelo próprio colaborador: pode editar tudo, menos o responsável
     delete data.assignee_id; delete data.team_id;
@@ -438,7 +456,8 @@ app.patch('/api/tasks/:id', wrap(async (req, res) => {
   }
   if (!Object.keys(data).length) throw new HttpError(400, 'Nada para atualizar');
   await tx(async (db) => {
-    const t = await loadTask(db, req, req.params.id, { forUpdate: true });
+    const t = await loadTask(db, req, req.params.id, { forUpdate: true, related: !!own });
+    if (t.requested) delete data.kind;
     await assertRefs(db, u.company_id, data);
     if (data.due_date && data.due_date !== t.due_date) {
       data.week_start = weekStart(data.due_date);

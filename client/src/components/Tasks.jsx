@@ -71,13 +71,18 @@ export function TaskButtons({ task, compact }) {
 
 const KIND_TAG = { daily: ['Diária', 'k-daily'], weekly: ['Semanal', 'k-weekly'], oneoff: ['Pontual', 'k-oneoff'] };
 function Badges({ task, showKind = true }) {
+  const { me } = useApp();
   const k = KIND_TAG[task.kind];
+  const sentByMe = task.requested && task.created_by === me.id && task.assignee_id !== me.id;
   return (
     <span className="badges">
-      {showKind && k && <span className={'tag kind ' + k[1]}>{k[0]}</span>}
+      {showKind && k && !task.requested && <span className={'tag kind ' + k[1]}>{k[0]}</span>}
+      {task.requested && (sentByMe
+        ? <span className="tag req-to" title={`Você enviou · ${fmtDate(task.start_date?.slice(0, 10))} até ${fmtDate(task.due_date)}`}>➜ Enviada p/ {task.assignee_name?.split(' ')[0]}</span>
+        : <span className="tag req-from" title={`Enviada por ${task.created_by_name} · ${fmtDate(task.start_date?.slice(0, 10))} até ${fmtDate(task.due_date)}`}>✉ De {task.created_by_name?.split(' ')[0]} · até {fmtDate(task.due_date)}</span>)}
       {task.carried && <span className="tag warn" title="Pendência de semana anterior">Pendência anterior</span>}
       {task.rollover_count > 0 && <span className="tag warn" title={`Planejada para ${fmtDate(task.planned_date)}`}>Transferida {task.rollover_count}x</span>}
-      {task.overdue && !task.carried && !task.rollover_count && <span className="tag danger">Vencida</span>}
+      {task.overdue && task.status !== 'late' && !task.carried && !task.rollover_count && <span className="tag danger">Vencida</span>}
       {task.recurrence_id && <span className="tag" title="Tarefa recorrente"><Icon name="repeat" size={12} /></span>}
       {task.parent_task_id && <span className="tag group" title={`Entrega para a tarefa “${task.parent_title || ''}”`}>⇢ Entrega p/ {task.parent_assignee_name?.split(' ')[0] || 'tarefa'}</span>}
       {task.partners?.map((p) => (
@@ -113,7 +118,7 @@ export function TaskTable({ tasks, groupBy = 'status', showDate = false }) {
   if (groupBy === 'deadline') {
     const we = addDays(today, 6 - ((parseDate(today).getDay() + 6) % 7));
     const B = [
-      ['late', 'Atrasadas', '#e2445c', (t) => t.status !== 'done' && t.due_date < today],
+      ['late', 'Prazo vencido', '#5f6377', (t) => t.status !== 'done' && t.due_date < today],
       ['today', 'Vencem hoje', '#fdab3d', (t) => t.status !== 'done' && t.due_date === today],
       ['week', 'Nesta semana', '#579bfc', (t) => t.status !== 'done' && t.due_date > today && t.due_date <= we],
       ['later', 'Próximas', '#a25ddc', (t) => t.status !== 'done' && t.due_date > we],
@@ -323,7 +328,7 @@ export function TaskFilters({ filters, setFilters, extra }) {
       <select value={filters.status || ''} onChange={set('status')}>
         <option value="">Todos os status</option>
         {Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-        <option value="overdue">Vencidas (atrasadas)</option>
+        <option value="overdue">Não realizadas / vencidas</option>
       </select>
       <select value={filters.category || ''} onChange={set('category')}>
         <option value="">Todas as categorias</option>

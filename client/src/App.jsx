@@ -154,7 +154,7 @@ function Alerts() {
   const [open, setOpen] = useState(false);
   const list = data || [];
   const overdue = list.filter((a) => a.level === 'overdue').length;
-  const LABEL = { overdue: 'Atrasada', today: 'Vence hoje', tomorrow: 'Vence amanhã', reminder: 'Lembrete' };
+  const LABEL = { overdue: 'Não realizada', today: 'Vence hoje', tomorrow: 'Vence amanhã', reminder: 'Lembrete' };
   // aviso na hora do lembrete (toast + notificação do navegador, uma vez por lembrete)
   const { me } = useApp();
   useTick(30000);

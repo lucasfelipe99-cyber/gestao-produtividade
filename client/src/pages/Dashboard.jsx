@@ -69,7 +69,7 @@ export default function Dashboard() {
             <Kpi label="Concluídas" value={data.counts.done} color="#00c875" icon="check" />
             <Kpi label="Em andamento" value={data.counts.in_progress} color="#fdab3d" icon="play" />
             <Kpi label="Pendentes" value={data.counts.pending} color="#579bfc" icon="clock" sub={data.counts.paused ? `${data.counts.paused} pausada(s)` : null} />
-            <Kpi label="Atrasadas (agora)" value={data.counts.late} color="#e2445c" icon="alert" sub="Abertas com data vencida" />
+            <Kpi label="Não realizadas (agora)" value={data.counts.late} color="#e2445c" icon="alert" sub="Abertas com data vencida" />
             <Kpi label="Atingimento geral" value={`${data.attainment.percent}%`} color={pctColor(data.attainment.percent, target)} icon="target"
               sub={`${data.attainment.done} de ${data.attainment.planned} · meta ${target}%`} />
             <Kpi label="Tempo total utilizado" value={fmtDur(data.time.seconds)} color="#a25ddc" icon="clock" />
@@ -209,7 +209,7 @@ export default function Dashboard() {
           <Card title="Atingimento individual detalhado">
             <div className="table-scroll">
               <table className="simple">
-                <thead><tr><th>Colaborador</th><th>Atribuídas</th><th>Concluídas</th><th>Atrasadas</th><th>Atingimento</th><th>Tempo total</th><th>Tempo médio/tarefa</th></tr></thead>
+                <thead><tr><th>Colaborador</th><th>Atribuídas</th><th>Concluídas</th><th>Não realizadas</th><th>Atingimento</th><th>Tempo total</th><th>Tempo médio/tarefa</th></tr></thead>
                 <tbody>
                   {data.users.map((u) => (
                     <tr key={u.id}>

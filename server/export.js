@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
 
-const STATUS = { not_started: 'Não iniciada', in_progress: 'Em andamento', paused: 'Pausada', done: 'Concluída', late: 'Atrasada', cancelled: 'Cancelada' };
+const STATUS = { not_started: 'Não iniciada', in_progress: 'Em andamento', paused: 'Pausada', done: 'Concluída', late: 'Não realizada', cancelled: 'Cancelada' };
 const PRIORITY = { low: 'Baixa', medium: 'Média', high: 'Alta', urgent: 'Urgente' };
 const hours = (s) => Math.round((s / 3600) * 100) / 100;
 
@@ -31,7 +31,7 @@ export function buildWorkbook(d, { from, to, company }) {
   ].forEach((r) => resumo.addRow(r));
   resumo.getColumn(1).font = { bold: true };
 
-  sheet(wb, 'Por colaborador', [['Colaborador', 'name', 28], ['Planejadas', 'planned'], ['Concluídas', 'done'], ['Atrasadas', 'late'], ['Atingimento %', 'percent'], ['Horas', 'hours'], ['Tempo médio/tarefa (min)', 'avg', 24]],
+  sheet(wb, 'Por colaborador', [['Colaborador', 'name', 28], ['Planejadas', 'planned'], ['Concluídas', 'done'], ['Não realizadas', 'late'], ['Atingimento %', 'percent'], ['Horas', 'hours'], ['Tempo médio/tarefa (min)', 'avg', 24]],
     d.users.map((u) => ({ ...u, hours: hours(u.seconds), avg: Math.round(u.avg_seconds / 60) })));
   sheet(wb, 'Tempo por categoria', [['Categoria', 'category', 28], ['Tarefas', 'tasks'], ['Horas', 'hours']], d.byCategory.map((r) => ({ ...r, hours: hours(r.seconds) })));
   sheet(wb, 'Por empresa', [['Empresa', 'name', 28], ['Planejadas', 'planned'], ['Concluídas', 'done'], ['Atingimento %', 'percent'], ['Tarefas c/ tempo', 'tasks', 16], ['Horas', 'hours']],

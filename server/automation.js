@@ -74,38 +74,15 @@ export async function runAutomationForCompany(companyId, { force = false } = {})
       'SELECT * FROM recurrences WHERE company_id=$1 AND active AND next_date <= $2', [companyId, addDays(today, RECURRENCE_HORIZON_DAYS)])).rows;
     for (const r of recs) changes += await generateRecurrence(db, companyId, r, today);
 
-    // 2) Diárias avulsas não concluídas -> próximo dia útil (histórico original preservado em planned_date)
-    //    Diárias de rotina (recorrentes) NÃO são transferidas: ficam atrasadas no próprio dia,
-    //    pois a ocorrência do novo dia já existe (evita acumular tarefas repetidas).
-    const target = nextBusinessDayOnOrAfter(today);
-    const lateRoutine = (await db.query(
-      `UPDATE tasks SET status='late', updated_at=now()
-       WHERE company_id=$1 AND kind='daily' AND recurrence_id IS NOT NULL AND due_date < $2 AND status='not_started'
-       RETURNING id, title`, [companyId, today])).rows;
-    for (const t of lateRoutine) {
-      await logEvent(db, { companyId, taskId: t.id, taskTitle: t.title, action: 'marked_late', details: { routine: true } });
-      changes++;
-    }
-    const stale = (await db.query(
-      `SELECT id, title, due_date, status FROM tasks
-       WHERE company_id=$1 AND kind='daily' AND recurrence_id IS NULL AND due_date < $2 AND status NOT IN ('done','cancelled')`,
-      [companyId, today])).rows;
-    for (const t of stale) {
-      const newStatus = t.status === 'not_started' ? 'late' : t.status;
-      await db.query(
-        `UPDATE tasks SET due_date=$1, rollover_count=rollover_count+1, status=$2, updated_at=now() WHERE id=$3`,
-        [target, newStatus, t.id]);
-      await logEvent(db, { companyId, taskId: t.id, taskTitle: t.title, action: 'rolled_over', details: { from: t.due_date, to: target } });
-      changes++;
-    }
-
-    // 3) Semanais e pontuais com prazo vencido e não iniciadas -> atrasadas
-    const lateWeekly = (await db.query(
-      `UPDATE tasks SET status='late', updated_at=now()
-       WHERE company_id=$1 AND kind IN ('weekly','oneoff') AND due_date < $2 AND status='not_started' RETURNING id, title`,
-      [companyId, today])).rows;
-    for (const t of lateWeekly) {
-      await logEvent(db, { companyId, taskId: t.id, taskTitle: t.title, action: 'marked_late', details: {} });
+    // 2) Tarefas cujo dia/prazo passou sem conclusão -> "Não realizada" (status 'late'), no próprio dia.
+    //    Nada é transferido para o dia seguinte. Tarefa com cronômetro rodando fica como está.
+    const notDone = (await db.query(
+      `UPDATE tasks t SET status='late', updated_at=now()
+       WHERE t.company_id=$1 AND t.due_date < $2 AND t.status IN ('not_started','in_progress','paused')
+         AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.task_id=t.id AND e.ended_at IS NULL)
+       RETURNING id, title, kind`, [companyId, today])).rows;
+    for (const t of notDone) {
+      await logEvent(db, { companyId, taskId: t.id, taskTitle: t.title, action: 'marked_late', details: { kind: t.kind } });
       changes++;
     }
 

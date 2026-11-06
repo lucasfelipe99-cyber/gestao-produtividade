@@ -143,7 +143,7 @@ export default function Reports() {
                     <tr key={t.id} onClick={() => openTask(t.id)}><td>{t.title}</td><td>{t.assignee || '—'}</td><td>{fmtDate(t.planned_date)}</td>
                       <td><StatusPill status={t.status} /></td><td>{t.rollover_count}</td><td className="danger-text"><b>{t.days_late}</b></td></tr>
                   ))}
-                  {!data.mostLate.some((t) => t.days_late > 0 || t.rollover_count > 0) && <tr><td colSpan={6} className="muted">Nenhuma tarefa atrasada no período 🎉</td></tr>}
+                  {!data.mostLate.some((t) => t.days_late > 0 || t.rollover_count > 0) && <tr><td colSpan={6} className="muted">Nenhuma tarefa não realizada no período 🎉</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -152,7 +152,7 @@ export default function Reports() {
           <Card title="Produtividade por colaborador">
             <div className="table-scroll">
               <table className="simple">
-                <thead><tr><th>Colaborador</th><th>Planejadas</th><th>Concluídas</th><th>Atrasadas</th><th>Atingimento</th><th>Tempo</th><th>Média/tarefa</th></tr></thead>
+                <thead><tr><th>Colaborador</th><th>Planejadas</th><th>Concluídas</th><th>Não realizadas</th><th>Atingimento</th><th>Tempo</th><th>Média/tarefa</th></tr></thead>
                 <tbody>
                   {data.users.map((u) => (
                     <tr key={u.id}><td>{u.name}</td><td>{u.planned}</td><td>{u.done}</td><td>{u.late}</td>

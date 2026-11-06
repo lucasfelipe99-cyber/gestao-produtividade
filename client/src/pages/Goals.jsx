@@ -58,7 +58,7 @@ export default function Goals() {
         <div className="table-scroll">
           <table className="simple">
             <thead>
-              <tr><th>Colaborador</th><th>Atribuídas (sem.)</th><th>Concluídas (sem.)</th><th>Atrasadas</th><th>Hoje</th><th>Semana</th><th>Meta semanal</th><th>Tempo trabalhado (sem.)</th><th>Tempo médio/tarefa</th>{isAdmin && <th />}</tr>
+              <tr><th>Colaborador</th><th>Atribuídas (sem.)</th><th>Concluídas (sem.)</th><th>Não realizadas</th><th>Hoje</th><th>Semana</th><th>Meta semanal</th><th>Tempo trabalhado (sem.)</th><th>Tempo médio/tarefa</th>{isAdmin && <th />}</tr>
             </thead>
             <tbody>
               {data.usersWeek.map((u) => {
