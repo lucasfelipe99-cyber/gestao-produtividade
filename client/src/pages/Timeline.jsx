@@ -86,6 +86,7 @@ export default function Timeline() {
           <span><i className="lg-extra" /> Fora da jornada (hora extra)</span>
           <span><i className="lg-lunch" /> Almoço de 1h (adiado se houver atividade em andamento às {data.lunch_start}; trabalho nele conta como extra)</span>
           <span><i className="lg-plan" /> Horário previsto de tarefa</span>
+          <span><i className="lg-done">✓</i> Hora da conclusão</span>
           <span><i className="lg-run" /> Em andamento</span>
         </div>
         <div className="tl-scroll">
@@ -112,6 +113,7 @@ export default function Timeline() {
                         {m.lunch_min > 0 && <span className="purple"> · {fmtMin(m.lunch_min)} trabalhando</span>}
                       </small>
                     ) : <small className="muted">Sem apontamento</small>}
+                    {p.done.length > 0 && <small className="block muted">{p.done.length} concluída(s) · última às <b>{hhmm(p.done[p.done.length - 1].min)}</b></small>}
                   </div>
                   <div className="tl-track">
                     {hours.map((h) => <span key={h} className="tl-grid" style={{ left: x(h) }} />)}
@@ -141,6 +143,10 @@ export default function Timeline() {
                     {p.planned.map((t) => (
                       <button key={t.id} className="tl-plan" style={{ left: x(t.min), borderColor: STATUS[t.status].color }}
                         title={`Previsto ${t.scheduled_time}: ${t.title} (${STATUS[t.status].label})`} onClick={() => openTask(t.id)} />
+                    ))}
+                    {p.done.map((d) => (
+                      <button key={'d' + d.id} className={'tl-done' + (d.timed ? '' : ' untimed')} style={{ left: x(d.min) }}
+                        title={`Concluída às ${hhmm(d.min)}: ${d.title}${d.timed ? '' : ' (sem cronômetro)'}`} onClick={() => openTask(d.id)}>✓</button>
                     ))}
                     {isToday && <span className="tl-now" style={{ left: x(nowMin()) }} />}
                   </div>

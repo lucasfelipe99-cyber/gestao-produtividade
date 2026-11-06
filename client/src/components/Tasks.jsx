@@ -4,6 +4,15 @@ import { api, toast, emitLocal, useTick, STATUS, STATUS_ORDER, PRIORITY, KIND, f
 import { Icon, Avatar, StatusPill, PriorityPill, Pill, Empty, Progress } from '../ui.jsx';
 import { useApp } from '../App.jsx';
 
+// hora da conclusão: "14:32" se foi hoje, "05/11 14:32" se foi outro dia
+const p2 = (n) => String(n).padStart(2, '0');
+function doneAt(iso, short) {
+  const d = new Date(iso), now = new Date();
+  const hm = `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  if (d.toDateString() === now.toDateString()) return short ? hm : `Concluída ${hm}`;
+  return `${short ? '' : 'Concluída '}${p2(d.getDate())}/${p2(d.getMonth() + 1)} ${hm}`;
+}
+
 export async function taskAction(id, action) {
   try {
     await api(`/tasks/${id}/${action}`, { method: 'POST' });
@@ -51,7 +60,11 @@ export function TaskButtons({ task, compact }) {
       {task.status !== 'done' && (
         <button className="btn xs finish" onClick={() => taskAction(task.id, 'finish')} title="Finalizar tarefa"><Icon name="check" size={13} />{!compact && 'Finalizar'}</button>
       )}
-      {task.status === 'done' && <span className="done-mark"><Icon name="check" size={14} /> Concluída</span>}
+      {task.status === 'done' && (
+        <span className="done-mark" title={task.completed_at ? `Concluída em ${doneAt(task.completed_at, true)}` : 'Concluída'}>
+          <Icon name="check" size={14} /> {task.completed_at ? doneAt(task.completed_at, compact) : 'Concluída'}
+        </span>
+      )}
     </span>
   );
 }

@@ -449,3 +449,8 @@ textarea.notebook[readonly] { background: #fafbfc; border-color: var(--border); 
 .kind-pick button.on { border-color: #0073ea; background: #f0f7ff; box-shadow: 0 0 0 2px #cce5ff; }
 .tl-block.inferred { opacity: .55; outline: 2px dashed rgba(0,0,0,.35); outline-offset: -2px; background-image: none !important; }
 .lg-inferred { border: 2px dashed #8a8fa3; background: #c9dcf7; }
+
+.tl-done { position: absolute; bottom: 3px; transform: translateX(-50%); width: 16px; height: 16px; border-radius: 50%; border: 0; padding: 0; background: #00c875; color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; z-index: 3; cursor: pointer; box-shadow: 0 0 0 2px #fff; }
+.tl-done.untimed { background: #fff; color: #00a35f; box-shadow: 0 0 0 2px #00c875 inset, 0 0 0 2px #fff; }
+.lg-done { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; background: #00c875; color: #fff; font-size: 9px; font-style: normal; font-weight: 700; }
+small.block { display: block; margin-top: 2px; }

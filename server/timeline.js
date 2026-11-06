@@ -118,6 +118,16 @@ export async function timeline({ companyId, date, today, userId }) {
      FROM tasks t WHERE t.company_id=$1 AND t.due_date=$2 AND t.scheduled_time IS NOT NULL AND t.status <> 'cancelled' ${userId ? 'AND t.assignee_id=$3' : ''}`,
     userId ? [companyId, date, userId] : [companyId, date]);
 
+  // horários de conclusão das tarefas no dia (marcadores na linha do tempo)
+  const completions = await many(
+    `SELECT t.id, t.assignee_id, t.title,
+       EXTRACT(EPOCH FROM ((t.completed_at AT TIME ZONE $3) - ($2::date)::timestamp))/60 AS min,
+       EXISTS (SELECT 1 FROM time_entries e WHERE e.task_id=t.id AND e.source<>'inferred') AS timed
+     FROM tasks t WHERE t.company_id=$1 AND t.status='done' AND t.completed_at IS NOT NULL
+       AND (t.completed_at AT TIME ZONE $3)::date = $2::date ${userId ? 'AND t.assignee_id=$4' : ''}
+     ORDER BY t.completed_at`,
+    userId ? [companyId, date, tz, userId] : [companyId, date, tz]);
+
   const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
   const people = users.map((u) => {
     const mine = rows.filter((r) => r.user_id === u.id);
@@ -127,6 +137,7 @@ export async function timeline({ companyId, date, today, userId }) {
       id: u.id, name: u.name,
       entries: todayEntries,
       planned: planned.filter((p) => p.assignee_id === u.id).map((p) => ({ ...p, min: toMin(p.scheduled_time) })),
+      done: completions.filter((d) => d.assignee_id === u.id).map((d) => ({ id: d.id, title: d.title, timed: d.timed, min: Math.round(Number(d.min) * 10) / 10 })),
       metrics: dayMetrics(todayEntries, ws, we, ls, le, optsFor(date)),
       week,
     };
