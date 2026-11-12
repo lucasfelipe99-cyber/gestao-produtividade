@@ -560,3 +560,4 @@ table.group-items th.ck-col, table.group-items td.ck-col { width: 62px; }
 .group-card { text-align: left; background: #fff; border: 1px solid #e6e9ef; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; font: inherit; color: #323338; box-shadow: var(--shadow, 0 1px 3px rgba(0,0,0,.06)); }
 .group-card:hover { border-color: #9cc3f5; }
 .group-card .mini-progress { margin: 0; }
+.group-card.fixed { background: #f7fbff; border-color: #cfe3fb; }

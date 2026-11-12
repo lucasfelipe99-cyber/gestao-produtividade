@@ -368,3 +368,16 @@ END $$;
 ALTER TABLE group_items ADD COLUMN IF NOT EXISTS sku TEXT;
 ALTER TABLE group_items ADD COLUMN IF NOT EXISTS drive_link TEXT;
 ALTER TABLE group_items ADD COLUMN IF NOT EXISTS checks JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- v17: tarefa em grupo fixa "Gestão de SKU" por cliente; cliente Next10
+ALTER TABLE group_tasks ADD COLUMN IF NOT EXISTS fixed BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE UNIQUE INDEX IF NOT EXISTS group_tasks_fixed_biz ON group_tasks (business_id) WHERE fixed;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v17_next10') THEN
+    INSERT INTO businesses (company_id, name, color)
+      SELECT DISTINCT b.company_id, 'Next10', '#ff642e' FROM businesses b
+      WHERE b.name IN ('Popper','Unicci','Gigante das Baterias')
+        AND NOT EXISTS (SELECT 1 FROM businesses x WHERE x.company_id=b.company_id AND lower(x.name)='next10');
+    INSERT INTO app_meta (key) VALUES ('v17_next10');
+  END IF;
+END $$;

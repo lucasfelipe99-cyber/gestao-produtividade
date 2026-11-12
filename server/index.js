@@ -291,6 +291,7 @@ for (const [route, table] of [['teams', 'teams'], ['categories', 'categories'], 
     const row = COLORED.includes(table)
       ? await one(`INSERT INTO ${table} (company_id, name, color) VALUES ($1,$2,$3) RETURNING *`, [req.user.company_id, name, req.body.color || '#579bfc'])
       : await one('INSERT INTO teams (company_id, name) VALUES ($1,$2) RETURNING *', [req.user.company_id, name]);
+    if (table === 'businesses') await ensureFixedSkuGroups(req.user.company_id);
     changed(req);
     res.json(row);
   }));
@@ -299,10 +300,12 @@ for (const [route, table] of [['teams', 'teams'], ['categories', 'categories'], 
     if (!name) throw new HttpError(400, 'Informe o nome');
     if (COLORED.includes(table)) await q(`UPDATE ${table} SET name=$1, color=COALESCE($2,color) WHERE id=$3 AND company_id=$4`, [name, req.body.color || null, req.params.id, req.user.company_id]);
     else await q('UPDATE teams SET name=$1 WHERE id=$2 AND company_id=$3', [name, req.params.id, req.user.company_id]);
+    if (table === 'businesses') await ensureFixedSkuGroups(req.user.company_id);
     changed(req);
     res.json({ ok: true });
   }));
   app.delete(`/api/${route}/:id`, adminOnly, wrap(async (req, res) => {
+    if (table === 'businesses') await q('DELETE FROM group_tasks WHERE business_id=$1 AND fixed AND company_id=$2', [req.params.id, req.user.company_id]);
     await q(`DELETE FROM ${table} WHERE id=$1 AND company_id=$2`, [req.params.id, req.user.company_id]);
     changed(req);
     res.json({ ok: true });
@@ -961,6 +964,15 @@ app.post('/api/timeline/backfill', adminOnly, wrap(async (req, res) => {
 
 
 // ---------- tarefas em grupo ----------
+// "Gestão de SKU": tarefa em grupo fixa, uma por cliente, aberta a toda a equipe (criada automaticamente)
+export async function ensureFixedSkuGroups(companyId) {
+  await q(`INSERT INTO group_tasks (company_id, title, description, business_id, fixed)
+    SELECT b.company_id, 'Gestão de SKU — ' || b.name,
+      'Lista fixa de SKUs do cliente. Suba a planilha de SKUs e marque o checklist: fotos, vídeos, anúncio, ADS e afiliados.', b.id, true
+    FROM businesses b WHERE b.company_id=$1 AND NOT EXISTS (SELECT 1 FROM group_tasks g WHERE g.business_id=b.id AND g.fixed)`, [companyId]);
+  await q(`UPDATE group_tasks g SET title='Gestão de SKU — ' || b.name FROM businesses b
+    WHERE g.business_id=b.id AND g.fixed AND g.company_id=$1 AND g.title <> 'Gestão de SKU — ' || b.name`, [companyId]);
+}
 const cleanLink = (v) => {
   const t = String(v || '').trim().slice(0, 2000);
   if (!t) return null;
@@ -972,6 +984,7 @@ async function loadGroup(db, req, { manage = false } = {}) {
   const g = (await db.query('SELECT * FROM group_tasks WHERE id=$1 AND company_id=$2', [req.params.id, req.user.company_id])).rows[0];
   if (!g) throw new HttpError(404, 'Tarefa em grupo não encontrada');
   if (isAdmin(req.user) || g.created_by === req.user.id) return g;
+  if (g.fixed && !manage) return g;
   const member = (await db.query('SELECT 1 FROM group_task_members WHERE group_id=$1 AND user_id=$2', [g.id, req.user.id])).rowCount;
   if (!member) throw new HttpError(403, 'Você não participa desta tarefa em grupo');
   if (manage) throw new HttpError(403, 'Só quem criou (ou um administrador) pode alterar');
@@ -985,7 +998,7 @@ async function setMembers(db, companyId, groupId, ids) {
   // quem saiu do grupo larga os itens que estava fazendo
   await db.query(`UPDATE group_items SET status='todo', user_id=NULL, started_at=NULL WHERE group_id=$1 AND status='doing' AND NOT (user_id = ANY($2::int[]))`, [groupId, valid]);
 }
-const GROUP_SELECT = `SELECT g.id, g.title, g.description, g.link, g.business_id, b.name AS business_name, b.color AS business_color,
+const GROUP_SELECT = `SELECT g.id, g.fixed, g.title, g.description, g.link, g.business_id, b.name AS business_name, b.color AS business_color,
     g.channel_id, ch.name AS channel_name, ch.color AS channel_color, to_char(g.due_date,'YYYY-MM-DD') AS due_date,
     g.status, g.created_by, cu.name AS created_by_name, g.created_at, g.updated_at, g.done_at,
     (SELECT count(*)::int FROM group_items i WHERE i.group_id=g.id) AS items_total,
@@ -1000,14 +1013,14 @@ const GROUP_SELECT = `SELECT g.id, g.title, g.description, g.link, g.business_id
 const groupVis = (req, params) => {
   if (isAdmin(req.user)) return '';
   params.push(req.user.id);
-  return ` AND (g.created_by=$${params.length} OR EXISTS (SELECT 1 FROM group_task_members m WHERE m.group_id=g.id AND m.user_id=$${params.length}))`;
+  return ` AND (g.fixed OR g.created_by=$${params.length} OR EXISTS (SELECT 1 FROM group_task_members m WHERE m.group_id=g.id AND m.user_id=$${params.length}))`;
 };
 app.get('/api/groups', requireTab('tarefas'), wrap(async (req, res) => {
   const params = [req.user.company_id];
   let where = 'g.company_id=$1' + groupVis(req, params);
   if (req.query.status === 'open' || req.query.status === 'done') { params.push(req.query.status); where += ` AND g.status=$${params.length}`; }
   if (req.query.business) { params.push(parseInt(req.query.business, 10)); where += ` AND g.business_id=$${params.length}`; }
-  res.json(await many(`${GROUP_SELECT} WHERE ${where} ORDER BY g.status, g.due_date NULLS LAST, g.created_at DESC LIMIT 300`, params));
+  res.json(await many(`${GROUP_SELECT} WHERE ${where} ORDER BY g.status, g.fixed DESC, g.due_date NULLS LAST, g.created_at DESC LIMIT 300`, params));
 }));
 app.get('/api/groups/:id', requireTab('tarefas'), wrap(async (req, res) => {
   const g0 = await tx((db) => loadGroup(db, req));
@@ -1061,6 +1074,7 @@ app.patch('/api/groups/:id', requireTab('tarefas'), wrap(async (req, res) => {
     if ('link' in b) add('link', cleanLink(b.link));
     if ('due_date' in b) add('due_date', isDate(b.due_date) ? b.due_date : null);
     for (const k of ['business_id', 'channel_id']) if (k in b) { const v = b[k] ? parseInt(b[k], 10) : null; await assertRefs(db, u.company_id, { [k]: v }); add(k, v); }
+    if (g.fixed) { delete b.business_id; if (b.status === 'done') throw new HttpError(400, 'A Gestão de SKU é fixa: não pode ser concluída'); }
     if (b.status === 'done' || b.status === 'open') {
       add('status', b.status); sets.push(b.status === 'done' ? 'done_at=now()' : 'done_at=NULL');
       if (b.status === 'done') await db.query('UPDATE group_task_members SET doing_since=NULL WHERE group_id=$1', [g.id]);
@@ -1073,7 +1087,11 @@ app.patch('/api/groups/:id', requireTab('tarefas'), wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 app.delete('/api/groups/:id', requireTab('tarefas'), wrap(async (req, res) => {
-  await tx(async (db) => { const g = await loadGroup(db, req, { manage: true }); await db.query('DELETE FROM group_tasks WHERE id=$1', [g.id]); });
+  await tx(async (db) => {
+    const g = await loadGroup(db, req, { manage: true });
+    if (g.fixed) throw new HttpError(400, 'A Gestão de SKU é fixa do cliente e não pode ser excluída');
+    await db.query('DELETE FROM group_tasks WHERE id=$1', [g.id]);
+  });
   broadcast(req.user.company_id, { type: 'groups' });
   res.json({ ok: true });
 }));
@@ -1814,6 +1832,9 @@ for (const day of ['2026-11-04', '2026-11-05', '2026-11-06']) {
     }
     await q('INSERT INTO app_meta (key) VALUES ($1) ON CONFLICT DO NOTHING', [key]);
   }
+}
+for (const c of await many('SELECT id FROM companies')) {
+  try { await ensureFixedSkuGroups(c.id); } catch (e) { console.error('Gestão de SKU', e.message); }
 }
 // uma vez (pedido em 12/11): limpa tarefas de 12/11 em diante e desliga as rotinas automáticas.
 // Mantém as de 12/11 já concluídas (histórico do dia) e tudo de dias anteriores.

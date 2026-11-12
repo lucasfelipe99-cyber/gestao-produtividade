@@ -76,8 +76,8 @@ export function GroupsView({ creating, setCreating }) {
               const doing = g.members.filter((m) => m.doing_since);
               const pct = g.items_total ? (g.items_done / g.items_total) * 100 : 0;
               return (
-                <button key={g.id} className="group-card" onClick={() => setSel(g.id)}>
-                  <b>{g.title}</b>
+                <button key={g.id} className={'group-card' + (g.fixed ? ' fixed' : '')} onClick={() => setSel(g.id)}>
+                  <b>{g.title}{g.fixed && <span className="tag primary" style={{ marginLeft: 6 }}>Fixa</span>}</b>
                   <small className="muted">{g.channel_name || 'Todos os canais'}{g.due_date && ` · até ${fmtDate(g.due_date)}`}</small>
                   <span className="row gap-s" style={{ alignItems: 'center' }}>
                     <span className="mini-progress grow"><span style={{ width: `${pct}%` }} /></span>
@@ -116,7 +116,7 @@ function GroupBoard({ id, me, onDeleted }) {
     <div className="group-board">
       <div className="row gap wrap" style={{ alignItems: 'flex-start' }}>
         <div className="grow">
-          <h2 className="client-title">{g.business_color && <i style={{ background: g.business_color }} />}{g.title}{done && <span className="tag ok">Concluída</span>}</h2>
+          <h2 className="client-title">{g.business_color && <i style={{ background: g.business_color }} />}{g.title}{g.fixed && <span className="tag primary">Fixa · toda a equipe</span>}{done && <span className="tag ok">Concluída</span>}</h2>
           <div className="row gap-s wrap small muted" style={{ marginTop: 4 }}>
             {g.business_name && <span className="cat small"><i style={{ background: g.business_color }} />{g.business_name}</span>}
             {g.channel_name && <span className="chan" style={{ background: g.channel_color }}>{g.channel_name}</span>}
@@ -127,10 +127,12 @@ function GroupBoard({ id, me, onDeleted }) {
         {canManage && (
           <div className="row gap-s">
             <button className="btn sm" onClick={() => setEditing(true)}><Icon name="edit" size={14} /> Editar</button>
+            {!g.fixed && (<>
             <button className="btn sm" onClick={() => call(`/groups/${g.id}`, 'PATCH', { status: done ? 'open' : 'done' })}>
               <Icon name="check" size={14} /> {done ? 'Reabrir' : 'Concluir atividade'}
             </button>
             <button className="icon-btn" title="Excluir" onClick={async () => confirm('Excluir esta tarefa em grupo e todos os itens?') && (await call(`/groups/${g.id}`, 'DELETE')) && onDeleted()}><Icon name="trash" size={16} /></button>
+            </>)}
           </div>
         )}
       </div>

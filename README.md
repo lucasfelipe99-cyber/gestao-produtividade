@@ -69,3 +69,5 @@ Build: `npm install && npm run build` · Start: `npm start` · Health check: `/h
 - **Clientes (mural)**: comentários gerais e pontos de reunião de time por empresa (ou Geral), com respostas, fixar no topo, busca e filtro de reuniões. Todos os colaboradores e admins veem e participam.
 - **Tarefas em grupo**: atividade feita por várias pessoas ao mesmo tempo, com link e descrição, participantes (ou toda a equipe) e itens (link + descrição). Cada um clica em "Fazendo isso" no item que pegou; todos veem em tempo real quem está fazendo o quê, o que está livre e o que já foi feito.
   - Itens por **SKU** com link do anúncio, **link do Drive (fotos e vídeos)** e descrição; **subir planilha** (.xlsx/.csv com coluna SKU) ou colar linhas; **checklist por SKU**: Fotos, Vídeos, Anúncio, ADS e Afiliados (quem marcou e quando). Checklist completo = item feito.
+  - **Gestão de SKU** (fixa): uma tarefa em grupo por cliente, aberta a toda a equipe, criada automaticamente para cada empresa cadastrada (não pode ser concluída nem excluída).
+- Cliente **Next10** adicionado (nov/2026).
