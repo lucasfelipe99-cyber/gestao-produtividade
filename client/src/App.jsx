@@ -94,6 +94,7 @@ function Shell({ me, onLogout }) {
             <Alerts />
           </header>
           <div className="content">
+            <ErrorBoundary key={loc.pathname + loc.search}>
             <Routes>
               {nav.map(([to, , , , el]) => <Route key={to} path={to} element={el} />)}
               <Route path="/grupo" element={<Navigate to="/tarefas?tipo=group" replace />} />
@@ -102,6 +103,7 @@ function Shell({ me, onLogout }) {
               <Route path="/pontuais" element={<Navigate to="/tarefas?tipo=oneoff" replace />} />
               <Route path="*" element={<Navigate to={home} />} />
             </Routes>
+            </ErrorBoundary>
           </div>
         </main>
       </div>
@@ -241,4 +243,22 @@ function Toasts() {
     setTimeout(() => setItems((x) => x.filter((i) => i.id !== t.id)), 4500);
   }), []);
   return <div className="toasts">{items.map((t) => <div key={t.id} className={'toast ' + t.type}>{t.message}</div>)}</div>;
+}
+
+// se algo quebrar numa tela, mostra um aviso em vez de deixar tudo em branco
+class ErrorBoundary extends React.Component {
+  constructor(p) { super(p); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err) { console.error(err); }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <div className="page"><div className="warn-box" style={{ padding: 16 }}>
+        <b>Ops, algo deu errado nesta tela.</b>
+        <p className="small muted" style={{ margin: '6px 0 10px' }}>{String(this.state.err?.message || this.state.err)}</p>
+        <button className="btn sm" onClick={() => this.setState({ err: null })}>Tentar de novo</button>{' '}
+        <button className="btn sm" onClick={() => window.location.reload()}>Recarregar a página</button>
+      </div></div>
+    );
+  }
 }

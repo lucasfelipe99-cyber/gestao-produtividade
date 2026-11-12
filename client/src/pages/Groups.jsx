@@ -429,6 +429,7 @@ function planDistribution(items, userIds, mode) {
   const pending = items.filter((i) => i.status !== 'done');
   if (mode === 'unassigned') for (const i of pending) if (i.assignee_id && load.has(i.assignee_id)) { const l = load.get(i.assignee_id); l.work += skuWork(i); l.skus++; if (i.curva === 'A') l.a++; }
   const todo = mode === 'unassigned' ? pending.filter((i) => !i.assignee_id) : pending;
+  if (!load.size) return { load, moved: 0 }; // ninguém escolhido ainda
   const rank = (c) => ({ A: 0, B: 1, C: 2 }[c] ?? 3);
   todo.sort((a, b) => rank(a.curva) - rank(b.curva) || (b.faturamento || 0) - (a.faturamento || 0) || skuWork(b) - skuWork(a));
   let moved = 0;
