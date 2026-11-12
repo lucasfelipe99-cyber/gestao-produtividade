@@ -205,7 +205,7 @@ function GroupBoard({ id, me, onDeleted }) {
         <div className="table-scroll">
           <table className="group-items">
             <thead><tr>
-              <th style={{ width: 28 }}>#</th><th style={{ width: 92 }}>SKU</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 110 }}>Anúncio</th><th style={{ width: 92 }}>Drive</th><th>Descrição</th>
+              <th style={{ width: 28 }}>#</th><th style={{ width: 92 }}>SKU</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 168 }}>Anúncios por canal</th><th style={{ width: 80 }}>Drive</th><th>Descrição</th>
               {CHECKS.map(([k, l]) => <th key={k} className="ck-col">{l}</th>)}
               <th style={{ width: 104 }}>Quem</th><th style={{ width: 196 }}>Ações</th>
             </tr></thead>
@@ -258,8 +258,71 @@ function AbcSummary({ g, curvaF, setCurvaF, sort, setSort }) {
   );
 }
 
+// anúncios do SKU por canal: chips com todos os canais (verde = tem anúncio)
+const initials = (name) => { const w = name.split(/\s+/).filter(Boolean); return (w.length > 1 ? w.map((x) => x[0]).join('') : name.slice(0, 3)).slice(0, 3).toUpperCase(); };
+function ListingChips({ i, onOpen, open }) {
+  const { channels } = useApp();
+  const list = i.listings || [];
+  return (
+    <button className={'lst-chips' + (open ? ' open' : '')} onClick={onOpen} title="Ver e adicionar anúncios por canal">
+      {channels.map((c) => {
+        const n = list.filter((l) => l.channel_id === c.id).length;
+        return <span key={c.id} className={'lst-chip' + (n ? ' on' : '')} style={{ '--c': c.color }} title={`${c.name}: ${n ? `${n} anúncio(s)` : 'sem anúncio'}`}>{initials(c.name)}{n > 1 && <sup>{n}</sup>}</span>;
+      })}
+      <Icon name={open ? 'down' : 'right'} size={12} />
+    </button>
+  );
+}
+function ListingsPanel({ i, call, colSpan, disabled }) {
+  const { channels } = useApp();
+  const [vals, setVals] = useState({});
+  const list = i.listings || [];
+  const done = channels.filter((c) => list.some((l) => l.channel_id === c.id)).length;
+  const add = async (ch) => {
+    const v = (vals[ch] || '').trim();
+    if (!v) return;
+    if (await call(`/group-items/${i.id}`, 'PATCH', { action: 'add_listing', channel_id: ch, value: v })) setVals({ ...vals, [ch]: '' });
+  };
+  return (
+    <tr className="lst-panel-row">
+      <td colSpan={colSpan}>
+        <div className="lst-panel">
+          <div className="lst-head"><b>Anúncios do SKU {i.sku || ''}</b><span className="muted small">{done}/{channels.length} canais com anúncio · cole o link ou o código do anúncio (ex.: MLB123…)</span>
+            {i.link && !list.some((l) => l.link === i.link) && <span className="small">Link antigo: <a href={i.link} target="_blank" rel="noreferrer" className="item-link">{shortLink(i.link)}</a></span>}
+          </div>
+          <div className="lst-grid">
+            {channels.map((c) => {
+              const mine = list.filter((l) => l.channel_id === c.id);
+              return (
+                <div key={c.id} className={'lst-ch' + (mine.length ? ' on' : '')} style={{ '--c': c.color }}>
+                  <div className="lst-ch-head"><span className="chan" style={{ background: c.color }}>{c.name}</span>
+                    <span className={'small ' + (mine.length ? 'ok-text' : 'muted')}>{mine.length ? `✓ ${mine.length} anúncio(s)` : 'sem anúncio'}</span></div>
+                  {mine.map((l) => (
+                    <div key={l.id} className="lst-item">
+                      {l.link ? <a href={l.link} target="_blank" rel="noreferrer" className="item-link" title={l.link}>{l.code || shortLink(l.link)}</a> : <span className="sku">{l.code}</span>}
+                      {l.conta && <small className="muted"> · {l.conta}</small>}
+                      {!disabled && <button className="icon-btn sm" title="Remover anúncio" onClick={() => confirm('Remover este anúncio?') && call(`/group-items/${i.id}`, 'PATCH', { action: 'remove_listing', listing_id: l.id })}><Icon name="x" size={12} /></button>}
+                    </div>
+                  ))}
+                  {!disabled && (
+                    <div className="lst-add">
+                      <input className="sm" placeholder="Link ou código" value={vals[c.id] || ''} onChange={(e) => setVals({ ...vals, [c.id]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && add(c.id)} />
+                      <button className="btn xs" disabled={!(vals[c.id] || '').trim()} onClick={() => add(c.id)}><Icon name="plus" size={12} /></button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
   const [edit, setEdit] = useState(false);
+  const [open, setOpen] = useState(false);
   const [f, setF] = useState({ sku: i.sku || '', link: i.link || '', drive_link: i.drive_link || '', description: i.description || '' });
   const mine = i.user_id === me.id;
   const [label, color] = ITEM_STATUS[i.status];
@@ -270,7 +333,7 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
         <td>{n}</td>
         <td><input className="sm" value={f.sku} onChange={(e) => setF({ ...f, sku: e.target.value })} placeholder="SKU" /></td>
         {hasAbc && <AbcCells i={i} />}
-        <td><input className="sm" value={f.link} onChange={(e) => setF({ ...f, link: e.target.value })} placeholder="Link do anúncio" /></td>
+        <td><input className="sm" value={f.link} onChange={(e) => setF({ ...f, link: e.target.value })} placeholder="Link antigo (opcional)" /></td>
         <td><input className="sm" value={f.drive_link} onChange={(e) => setF({ ...f, drive_link: e.target.value })} placeholder="Link do Drive" /></td>
         <td><input className="sm" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} placeholder="Descrição" /></td>
         <td colSpan={CHECKS.length + 2}>
@@ -282,12 +345,13 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
       </tr>
     );
   }
-  return (
-    <tr className={'gi-' + i.status + (mine && i.status === 'doing' ? ' gi-mine' : '')}>
+  const cols = 4 + (hasAbc ? 2 : 0) + 1 + CHECKS.length + 2;
+  return (<>
+    <tr className={'gi-' + i.status + (mine && i.status === 'doing' ? ' gi-mine' : '') + (open ? ' gi-open' : '')}>
       <td className="muted">{n}</td>
       <td><b className="sku">{i.sku || <span className="muted">—</span>}</b></td>
       {hasAbc && <AbcCells i={i} />}
-      <td>{i.link ? <a href={i.link} target="_blank" rel="noreferrer" className="item-link" title={i.link}>{shortLink(i.link)}</a> : <span className="muted">—</span>}</td>
+      <td><ListingChips i={i} open={open} onOpen={() => setOpen(!open)} /></td>
       <td>{i.drive_link ? <a href={i.drive_link} target="_blank" rel="noreferrer" className="item-link drive" title={i.drive_link}>📁 Drive</a> : <span className="muted">—</span>}</td>
       <td className="item-desc">{i.description || <span className="muted">—</span>}</td>
       {CHECKS.map(([k, l]) => {
@@ -321,7 +385,8 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
         </span>
       </td>
     </tr>
-  );
+    {open && <ListingsPanel i={i} call={call} colSpan={cols} disabled={groupDone} />}
+  </>);
 }
 
 // adiciona item: SKU, link do anúncio, link do Drive (fotos e vídeos) e descrição; colar vários; subir planilha

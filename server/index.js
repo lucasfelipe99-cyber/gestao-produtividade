@@ -1025,7 +1025,7 @@ app.get('/api/groups', requireTab('tarefas'), wrap(async (req, res) => {
 app.get('/api/groups/:id', requireTab('tarefas'), wrap(async (req, res) => {
   const g0 = await tx((db) => loadGroup(db, req));
   const g = await one(`${GROUP_SELECT} WHERE g.id=$1`, [g0.id]);
-  g.items = await many(`SELECT i.id, i.sku, i.link, i.drive_link, i.checks, i.curva, i.faturamento::float AS faturamento, i.abc, i.description, i.status, i.user_id, u.name AS user_name, i.started_at, i.done_at, i.created_at, i.created_by
+  g.items = await many(`SELECT i.id, i.sku, i.link, i.drive_link, i.checks, i.listings, i.curva, i.faturamento::float AS faturamento, i.abc, i.description, i.status, i.user_id, u.name AS user_name, i.started_at, i.done_at, i.created_at, i.created_by
     FROM group_items i LEFT JOIN users u ON u.id=i.user_id WHERE i.group_id=$1 ORDER BY i.position, i.id`, [g0.id]);
   res.json(g);
 }));
@@ -1037,10 +1037,21 @@ async function insertItems(db, groupId, userId, items) {
   const have = new Set((await db.query('SELECT lower(sku) AS s FROM group_items WHERE group_id=$1 AND sku IS NOT NULL', [groupId])).rows.map((r) => r.s));
   list = list.filter((i) => { if (!i.sku) return true; const k = i.sku.toLowerCase(); if (have.has(k)) return false; have.add(k); return true; });
   if (!list.length) return 0;
+  // link de anúncio informado vira anúncio no canal reconhecido pelo endereço (Mercado Livre, Shopee, TikTok…)
+  const chans = (await db.query('SELECT c.id, c.name FROM channels c JOIN group_tasks g ON g.company_id=c.company_id WHERE g.id=$1', [groupId])).rows;
+  const HOSTS = [[/mercadoli[vb]re|mlb-?\d/i, /mercado ?livre/i], [/shopee/i, /shopee/i], [/tiktok/i, /tiktok/i], [/magazineluiza|magalu/i, /magalu|magazine/i],
+    [/amazon/i, /amazon/i], [/americanas/i, /americanas/i], [/shein/i, /shein/i]];
+  const listingsFor = (link) => {
+    if (!link) return '[]';
+    const hit = HOSTS.find(([re]) => re.test(link));
+    const ch = hit && chans.find((c) => hit[1].test(c.name));
+    if (!ch) return '[]';
+    return JSON.stringify([{ id: newId(), channel_id: ch.id, ...listingFrom(link), by: userId, at: new Date().toISOString() }]);
+  };
   const start = (await db.query('SELECT COALESCE(max(position),0) AS p FROM group_items WHERE group_id=$1', [groupId])).rows[0].p;
-  await db.query(`INSERT INTO group_items (group_id, sku, link, drive_link, description, created_by, position)
-    SELECT $1, x.sku, x.link, x.drive, x.descr, $2, $3 + x.n FROM unnest($4::text[], $5::text[], $6::text[], $7::text[]) WITH ORDINALITY AS x(sku, link, drive, descr, n)`,
-    [groupId, userId, start, list.map((i) => i.sku), list.map((i) => i.link), list.map((i) => i.drive_link), list.map((i) => i.description)]);
+  await db.query(`INSERT INTO group_items (group_id, sku, link, drive_link, description, created_by, position, listings)
+    SELECT $1, x.sku, x.link, x.drive, x.descr, $2, $3 + x.n, x.lst::jsonb FROM unnest($4::text[], $5::text[], $6::text[], $7::text[], $8::text[]) WITH ORDINALITY AS x(sku, link, drive, descr, lst, n)`,
+    [groupId, userId, start, list.map((i) => i.sku), list.map((i) => i.link), list.map((i) => i.drive_link), list.map((i) => i.description), list.map((i) => listingsFor(i.link))]);
   return list.length;
 }
 app.post('/api/groups', requireTab('tarefas'), wrap(async (req, res) => {
@@ -1115,6 +1126,20 @@ app.post('/api/groups/:id/items', requireTab('tarefas'), wrap(async (req, res) =
   res.json({ added: n });
 }));
 const CHECK_KEYS = ['fotos', 'videos', 'anuncio', 'ads', 'afiliados'];
+// anúncio: link ou código (MLB123... vira link do Mercado Livre)
+function listingFrom(value) {
+  const t = String(value || '').trim().slice(0, 2000);
+  if (!t) return null;
+  const ml = /^MLB-?(\d{6,})$/i.exec(t);
+  if (ml) return { code: `MLB${ml[1]}`, link: `https://produto.mercadolivre.com.br/MLB-${ml[1]}` };
+  const link = cleanLink(t);
+  if (link && /^https?:\/\//i.test(link) && /[./]/.test(t)) {
+    const m = /MLB-?(\d{6,})/i.exec(t);
+    return { code: m ? `MLB${m[1]}` : null, link };
+  }
+  return { code: t.slice(0, 120), link: null };
+}
+const newId = () => Math.random().toString(36).slice(2, 10);
 // planilha (xlsx ou csv) com lista de SKU -> itens. Reconhece colunas pelo cabeçalho.
 function cellText(v) {
   if (v == null) return '';
@@ -1195,7 +1220,19 @@ async function applyAbc(db, g, userId, abc, filename) {
       throw new HttpError(400, `Esta planilha é do cliente "${abc.client}", mas esta tarefa em grupo é do cliente "${b.name}".`);
     }
   }
-  const existing = (await db.query('SELECT id, lower(sku) AS k, link FROM group_items WHERE group_id=$1 AND sku IS NOT NULL', [g.id])).rows;
+  const channels = (await db.query('SELECT id, name FROM channels WHERE company_id=$1', [g.company_id])).rows;
+  const chanOf = (mk) => { const m = normTxt(mk).replace(/[^a-z0-9]/g, ''); if (!m) return null; return channels.find((c) => { const n = normTxt(c.name).replace(/[^a-z0-9]/g, ''); return n === m || n.startsWith(m) || m.startsWith(n); })?.id || null; };
+  const mergeListings = (cur, rows) => {
+    const list = Array.isArray(cur) ? [...cur] : [];
+    for (const r of rows) {
+      const ch = chanOf(r.marketplace); const l = listingFrom(r.anuncio);
+      if (!ch || !l) continue;
+      if (list.some((x) => x.channel_id === ch && ((l.code && x.code === l.code) || (l.link && x.link === l.link)))) continue;
+      list.push({ id: newId(), channel_id: ch, ...l, conta: r.conta || null, from_abc: true, at: new Date().toISOString() });
+    }
+    return list;
+  };
+  const existing = (await db.query('SELECT id, lower(sku) AS k, link, listings FROM group_items WHERE group_id=$1 AND sku IS NOT NULL', [g.id])).rows;
   const byKey = new Map(existing.map((e) => [e.k, e]));
   const now = new Date().toISOString();
   let updated = 0;
@@ -1204,7 +1241,8 @@ async function applyAbc(db, g, userId, abc, filename) {
     const info = { curva: e.curva, faturamento: Math.round(e.faturamento * 100) / 100, qtd: e.qtd, period: abc.period, rows: e.rows, at: now };
     const ex = byKey.get(e.sku.toLowerCase());
     if (ex) {
-      await db.query('UPDATE group_items SET curva=$2, faturamento=$3, abc=$4, link=COALESCE(link, $5) WHERE id=$1', [ex.id, e.curva, info.faturamento, JSON.stringify(info), mlLink(e.rows)]);
+      await db.query('UPDATE group_items SET curva=$2, faturamento=$3, abc=$4, link=COALESCE(link, $5), listings=$6 WHERE id=$1',
+        [ex.id, e.curva, info.faturamento, JSON.stringify(info), mlLink(e.rows), JSON.stringify(mergeListings(ex.listings, e.rows))]);
       byKey.delete(e.sku.toLowerCase()); updated++;
     } else toAdd.push({ e, info });
   }
@@ -1216,8 +1254,8 @@ async function applyAbc(db, g, userId, abc, filename) {
   if (toAdd.length) {
     const start = (await db.query('SELECT COALESCE(max(position),0) AS p FROM group_items WHERE group_id=$1', [g.id])).rows[0].p;
     for (const [k, { e, info }] of toAdd.entries()) {
-      await db.query(`INSERT INTO group_items (group_id, sku, link, curva, faturamento, abc, created_by, position) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [g.id, e.sku, mlLink(e.rows), e.curva, info.faturamento, JSON.stringify(info), userId, start + k + 1]);
+      await db.query(`INSERT INTO group_items (group_id, sku, link, curva, faturamento, abc, created_by, position, listings) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [g.id, e.sku, mlLink(e.rows), e.curva, info.faturamento, JSON.stringify(info), userId, start + k + 1, JSON.stringify(mergeListings([], e.rows))]);
     }
   }
   await db.query('UPDATE group_tasks SET abc_period=$2, abc_updated_at=now(), abc_file=$3, updated_at=now() WHERE id=$1', [g.id, abc.period || null, String(filename || '').slice(0, 200)]);
@@ -1272,6 +1310,21 @@ app.patch('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) =
     } else if (b.action === 'done') {
       if (takenByOther && !canManage) throw new HttpError(409, 'Outra pessoa está fazendo este item');
       await db.query(`UPDATE group_items SET status='done', user_id=COALESCE(user_id,$2), done_at=now() WHERE id=$1`, [i.id, u.id]);
+    } else if (b.action === 'add_listing' || b.action === 'remove_listing') {
+      const list = Array.isArray(i.listings) ? [...i.listings] : [];
+      if (b.action === 'add_listing') {
+        const ch = parseInt(b.channel_id, 10);
+        if (!ch || !(await db.query('SELECT 1 FROM channels WHERE id=$1 AND company_id=$2', [ch, u.company_id])).rowCount) throw new HttpError(400, 'Canal inválido');
+        const l = listingFrom(b.value);
+        if (!l) throw new HttpError(400, 'Informe o link ou o código do anúncio');
+        if (list.some((x) => x.channel_id === ch && ((l.code && x.code === l.code) || (l.link && x.link === l.link)))) throw new HttpError(400, 'Este anúncio já está neste canal');
+        list.push({ id: newId(), channel_id: ch, ...l, by: u.id, name: u.name, at: new Date().toISOString() });
+      } else {
+        const k = list.findIndex((x) => x.id === b.listing_id);
+        if (k < 0) throw new HttpError(404, 'Anúncio não encontrado');
+        list.splice(k, 1);
+      }
+      await db.query('UPDATE group_items SET listings=$2 WHERE id=$1', [i.id, JSON.stringify(list)]);
     } else if (b.action === 'check') {
       if (!CHECK_KEYS.includes(b.key)) throw new HttpError(400, 'Item de checklist inválido');
       if (g.status === 'done') throw new HttpError(400, 'Esta tarefa em grupo já foi concluída');

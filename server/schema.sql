@@ -389,3 +389,6 @@ ALTER TABLE group_items ADD COLUMN IF NOT EXISTS abc JSONB;
 ALTER TABLE group_tasks ADD COLUMN IF NOT EXISTS abc_period TEXT;
 ALTER TABLE group_tasks ADD COLUMN IF NOT EXISTS abc_updated_at TIMESTAMPTZ;
 ALTER TABLE group_tasks ADD COLUMN IF NOT EXISTS abc_file TEXT;
+
+-- v20: anúncios por canal dentro de cada SKU (vários anúncios por canal)
+ALTER TABLE group_items ADD COLUMN IF NOT EXISTS listings JSONB NOT NULL DEFAULT '[]'::jsonb;
