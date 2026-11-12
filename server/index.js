@@ -1344,17 +1344,13 @@ app.patch('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) =
       if (b.value) l.checks[b.key] = { by: u.id, name: u.name, at: new Date().toISOString() }; else delete l.checks[b.key];
       await saveListings(db, i, list, u.id);
     } else if (b.action === 'check') {
-      if (!CHECK_KEYS.includes(b.key)) throw new HttpError(400, 'Item de checklist inválido');
+      // base do SKU (geral, vale para todos os anúncios): fotos e vídeos prontos
+      if (!['fotos', 'videos'].includes(b.key)) throw new HttpError(400, 'Item inválido');
       if (g.status === 'done') throw new HttpError(400, 'Esta tarefa em grupo já foi concluída');
       const checks = { ...(i.checks || {}) };
+      for (const k of Object.keys(checks)) if (!['fotos', 'videos'].includes(k)) delete checks[k];
       if (b.value) checks[b.key] = { by: u.id, name: u.name, at: new Date().toISOString() }; else delete checks[b.key];
-      const all = CHECK_KEYS.every((k) => checks[k]);
-      // checklist completo = item feito; desmarcou algo de um item feito = volta para livre
-      const status = all ? 'done' : i.status === 'done' ? 'todo' : i.status;
-      await db.query(`UPDATE group_items SET checks=$2, status=$3,
-          done_at=CASE WHEN $3='done' THEN COALESCE(done_at, now()) ELSE NULL END,
-          user_id=CASE WHEN $3='done' THEN COALESCE(user_id, $4) WHEN $3='todo' THEN NULL ELSE user_id END,
-          started_at=CASE WHEN $3='todo' THEN NULL ELSE started_at END WHERE id=$1`, [i.id, JSON.stringify(checks), status, u.id]);
+      await db.query('UPDATE group_items SET checks=$2 WHERE id=$1', [i.id, JSON.stringify(checks)]);
     } else if (b.action === 'release' || b.action === 'reopen') {
       if (i.user_id && i.user_id !== u.id && !canManage) throw new HttpError(403, 'Só quem pegou o item (ou quem criou a tarefa) pode soltar');
       await db.query(`UPDATE group_items SET status='todo', user_id=NULL, started_at=NULL, done_at=NULL WHERE id=$1`, [i.id]);
@@ -1774,6 +1770,14 @@ app.get('/api/day-done', wrap(async (req, res) => {
   const tz = u.timezone;
   const p = [u.company_id, day, tz];
   const uf = (col) => (only ? ` AND ${col}=${only}` : '');
+  const base = await many(`SELECT i.id AS item_id, i.sku, i.description, g.id AS group_id, g.title AS group_title, g.business_id,
+      'base' AS listing_id, NULL AS code, NULL AS link, NULL::int AS channel_id, 'Base do SKU' AS channel_name, '#676879' AS channel_color,
+      (c.value->>'by')::int AS user_id, u.name AS user_name, array_agg(c.key ORDER BY (c.value->>'at')) AS keys,
+      max((c.value->>'at')::timestamptz) AS at, false AS item_done
+    FROM group_items i JOIN group_tasks g ON g.id=i.group_id CROSS JOIN LATERAL jsonb_each(i.checks) c
+    LEFT JOIN users u ON u.id=(c.value->>'by')::int
+    WHERE g.company_id=$1 AND c.key IN ('fotos','videos') AND ((c.value->>'at')::timestamptz AT TIME ZONE $3)::date=$2 ${uf("(c.value->>'by')::int")}
+    GROUP BY i.id, g.id, c.value->>'by', u.name`, p);
   const [tasks, checks, notes] = await Promise.all([
     many(`SELECT t.id, t.title, t.kind, t.business_id, t.channel_id, ch.name AS channel_name, ch.color AS channel_color,
         t.assignee_id AS user_id, u.name AS user_name, t.completed_at, t.tracked_seconds
@@ -1795,7 +1799,7 @@ app.get('/api/day-done', wrap(async (req, res) => {
       WHERE n.company_id=$1 AND n.kind='note' AND (n.created_at AT TIME ZONE $3)::date=$2 ${uf('n.user_id')}
       ORDER BY n.created_at`, p),
   ]);
-  res.json({ day, today: todayIn(tz), tasks, checks, notes });
+  res.json({ day, today: todayIn(tz), tasks, checks: [...base, ...checks], notes });
 }));
 
 app.get('/api/notepad', wrap(async (req, res) => {
@@ -2024,6 +2028,10 @@ for (const day of ['2026-11-04', '2026-11-05', '2026-11-06']) {
 }
 for (const c of await many('SELECT id FROM companies')) {
   try { await ensureFixedSkuGroups(c.id); } catch (e) { console.error('Gestão de SKU', e.message); }
+}
+if (!(await one("SELECT 1 AS x FROM app_meta WHERE key='v21_base_sku'"))) {
+  await q(`UPDATE group_items SET checks = checks - 'anuncio' - 'ads' - 'afiliados' WHERE checks ?| array['anuncio','ads','afiliados']`);
+  await q("INSERT INTO app_meta (key) VALUES ('v21_base_sku')");
 }
 // uma vez (pedido em 12/11): apaga todas as tarefas "Não realizada" (e o histórico delas)
 if (!(await one("SELECT 1 AS x FROM app_meta WHERE key='v18_apaga_nao_realizadas'"))) {

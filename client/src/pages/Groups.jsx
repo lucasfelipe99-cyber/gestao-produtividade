@@ -193,7 +193,7 @@ function GroupBoard({ id, me, onDeleted }) {
         <div className="table-scroll">
           <table className="group-items">
             <thead><tr>
-              <th style={{ width: 28 }}>#</th><th style={{ width: 92 }}>SKU</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 158 }}>Anúncios por canal</th><th style={{ width: 62 }}>Drive</th><th>Descrição</th>
+              <th style={{ width: 28 }}>#</th><th style={{ width: 92 }}>SKU</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 158 }}>Anúncios por canal</th><th style={{ width: 56 }}>Drive</th><th style={{ width: 96 }} title="Fotos e vídeos prontos no geral (base para todos os anúncios)">Base do SKU</th><th>Descrição</th>
               {CHECKS.map(([k, l]) => <th key={k} className="ck-col">{l}</th>)}
               <th style={{ width: 96 }}>Quem</th><th style={{ width: 172 }}>Ações</th>
             </tr></thead>
@@ -281,6 +281,7 @@ function ListingsPanel({ i, call, colSpan, disabled }) {
             <b>Anúncios do SKU {i.sku || ''}</b>
             <span className="muted small">{list.length} anúncio(s) · {complete} completo(s) · {channels.filter((c) => list.some((l) => l.channel_id === c.id)).length}/{channels.length} canais</span>
             <ChannelChips list={list} channels={channels} />
+            <span className="small muted">Base:</span><BaseToggles i={i} call={call} disabled={disabled} />
             {i.drive_link && <a className="small item-link drive" href={i.drive_link} target="_blank" rel="noreferrer">📁 Drive do SKU (fotos e vídeos)</a>}
           </div>
           {list.length > 0 && (
@@ -339,6 +340,10 @@ function ListingSummary({ g }) {
   return (
     <div className="lst-summary">
       <div className="check-summary">
+        <div className={g.items.length && g.items.every((i) => i.checks?.fotos && i.checks?.videos) ? 'full' : ''}>
+          <small>Base pronta (fotos e vídeos)</small><b>{g.items.filter((i) => i.checks?.fotos && i.checks?.videos).length}/{g.items.length} SKUs</b>
+          <small className="muted">📷 {g.items.filter((i) => i.checks?.fotos).length} · 🎬 {g.items.filter((i) => i.checks?.videos).length}</small>
+        </div>
         <div><small>Anúncios</small><b>{all.length}</b><small className="muted">{all.filter(listingDone).length} completo(s){skuNoListing ? ` · ${skuNoListing} SKU(s) sem anúncio` : ''}</small></div>
         {CHECKS.map(([k, l]) => {
           const n = all.filter((x) => x.checks?.[k]).length;
@@ -371,6 +376,26 @@ function ListingSummary({ g }) {
   );
 }
 
+// base do SKU: fotos e vídeos prontos no geral (servem para todos os anúncios)
+function BaseToggles({ i, call, disabled }) {
+  const b = i.checks || {};
+  const both = b.fotos && b.videos;
+  const t = (k, label, icon) => {
+    const v = b[k];
+    return (
+      <button className={'base-btn' + (v ? ' on' : '')} disabled={disabled} onClick={() => call(`/group-items/${i.id}`, 'PATCH', { action: 'check', key: k, value: !v })}
+        title={v ? `${label} prontas na base — ${v.name}, ${new Date(v.at).toLocaleDateString('pt-BR')}` : `Marcar ${label.toLowerCase()} prontas na base do SKU`}>
+        {icon} {label}{v ? ' ✓' : ''}
+      </button>
+    );
+  };
+  return (
+    <span className={'base-toggles' + (both ? ' ready' : '')}>
+      {t('fotos', 'Fotos', '📷')}{t('videos', 'Vídeos', '🎬')}
+    </span>
+  );
+}
+
 function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
   const { channels } = useApp();
   const [edit, setEdit] = useState(false);
@@ -380,7 +405,7 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
   const [label, color] = ITEM_STATUS[i.status];
   const act = (action) => call(`/group-items/${i.id}`, 'PATCH', { action });
   const list = i.listings || [];
-  const cols = 5 + (hasAbc ? 2 : 0) + CHECKS.length + 2;
+  const cols = 6 + (hasAbc ? 2 : 0) + CHECKS.length + 2;
   if (edit) {
     return (
       <tr className="editing">
@@ -389,6 +414,7 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
         {hasAbc && <AbcCells i={i} />}
         <td><ChannelChips list={list} channels={channels} /></td>
         <td><input className="sm" value={f.drive_link} onChange={(e) => setF({ ...f, drive_link: e.target.value })} placeholder="Link do Drive" /></td>
+        <td><BaseToggles i={i} call={call} disabled /></td>
         <td><input className="sm" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} placeholder="Descrição" /></td>
         <td colSpan={CHECKS.length + 2}>
           <div className="row gap-s">
@@ -407,6 +433,7 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
       <td><button className={'lst-chips' + (open ? ' open' : '')} onClick={() => setOpen(!open)} title="Anúncios por canal">
         <ChannelChips list={list} channels={channels} /><small className="muted lst-count">{list.length ? `${list.length} anúncio(s)` : '+ anúncio'}</small></button></td>
       <td>{i.drive_link ? <a href={i.drive_link} target="_blank" rel="noreferrer" className="item-link drive" title={i.drive_link}>📁 Drive</a> : <span className="muted">—</span>}</td>
+      <td><BaseToggles i={i} call={call} disabled={groupDone} /></td>
       <td className="item-desc">{i.description || <span className="muted">—</span>}</td>
       {CHECKS.map(([k, l]) => {
         const nOk = list.filter((x) => x.checks?.[k]).length;
