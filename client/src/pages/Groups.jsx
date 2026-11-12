@@ -73,7 +73,6 @@ export function GroupsView({ creating, setCreating }) {
           <h3><i />{sec.name}<small>{sec.items.length} tarefa(s) em grupo</small></h3>
           <div className="group-cards">
             {sec.items.map((g) => {
-              const doing = g.members.filter((m) => m.doing_since);
               const pct = g.items_total ? (g.items_done / g.items_total) * 100 : 0;
               return (
                 <button key={g.id} className={'group-card' + (g.fixed ? ' fixed' : '')} onClick={() => setSel(g.id)}>
@@ -83,9 +82,10 @@ export function GroupsView({ creating, setCreating }) {
                     <span className="mini-progress grow"><span style={{ width: `${pct}%` }} /></span>
                     <small><b>{g.items_done}/{g.items_total}</b> SKUs</small>
                   </span>
-                  {doing.length > 0
-                    ? <span className="doing-now"><span className="live-dot" />{doing.map((m) => m.name.split(' ')[0]).join(', ')} fazendo agora</span>
-                    : <small className="muted">ninguém fazendo agora</small>}
+                  {(g.assignees || []).length > 0
+                    ? <small className="muted">{g.assignees.map((a) => `${a.name.split(' ')[0]} ${a.done}/${a.total}`).join(' · ')}</small>
+                    : <small className="muted">SKUs ainda não distribuídos</small>}
+                  {g.items_unassigned > 0 && (g.assignees || []).length > 0 && <small className="danger-text">{g.items_unassigned} sem responsável</small>}
                 </button>
               );
             })}
@@ -104,14 +104,13 @@ function GroupBoard({ id, me, onDeleted }) {
   const [curvaF, setCurvaF] = useState('');
   const [sort, setSort] = useState('list');
   const [editing, setEditing] = useState(false);
+  const [distOpen, setDistOpen] = useState(false);
   if (!g) return <Loading />;
   const canManage = isAdmin || g.created_by === me.id;
-  const mine = g.members.find((m) => m.id === me.id);
-  const iAmDoing = !!mine?.doing_since;
-  const doing = g.members.filter((m) => m.doing_since);
   const hasAbc = g.items.some((i) => i.abc);
   const items = g.items
-    .filter((i) => filter === 'all' || i.status === filter || (filter === 'mine' && i.user_id === me.id))
+    .filter((i) => filter === 'all' || (filter === 'done' ? i.status === 'done' : filter === 'pending' ? i.status !== 'done'
+      : filter === 'mine' ? i.assignee_id === me.id : filter === 'none' ? !i.assignee_id : filter.startsWith('u') ? i.assignee_id === Number(filter.slice(1)) : true))
     .filter((i) => !curvaF || (curvaF === 'none' ? !i.curva : i.curva === curvaF))
     .sort(sort === 'fat' ? (a, b) => (b.faturamento || 0) - (a.faturamento || 0)
       : sort === 'curva' ? (a, b) => (a.curva || 'Z').localeCompare(b.curva || 'Z') || (b.faturamento || 0) - (a.faturamento || 0) : () => 0);
@@ -151,33 +150,15 @@ function GroupBoard({ id, me, onDeleted }) {
         </div>
       )}
 
-      <div className="presence">
-        <div className="grow">
-          <small className="muted">Quem está fazendo agora</small>
-          <div className="presence-list">
-            {!doing.length && <span className="muted small">Ninguém no momento</span>}
-            {doing.map((m) => {
-              const it = g.items.find((i) => i.id === m.item_id);
-              return (
-                <span key={m.id} className="presence-chip" title={`Desde ${hm(m.doing_since)}`}>
-                  <Avatar name={m.name} id={m.id} size={24} /><span className="live-dot" />
-                  <span><b>{m.name.split(' ')[0]}</b><small>{it ? `item ${g.items.indexOf(it) + 1}` : 'na atividade'} · {since(m.doing_since)}</small></span>
-                </span>
-              );
-            })}
-          </div>
-        </div>
-        {!done && (iAmDoing
-          ? <button className="btn" onClick={() => call(`/groups/${g.id}/doing`, 'POST', { on: false })}><Icon name="stop" size={14} /> Parar</button>
-          : <button className="btn primary doing-btn" onClick={() => call(`/groups/${g.id}/doing`, 'POST', { on: true })}><Icon name="play" size={14} /> Fazendo isso</button>)}
-      </div>
+      <Distribution g={g} canManage={canManage} done={done} onOpen={() => setDistOpen(true)} filter={filter} setFilter={setFilter} me={me} />
+      {distOpen && <DistributeModal g={g} onClose={() => setDistOpen(false)} />}
 
       <div className="row gap wrap" style={{ margin: '14px 0 8px' }}>
         <div className="grow" style={{ minWidth: 200 }}>
-          <Progress value={g.items.length ? (count('done') / g.items.length) * 100 : 0} color="#00c875" label={`${count('done')}/${g.items.length} itens feitos`} />
+          <Progress value={g.items.length ? (count('done') / g.items.length) * 100 : 0} color="#00c875" label={`${count('done')}/${g.items.length} SKUs feitos`} />
         </div>
         <div className="mini-seg">
-          {[['all', `Todos ${g.items.length}`], ['todo', `Livres ${count('todo')}`], ['doing', `Fazendo ${count('doing')}`], ['done', `Feitos ${count('done')}`], ['mine', 'Meus']].map(([k, l]) => (
+          {[['all', `Todos ${g.items.length}`], ['mine', `Meus ${g.items.filter((i) => i.assignee_id === me.id).length}`], ['none', `Sem responsável ${g.items.filter((i) => !i.assignee_id && i.status !== 'done').length}`], ['pending', `Pendentes ${g.items.length - count('done')}`], ['done', `Feitos ${count('done')}`]].map(([k, l]) => (
             <button key={k} className={filter === k ? 'on' : ''} onClick={() => setFilter(k)}>{l}</button>
           ))}
         </div>
@@ -189,13 +170,13 @@ function GroupBoard({ id, me, onDeleted }) {
 
       {!done && <AddItems groupId={g.id} />}
 
-      {!g.items.length ? <Empty>Sem itens ainda. Adicione um link e uma descrição acima. Cada pessoa clica em "Fazendo isso" no item que pegar.</Empty> : (
+      {!g.items.length ? <Empty>Sem SKUs ainda. Suba a planilha (modelo ou curva ABC) ou adicione acima, e depois use "Distribuir SKUs" para dividir entre o time.</Empty> : (
         <div className="table-scroll">
           <table className="group-items">
             <thead><tr>
               <th style={{ width: 28 }}>#</th><th>SKU / descrição</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 158 }}>Anúncios por canal</th><th style={{ width: 118 }}>Drive</th><th style={{ width: 96 }} title="Fotos e vídeos prontos no geral (base para todos os anúncios)">Base do SKU</th>
               {CHECKS.map(([k, l]) => <th key={k} className="ck-col">{l}</th>)}
-              <th style={{ width: 96 }}>Quem</th><th style={{ width: 172 }}>Ações</th>
+              <th style={{ width: 150 }}>Responsável</th><th style={{ width: 64 }} />
             </tr></thead>
             <tbody>
               {items.map((i) => <ItemRow key={i.id} hasAbc={hasAbc} i={i} n={g.items.indexOf(i) + 1} me={me} canManage={canManage} groupDone={done} call={call} />)}
@@ -436,14 +417,127 @@ function BaseToggles({ i, call, disabled }) {
   );
 }
 
+// ---------- distribuição dos SKUs entre colaboradores ----------
+function skuWork(i) {
+  const list = i.listings || [];
+  let w = (i.checks?.fotos ? 0 : 1) + (i.checks?.videos ? 0 : 1);
+  for (const l of list) w += (l.link || l.code ? 0 : 1) + CHECKS.filter(([k]) => !l.checks?.[k]).length;
+  return Math.max(1, w);
+}
+function planDistribution(items, userIds, mode) {
+  const load = new Map(userIds.map((id) => [id, { work: 0, skus: 0, a: 0 }]));
+  const pending = items.filter((i) => i.status !== 'done');
+  if (mode === 'unassigned') for (const i of pending) if (i.assignee_id && load.has(i.assignee_id)) { const l = load.get(i.assignee_id); l.work += skuWork(i); l.skus++; if (i.curva === 'A') l.a++; }
+  const todo = mode === 'unassigned' ? pending.filter((i) => !i.assignee_id) : pending;
+  const rank = (c) => ({ A: 0, B: 1, C: 2 }[c] ?? 3);
+  todo.sort((a, b) => rank(a.curva) - rank(b.curva) || (b.faturamento || 0) - (a.faturamento || 0) || skuWork(b) - skuWork(a));
+  let moved = 0;
+  for (const i of todo) {
+    let best = null;
+    for (const [id, l] of load) if (!best || l.work < best[1].work || (l.work === best[1].work && l.skus < best[1].skus)) best = [id, l];
+    best[1].work += skuWork(i); best[1].skus++; if (i.curva === 'A') best[1].a++; moved++;
+  }
+  return { load, moved };
+}
+function Distribution({ g, canManage, done, onOpen, filter, setFilter, me }) {
+  const per = g.assignees || [];
+  const none = g.items.filter((i) => !i.assignee_id && i.status !== 'done').length;
+  return (
+    <div className="dist-box">
+      <div className="grow">
+        <small className="muted">Divisão dos SKUs</small>
+        <div className="presence-list">
+          {!per.length && <span className="muted small">Ninguém com SKU ainda{canManage ? ' — use "Distribuir SKUs"' : ''}.</span>}
+          {per.map((p) => (
+            <button key={p.id} className={'presence-chip dist-chip' + (filter === 'u' + p.id ? ' on' : '')} onClick={() => setFilter(filter === 'u' + p.id ? 'all' : 'u' + p.id)} title="Ver só os SKUs desta pessoa">
+              <Avatar name={p.name} id={p.id} size={24} />
+              <span><b>{p.id === me.id ? 'Você' : p.name.split(' ')[0]}</b><small>{p.done}/{p.total} feitos</small></span>
+              <span className="mini-progress dist-prog"><span style={{ width: `${p.total ? (p.done / p.total) * 100 : 0}%` }} /></span>
+            </button>
+          ))}
+          {none > 0 && <button className={'presence-chip dist-chip none' + (filter === 'none' ? ' on' : '')} onClick={() => setFilter(filter === 'none' ? 'all' : 'none')}><span><b>{none}</b><small>sem responsável</small></span></button>}
+        </div>
+      </div>
+      {canManage && !done && <button className="btn primary" onClick={onOpen}><Icon name="users" size={15} /> Distribuir SKUs</button>}
+    </div>
+  );
+}
+function DistributeModal({ g, onClose }) {
+  const { isAdmin, activeUsers } = useApp();
+  const dir = useData(isAdmin ? null : '/users/directory');
+  const people = isAdmin ? activeUsers : dir.data || [];
+  const [sel, setSel] = useState(() => (g.assignees || []).map((a) => a.id));
+  const [mode, setMode] = useState('unassigned');
+  const [busy, setBusy] = useState(false);
+  const toggle = (id) => setSel(sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
+  const { load, moved } = planDistribution(g.items, sel, mode);
+  const run = async () => {
+    setBusy(true);
+    try {
+      const r = await api(`/groups/${g.id}/distribute`, { method: 'POST', body: { user_ids: sel, mode } });
+      emitLocal(); toast(`${r.distributed} SKU(s) distribuídos`, 'success'); onClose();
+    } catch (e) { toast(e.message, 'error'); } finally { setBusy(false); }
+  };
+  const pending = g.items.filter((i) => i.status !== 'done').length;
+  const unassigned = g.items.filter((i) => i.status !== 'done' && !i.assignee_id).length;
+  return (
+    <Modal title="Distribuir SKUs entre o time" onClose={onClose} wide
+      footer={<><button className="btn" onClick={onClose}>Cancelar</button><button className="btn primary" disabled={busy || !sel.length || !moved} onClick={run}>Distribuir {moved} SKU(s)</button></>}>
+      <p className="muted small" style={{ marginTop: 0 }}>O sistema divide de forma equilibrada: começa pelos SKUs <b>curva A</b> (maior faturamento) e sempre entrega o próximo para quem está com <b>menos trabalho pendente</b> (fotos, vídeos e checklist dos anúncios que faltam). Assim cada um fica com parte dos SKUs mais importantes.</p>
+      <Field label="Quem vai participar">
+        <div className="member-pick">
+          {people.map((u) => <label key={u.id} className="check"><input type="checkbox" checked={sel.includes(u.id)} onChange={() => toggle(u.id)} /> {u.name}</label>)}
+        </div>
+      </Field>
+      <Field label="O que dividir">
+        <div className="col gap-s">
+          <label className="check"><input type="radio" checked={mode === 'unassigned'} onChange={() => setMode('unassigned')} /> Só os SKUs sem responsável ({unassigned}) — quem já tem SKU continua com eles</label>
+          <label className="check"><input type="radio" checked={mode === 'all'} onChange={() => setMode('all')} /> Redividir todos os pendentes ({pending}) — refaz a divisão do zero</label>
+        </div>
+      </Field>
+      {sel.length > 0 && (
+        <div className="dist-preview">
+          <small className="muted">Prévia</small>
+          <table><thead><tr><th>Colaborador</th><th>SKUs</th><th>Curva A</th><th>Trabalho pendente</th></tr></thead>
+            <tbody>{sel.map((id) => { const u = people.find((p) => p.id === id); const l = load.get(id); return (
+              <tr key={id}><td>{u?.name || id}</td><td><b>{l?.skus || 0}</b></td><td>{l?.a || 0}</td><td>{l?.work || 0} etapa(s)</td></tr>
+            ); })}</tbody></table>
+        </div>
+      )}
+    </Modal>
+  );
+}
+function AssigneeCell({ i, me, canManage, call, disabled }) {
+  const { isAdmin, activeUsers } = useApp();
+  const dir = useData(canManage && !isAdmin ? '/users/directory' : null);
+  const people = isAdmin ? activeUsers : dir.data || [];
+  const done = i.status === 'done';
+  if (canManage && !disabled) {
+    return (
+      <span className="assignee-cell">
+        {done && <span className="pill sm" style={{ background: '#00c875' }}>Feito</span>}
+        <select className="sm" value={i.assignee_id || ''} onChange={(e) => call(`/group-items/${i.id}`, 'PATCH', { action: 'assign', user_id: e.target.value || null })}>
+          <option value="">— sem responsável —</option>
+          {people.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+      </span>
+    );
+  }
+  return (
+    <span className="assignee-cell">
+      {done && <span className="pill sm" style={{ background: '#00c875' }}>Feito</span>}
+      {i.assignee_name ? <span className="row gap-s"><Avatar name={i.assignee_name} id={i.assignee_id} size={22} /><span className="small">{i.assignee_id === me.id ? 'Você' : i.assignee_name.split(' ')[0]}</span></span>
+        : !disabled && !done ? <button className="btn xs" onClick={() => call(`/group-items/${i.id}`, 'PATCH', { action: 'assign', user_id: me.id })}>Pegar para mim</button> : <span className="muted">—</span>}
+    </span>
+  );
+}
+
 function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
   const { channels } = useApp();
   const [edit, setEdit] = useState(false);
   const [open, setOpen] = useState(false);
   const [f, setF] = useState({ sku: i.sku || '', drive_link: i.drive_link || '', description: i.description || '' });
-  const mine = i.user_id === me.id;
-  const [label, color] = ITEM_STATUS[i.status];
-  const act = (action) => call(`/group-items/${i.id}`, 'PATCH', { action });
+  const mine = i.assignee_id === me.id;
   const list = i.listings || [];
   const cols = 5 + (hasAbc ? 2 : 0) + CHECKS.length + 2;
   if (edit) {
@@ -466,7 +560,7 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
     );
   }
   return (<>
-    <tr className={'gi-' + i.status + (mine && i.status === 'doing' ? ' gi-mine' : '') + (open ? ' gi-open' : '')}>
+    <tr className={'gi-' + (i.status === 'done' ? 'done' : 'todo') + (mine && i.status !== 'done' ? ' gi-mine' : '') + (open ? ' gi-open' : '')}>
       <td className="muted">{n}</td>
       <td><button className="sku-btn" onClick={() => setOpen(!open)} title="Ver anúncios do SKU"><Icon name={open ? 'down' : 'right'} size={12} /><b className="sku">{i.sku || '—'}</b></button>
         {i.description && <small className="sku-desc">{i.description}</small>}</td>
@@ -487,21 +581,9 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
           </td>
         );
       })}
+      <td><AssigneeCell i={i} me={me} canManage={canManage} call={call} disabled={groupDone} /></td>
       <td>
-        <span className="pill sm" style={{ background: color }}>{label}</span>
-        {i.user_name ? (
-          <span className="row gap-s"><Avatar name={i.user_name} id={i.user_id} size={22} />
-            <span className="small">{i.user_name.split(' ')[0]}<br /><small className="muted">{i.status === 'done' && i.done_at ? `feito ${hm(i.done_at)}` : i.started_at ? `desde ${hm(i.started_at)}` : ''}</small></span>
-          </span>
-        ) : <span className="muted">—</span>}
-      </td>
-      <td>
-        <span className="row gap-s wrap">
-          {!groupDone && i.status === 'todo' && <button className="btn xs start" onClick={() => act('doing')}><Icon name="play" size={12} /> Fazendo isso</button>}
-          {!groupDone && i.status === 'doing' && mine && <button className="btn xs finish" onClick={() => act('done')}><Icon name="check" size={12} /> Feito</button>}
-          {!groupDone && i.status === 'doing' && (mine || canManage) && <button className="btn xs" onClick={() => act('release')}>Soltar</button>}
-          {!groupDone && i.status === 'doing' && !mine && !canManage && <small className="muted">com {i.user_name?.split(' ')[0]}</small>}
-          {!groupDone && i.status === 'done' && (mine || canManage) && <button className="btn xs" onClick={() => act('reopen')}>Reabrir</button>}
+        <span className="row gap-s">
           {(i.created_by === me.id || canManage) && (<>
             <button className="icon-btn sm" title="Editar SKU" onClick={() => setEdit(true)}><Icon name="edit" size={13} /></button>
             <button className="icon-btn sm" title="Excluir SKU" onClick={() => confirm('Excluir este SKU e os anúncios dele?') && call(`/group-items/${i.id}`, 'DELETE')}><Icon name="trash" size={13} /></button>

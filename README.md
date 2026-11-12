@@ -81,3 +81,4 @@ Build: `npm install && npm run build` · Start: `npm start` · Health check: `/h
   - Anúncio pode ser adicionado **sem link** (fica "Falta o link"/pendente); o link é obrigatório para o anúncio ficar completo e para concluir o SKU.
   - **Aviso para o time** quando um SKU fica com fotos e vídeos prontos (sino + notificação para todos).
 - Tempo real corrigido: o canal de atualizações (/api/stream) não passa mais pela compressão.
+  - **Distribuir SKUs** (no lugar do "Fazendo isso"): escolha quem participa e o sistema divide os SKUs de forma equilibrada — curva A primeiro, sempre para quem tem menos trabalho pendente (fotos, vídeos, checklist dos anúncios). Cada SKU tem um responsável (dá para trocar); colaborador pode pegar SKU sem responsável. Aviso para o time com a divisão.

@@ -406,3 +406,7 @@ CREATE TABLE IF NOT EXISTS team_notices (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS team_notices_company ON team_notices (company_id, created_at DESC);
+
+-- v23: responsável por SKU (distribuição dos SKUs entre colaboradores)
+ALTER TABLE group_items ADD COLUMN IF NOT EXISTS assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS group_items_assignee ON group_items (assignee_id) WHERE assignee_id IS NOT NULL;
