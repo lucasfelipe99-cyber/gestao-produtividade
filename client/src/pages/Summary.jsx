@@ -12,101 +12,179 @@ function whenLabel(date, time, today) {
 
 export default function Summary() {
   const { me, isAdmin, activeUsers } = useApp();
+  const [tab, setTab] = useState('done');
   const [user, setUser] = useState('');
   const [day, setDay] = useState(me.today);
+  const [by, setBy] = useState(() => { try { return localStorage.getItem('summaryBy') || 'client'; } catch { return 'client'; } });
   const [remPrefill, setRemPrefill] = useState(null);
+  const chooseBy = (v) => { setBy(v); try { localStorage.setItem('summaryBy', v); } catch { /* */ } };
   const viewingOther = isAdmin && user && Number(user) !== me.id;
-  const name = viewingOther ? activeUsers.find((u) => u.id === Number(user))?.name : me.name.split(' ')[0];
 
   return (
     <div className="page">
       <div className="page-head">
         <div>
-          <h1>Resumo · {name}</h1>
-          <p className="muted">Lançamentos de {fmtDateLong(day)}{day === me.today && ' · hoje'}{viewingOther && ' · somente leitura'}</p>
+          <h1>Resumo</h1>
+          <p className="muted">{tab === 'done' ? <>O que foi realizado em {fmtDateLong(day)}{day === me.today && ' · hoje'}, por cliente e colaborador</> : 'Lembretes para revisar: viram tarefa na data do lembrete'}</p>
         </div>
         <div className="row gap wrap">
+          <div className="mini-seg big">
+            <button className={tab === 'done' ? 'on' : ''} onClick={() => setTab('done')}>Realizado</button>
+            <button className={tab === 'rem' ? 'on' : ''} onClick={() => setTab('rem')}>Lembretes</button>
+          </div>
           {isAdmin && (
             <select value={user} onChange={(e) => setUser(e.target.value)}>
-              <option value="">Meus lançamentos</option>
-              {activeUsers.filter((u) => u.id !== me.id).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              <option value="">{tab === 'done' ? 'Toda a equipe' : 'Meus lembretes'}</option>
+              {activeUsers.filter((u) => tab === 'done' || u.id !== me.id).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select>
           )}
-          <div className="date-nav">
-            <button className="icon-btn" onClick={() => setDay(addDays(day, -1))}><Icon name="left" /></button>
-            <input type="date" value={day} onChange={(e) => e.target.value && setDay(e.target.value)} />
-            <button className="icon-btn" onClick={() => setDay(addDays(day, 1))}><Icon name="right" /></button>
-            {day !== me.today && <button className="btn sm" onClick={() => setDay(me.today)}>Hoje</button>}
-          </div>
+          {tab === 'done' && (
+            <div className="date-nav">
+              <button className="icon-btn" onClick={() => setDay(addDays(day, -1))}><Icon name="left" /></button>
+              <input type="date" value={day} onChange={(e) => e.target.value && setDay(e.target.value)} />
+              <button className="icon-btn" onClick={() => setDay(addDays(day, 1))}><Icon name="right" /></button>
+              {day !== me.today && <button className="btn sm" onClick={() => setDay(me.today)}>Hoje</button>}
+            </div>
+          )}
         </div>
       </div>
 
-      <Notebook key={`${user}-${day}`} day={day} user={viewingOther ? user : ''} onDay={setDay}
-        onReminder={(text) => { setRemPrefill({ title: text, at: Date.now() }); setTimeout(() => document.querySelector('.reminders-card')?.scrollIntoView({ behavior: 'smooth' }), 50); }} />
-
-      <Reminders viewingOther={viewingOther} user={user} prefill={remPrefill} />
+      {tab === 'done' ? (
+        <DayDone day={day} user={user} by={by} setBy={chooseBy}
+          onReminder={(text) => { setRemPrefill({ title: text, at: Date.now() }); setTab('rem'); }} />
+      ) : (
+        <Reminders viewingOther={viewingOther} user={user} prefill={remPrefill} />
+      )}
     </div>
   );
 }
 
-// ---------- lançamentos do dia (estilo atualizações do Monday) + resumo por IA ----------
+// ---------- realizado no dia: tarefas concluídas, checklist de SKU e apontamentos, por cliente e colaborador ----------
 function hm(iso) { const d = new Date(iso); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; }
+const CHECK_LABEL = { fotos: 'Fotos', videos: 'Vídeos', anuncio: 'Anúncio', ads: 'ADS', afiliados: 'Afiliados' };
+const KIND_LABEL = { daily: 'Diária', weekly: 'Semanal', oneoff: 'Pontual' };
+const fmtSecs = (s) => { const m = Math.round((s || 0) / 60); return m ? (m >= 60 ? `${Math.floor(m / 60)}h${pad2(m % 60)}` : `${m} min`) : ''; };
 
-function Notebook({ day, user, onDay, onReminder }) {
-  const { me, users } = useApp();
-  const uq = user ? `&user=${user}` : '';
-  const { data: state, reload } = useData(`/notepad?date=${day}${uq}`, [day, user]);
-  const [busy, setBusy] = useState(false);
-  if (!state) return <Loading />;
-  const ro = state.readonly;
-  const pad = state.pad;
-  const owner = user ? users.find((u) => u.id === Number(user)) : me;
-  const outdated = pad.summary && pad.updated_at && pad.summary_at && new Date(pad.updated_at) > new Date(pad.summary_at);
-  const isToday = day === state.today;
+function DayDone({ day, user, by, setBy, onReminder }) {
+  const { me, businesses, openTask } = useApp();
+  const { data } = useData(`/day-done?date=${day}${user ? `&user=${user}` : ''}`);
+  if (!data) return <Loading />;
+  const isToday = day === data.today;
+  const canWrite = isToday && (!user || Number(user) === me.id);
 
-  const summarize = async () => {
-    setBusy(true);
-    try { await api(`/notepad/${day}/summarize${user ? `?user=${user}` : ''}`, { method: 'POST' }); await reload(); toast('Resumo organizado', 'success'); }
-    catch (e) { toast(e.message, 'error'); } finally { setBusy(false); }
-  };
+  // junta tudo numa lista de linhas com cliente e colaborador
+  const rows = [
+    ...data.tasks.map((t) => ({ type: 'task', key: 't' + t.id, at: t.completed_at, biz: t.business_id, uid: t.user_id, uname: t.user_name, t })),
+    ...data.checks.map((c) => ({ type: 'check', key: `c${c.item_id}-${c.user_id}`, at: c.at, biz: c.business_id, uid: c.user_id, uname: c.user_name, c })),
+    ...data.notes.map((n) => ({ type: 'note', key: 'n' + n.id, at: n.created_at, biz: n.business_id, uid: n.user_id, uname: n.user_name, n })),
+  ].sort((a, b) => new Date(a.at) - new Date(b.at));
+  const bizOf = (id) => businesses.find((b) => b.id === id) || { id: 0, name: 'Sem cliente', color: '#c4c4c4' };
+  const outer = by === 'client'
+    ? (r) => { const b = bizOf(r.biz); return [b.id, b.name, b.color]; }
+    : (r) => [r.uid || 0, r.uname || 'Sem responsável', null];
+  const inner = by === 'client' ? (r) => [r.uid || 0, r.uname || 'Sem responsável'] : (r) => { const b = bizOf(r.biz); return [b.id, b.name, b.color]; };
+  const groups = [];
+  for (const r of rows) {
+    const [k, name, color] = outer(r);
+    let g = groups.find((x) => x.k === k);
+    if (!g) groups.push((g = { k, name, color, subs: [] }));
+    const [ik, iname, icolor] = inner(r);
+    let sub = g.subs.find((x) => x.k === ik);
+    if (!sub) g.subs.push((sub = { k: ik, name: iname, color: icolor, rows: [] }));
+    sub.rows.push(r);
+  }
+  // clientes na ordem do cadastro, "Sem cliente" no fim; colaboradores em ordem alfabética
+  if (by === 'client') groups.sort((a, b) => (a.k === 0) - (b.k === 0) || businesses.findIndex((x) => x.id === a.k) - businesses.findIndex((x) => x.id === b.k));
+  else groups.sort((a, b) => a.name.localeCompare(b.name));
+  const count = (type) => rows.filter((r) => r.type === type).length;
 
   return (
-    <div className="nb-grid">
-      <Card className="nb-card" title={`Lançamentos ${isToday ? 'de hoje' : 'do dia'}`} actions={<small className="muted">{state.entries.length} lançamento(s)</small>}>
-        {!ro && (isToday ? <Composer /> : <div className="warn-box mb">Novos lançamentos entram sempre no dia de hoje. <button className="link" onClick={() => onDay(state.today)}>Ir para hoje</button></div>)}
-        {!state.entries.length ? <Empty>{ro ? 'Nenhum lançamento neste dia.' : isToday ? 'Nenhum lançamento ainda. Escreva o primeiro acima.' : 'Nenhum lançamento neste dia.'}</Empty> : (
-          <ul className="updates">
-            {state.entries.map((e) => <Entry key={e.id} e={e} owner={owner} readonly={ro} onReminder={onReminder} />)}
-          </ul>
-        )}
-      </Card>
-
-      <div className="nb-side">
-        <Card title="Resumo do dia pela IA" actions={(
-          <button className="btn sm primary" disabled={busy || !state.ai || !state.entries.length} onClick={summarize}>
-            <Icon name="repeat" size={14} /> {busy ? 'Organizando…' : pad.summary ? 'Atualizar' : 'Organizar agora'}
-          </button>)}>
-          {!state.ai && <div className="warn-box">A IA ainda não está configurada no servidor. É preciso adicionar a chave <b>ANTHROPIC_API_KEY</b> no Render.</div>}
-          {pad.summary ? <AiSummary s={pad.summary} /> : (
-            <Empty>{state.entries.length ? 'Ainda sem resumo. Ele é gerado automaticamente no fim da jornada, ou clique em “Organizar agora”.' : 'Sem lançamentos para resumir neste dia.'}</Empty>
-          )}
-          {pad.summary_at && <small className="muted block-mt">Gerado em {fmtDateTime(pad.summary_at)}{outdated && ' · houve lançamentos depois disso'}</small>}
-          {pad.summary_error && !pad.summary && <small className="danger-text block-mt">{pad.summary_error}</small>}
-        </Card>
-
-        {state.days.length > 0 && (
-          <Card title="Dias com lançamentos">
-            <div className="day-chips">
-              {state.days.map((d) => (
-                <button key={d.day} className={'day-chip' + (d.day === day ? ' on' : '')} onClick={() => onDay(d.day)} title={`${d.entries} lançamento(s)`}>
-                  {fmtDate(d.day)} <span className="chip-count">{d.entries}</span>{d.has_summary && <Icon name="check" size={12} />}
-                </button>
+    <div>
+      {canWrite && <Composer />}
+      <div className="row gap wrap" style={{ margin: '4px 0 12px' }}>
+        <div className="mini-seg">
+          <button className={by === 'client' ? 'on' : ''} onClick={() => setBy('client')}>Por cliente</button>
+          <button className={by === 'user' ? 'on' : ''} onClick={() => setBy('user')}>Por colaborador</button>
+        </div>
+        <span className="muted small"><b>{count('task')}</b> tarefa(s) concluída(s) · <b>{count('check')}</b> SKU(s) com checklist · <b>{count('note')}</b> apontamento(s)</span>
+      </div>
+      {!rows.length ? <Empty>Nada realizado {isToday ? 'ainda hoje' : 'neste dia'}{user ? ' por este colaborador' : ''}.</Empty> : (
+        <div className="done-groups">
+          {groups.map((g) => (
+            <div key={g.k} className="done-group" style={{ '--c': g.color || '#0073ea' }}>
+              <h3>{g.color ? <i /> : <Avatar name={g.name} id={g.k} size={24} />}{g.name}<small>{g.subs.reduce((a, s) => a + s.rows.length, 0)} registro(s)</small></h3>
+              {g.subs.map((sub) => (
+                <div key={sub.k} className="done-sub">
+                  <div className="done-sub-head">
+                    {sub.color ? <span className="cat small"><i style={{ background: sub.color }} />{sub.name}</span> : <><Avatar name={sub.name} id={sub.k} size={22} /><b>{sub.name}</b></>}
+                    <small className="muted">{sub.rows.length}</small>
+                  </div>
+                  <ul className="done-list">
+                    {sub.rows.map((r) => <DoneRow key={r.key} r={r} me={me} openTask={openTask} onReminder={onReminder} />)}
+                  </ul>
+                </div>
               ))}
             </div>
-          </Card>
-        )}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
+  );
+}
+
+function DoneRow({ r, me, openTask, onReminder }) {
+  if (r.type === 'task') {
+    const t = r.t;
+    return (
+      <li className="done-row" onClick={() => openTask(t.id)} title="Abrir tarefa">
+        <span className="done-ico ok">✓</span><span className="muted mono">{hm(t.completed_at)}</span>
+        <span className="grow"><b>{t.title}</b> <span className="tag kind">{KIND_LABEL[t.kind] || ''}</span>
+          {t.channel_name && <span className="chan" style={{ background: t.channel_color }}>{t.channel_name}</span>}</span>
+        {fmtSecs(t.tracked_seconds) && <small className="muted">{fmtSecs(t.tracked_seconds)}</small>}
+      </li>
+    );
+  }
+  if (r.type === 'check') {
+    const c = r.c;
+    return (
+      <li className="done-row">
+        <span className="done-ico sku">▦</span><span className="muted mono">{hm(c.at)}</span>
+        <span className="grow"><b className="sku">{c.sku || c.description || 'Item'}</b>{c.sku && c.description && <span className="muted"> · {c.description}</span>}
+          {' '}— {c.keys.map((k) => CHECK_LABEL[k] || k).join(', ')}{c.item_done && <span className="tag ok" style={{ marginLeft: 6 }}>SKU completo</span>}
+          <small className="muted"> · {c.group_title}</small></span>
+      </li>
+    );
+  }
+  const n = r.n;
+  return <NoteRow n={n} mine={n.user_id === me.id} onReminder={onReminder} />;
+}
+
+function NoteRow({ n, mine, onReminder }) {
+  const [editing, setEditing] = useState(false);
+  const [body, setBody] = useState(n.body);
+  const save = async () => {
+    if (!body.trim()) return toast('O apontamento não pode ficar vazio', 'error');
+    try { await api(`/notes/${n.id}`, { method: 'PATCH', body: { body: body.trim() } }); emitLocal(); setEditing(false); } catch (e) { toast(e.message, 'error'); }
+  };
+  const del = async () => { if (confirm('Excluir este apontamento?')) { try { await api(`/notes/${n.id}`, { method: 'DELETE' }); emitLocal(); } catch (e) { toast(e.message, 'error'); } } };
+  return (
+    <li className="done-row note">
+      <span className="done-ico note">✎</span><span className="muted mono">{hm(n.created_at)}</span>
+      <span className="grow">
+        {editing ? (
+          <span className="inline-form"><textarea rows={3} value={body} onChange={(e) => setBody(e.target.value)} autoFocus />
+            <span className="row gap-s"><span className="grow" /><button className="btn sm" onClick={() => setEditing(false)}>Cancelar</button><button className="btn primary sm" onClick={save}>Salvar</button></span></span>
+        ) : <span className="update-body">{n.body}</span>}
+        {n.channel_name && !editing && <span className="chan" style={{ background: n.channel_color, marginLeft: 6 }}>{n.channel_name}</span>}
+      </span>
+      {mine && !editing && (
+        <span className="update-actions">
+          <button className="icon-btn sm" title="Virar lembrete para revisar" onClick={() => onReminder(n.body.replace(/\s+/g, ' ').slice(0, 300))}><Icon name="bell" size={14} /></button>
+          <button className="icon-btn sm" title="Editar" onClick={() => setEditing(true)}><Icon name="edit" size={14} /></button>
+          <button className="icon-btn sm" title="Excluir" onClick={del}><Icon name="trash" size={14} /></button>
+        </span>
+      )}
+    </li>
   );
 }
 
@@ -128,7 +206,7 @@ function Composer() {
   return (
     <div className={'composer' + (open ? ' open' : '')}>
       <textarea rows={open ? 3 : 1} value={f.body} onChange={set('body')} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
-        placeholder="Escreva uma atualização…" onKeyDown={(e) => (e.ctrlKey || e.metaKey) && e.key === 'Enter' && post()} />
+        placeholder="Registre o que você fez (escolha o cliente para aparecer no resumo dele)…" onKeyDown={(e) => (e.ctrlKey || e.metaKey) && e.key === 'Enter' && post()} />
       {open && (
         <div className="row gap-s wrap">
           <BizChannelSelects f={f} set={set} />

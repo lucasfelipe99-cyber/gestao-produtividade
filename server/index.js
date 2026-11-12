@@ -1622,6 +1622,36 @@ const noteDay = async (db, noteId) => (await db.query(`SELECT to_char(${localDay
 
 const SUMMARY_COLS = `to_char(day,'YYYY-MM-DD') AS day, summary, summary_at, summary_error, updated_at`;
 
+// Resumo do dia (sem IA): o que foi realizado na data, por cliente e colaborador
+// tarefas concluídas + checklist de SKU marcado + apontamentos. Colaborador vê só o dele.
+app.get('/api/day-done', wrap(async (req, res) => {
+  const u = req.user;
+  const day = isDate(req.query.date) ? req.query.date : todayIn(u.timezone);
+  const only = isAdmin(u) ? (req.query.user ? parseInt(req.query.user, 10) : null) : u.id;
+  const tz = u.timezone;
+  const p = [u.company_id, day, tz];
+  const uf = (col) => (only ? ` AND ${col}=${only}` : '');
+  const [tasks, checks, notes] = await Promise.all([
+    many(`SELECT t.id, t.title, t.kind, t.business_id, t.channel_id, ch.name AS channel_name, ch.color AS channel_color,
+        t.assignee_id AS user_id, u.name AS user_name, t.completed_at, t.tracked_seconds
+      FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN channels ch ON ch.id=t.channel_id
+      WHERE t.company_id=$1 AND t.status='done' AND (t.completed_at AT TIME ZONE $3)::date=$2 ${uf('t.assignee_id')}
+      ORDER BY t.completed_at`, p),
+    many(`SELECT i.id AS item_id, i.sku, i.description, g.id AS group_id, g.title AS group_title, g.business_id,
+        (c.value->>'by')::int AS user_id, u.name AS user_name, array_agg(c.key ORDER BY (c.value->>'at')) AS keys,
+        max((c.value->>'at')::timestamptz) AS at, (i.status='done') AS item_done
+      FROM group_items i JOIN group_tasks g ON g.id=i.group_id CROSS JOIN LATERAL jsonb_each(i.checks) c
+      LEFT JOIN users u ON u.id=(c.value->>'by')::int
+      WHERE g.company_id=$1 AND ((c.value->>'at')::timestamptz AT TIME ZONE $3)::date=$2 ${uf("(c.value->>'by')::int")}
+      GROUP BY i.id, g.id, c.value->>'by', u.name ORDER BY at`, p),
+    many(`SELECT n.id, n.body, n.business_id, n.channel_id, ch.name AS channel_name, ch.color AS channel_color, n.user_id, u.name AS user_name, n.created_at
+      FROM notes n LEFT JOIN users u ON u.id=n.user_id LEFT JOIN channels ch ON ch.id=n.channel_id
+      WHERE n.company_id=$1 AND n.kind='note' AND (n.created_at AT TIME ZONE $3)::date=$2 ${uf('n.user_id')}
+      ORDER BY n.created_at`, p),
+  ]);
+  res.json({ day, today: todayIn(tz), tasks, checks, notes });
+}));
+
 app.get('/api/notepad', wrap(async (req, res) => {
   const uid = noteOwner(req);
   const today = todayIn(req.user.timezone);
@@ -1848,6 +1878,19 @@ for (const day of ['2026-11-04', '2026-11-05', '2026-11-06']) {
 }
 for (const c of await many('SELECT id FROM companies')) {
   try { await ensureFixedSkuGroups(c.id); } catch (e) { console.error('Gestão de SKU', e.message); }
+}
+// uma vez (pedido em 12/11): apaga todas as tarefas "Não realizada" (e o histórico delas)
+if (!(await one("SELECT 1 AS x FROM app_meta WHERE key='v18_apaga_nao_realizadas'"))) {
+  try {
+    const r = await tx(async (db) => {
+      const ids = (await db.query(`SELECT id FROM tasks WHERE status='late'`)).rows.map((x) => x.id);
+      await db.query('DELETE FROM task_events WHERE task_id = ANY($1::int[])', [ids]);
+      const del = await db.query('DELETE FROM tasks WHERE id = ANY($1::int[])', [ids]);
+      await db.query("INSERT INTO app_meta (key) VALUES ('v18_apaga_nao_realizadas')");
+      return del.rowCount;
+    });
+    console.log('Não realizadas apagadas:', r);
+  } catch (e) { console.error('Apagar não realizadas falhou', e.message); }
 }
 // uma vez (pedido em 12/11): limpa tarefas de 12/11 em diante e desliga as rotinas automáticas.
 // Mantém as de 12/11 já concluídas (histórico do dia) e tudo de dias anteriores.
