@@ -59,7 +59,7 @@ async function auth(req, _res, next) {
 }
 const adminOnly = (req, _res, next) => (isAdmin(req.user) ? next() : next(new HttpError(403, 'Apenas administradores')));
 // Abas do sistema que o administrador pode liberar/bloquear por colaborador
-export const TABS = ['dashboard', 'tarefas', 'grupo', 'clientes', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
+export const TABS = ['dashboard', 'tarefas', 'clientes', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
 const canTab = (u, tab) => isAdmin(u) || !u.allowed_tabs || u.allowed_tabs.includes(tab);
 const requireTab = (tab) => (req, _res, next) => (canTab(req.user, tab) ? next() : next(new HttpError(403, 'Você não tem acesso a esta área')));
 
@@ -1002,14 +1002,14 @@ const groupVis = (req, params) => {
   params.push(req.user.id);
   return ` AND (g.created_by=$${params.length} OR EXISTS (SELECT 1 FROM group_task_members m WHERE m.group_id=g.id AND m.user_id=$${params.length}))`;
 };
-app.get('/api/groups', requireTab('grupo'), wrap(async (req, res) => {
+app.get('/api/groups', requireTab('tarefas'), wrap(async (req, res) => {
   const params = [req.user.company_id];
   let where = 'g.company_id=$1' + groupVis(req, params);
   if (req.query.status === 'open' || req.query.status === 'done') { params.push(req.query.status); where += ` AND g.status=$${params.length}`; }
   if (req.query.business) { params.push(parseInt(req.query.business, 10)); where += ` AND g.business_id=$${params.length}`; }
   res.json(await many(`${GROUP_SELECT} WHERE ${where} ORDER BY g.status, g.due_date NULLS LAST, g.created_at DESC LIMIT 300`, params));
 }));
-app.get('/api/groups/:id', requireTab('grupo'), wrap(async (req, res) => {
+app.get('/api/groups/:id', requireTab('tarefas'), wrap(async (req, res) => {
   const g0 = await tx((db) => loadGroup(db, req));
   const g = await one(`${GROUP_SELECT} WHERE g.id=$1`, [g0.id]);
   g.items = await many(`SELECT i.id, i.sku, i.link, i.drive_link, i.checks, i.description, i.status, i.user_id, u.name AS user_name, i.started_at, i.done_at, i.created_at, i.created_by
@@ -1030,10 +1030,11 @@ async function insertItems(db, groupId, userId, items) {
     [groupId, userId, start, list.map((i) => i.sku), list.map((i) => i.link), list.map((i) => i.drive_link), list.map((i) => i.description)]);
   return list.length;
 }
-app.post('/api/groups', requireTab('grupo'), wrap(async (req, res) => {
+app.post('/api/groups', requireTab('tarefas'), wrap(async (req, res) => {
   const u = req.user, b = req.body || {};
   const title = cleanText(b.title, 300);
   if (!title) throw new HttpError(400, 'Informe o nome da tarefa em grupo');
+  if (!b.business_id) throw new HttpError(400, 'Escolha o cliente (empresa) da tarefa em grupo');
   const data = { business_id: b.business_id ? parseInt(b.business_id, 10) : null, channel_id: b.channel_id ? parseInt(b.channel_id, 10) : null };
   const id = await tx(async (db) => {
     await assertRefs(db, u.company_id, data);
@@ -1048,7 +1049,7 @@ app.post('/api/groups', requireTab('grupo'), wrap(async (req, res) => {
   broadcast(u.company_id, { type: 'groups' });
   res.json(await one(`${GROUP_SELECT} WHERE g.id=$1`, [id]));
 }));
-app.patch('/api/groups/:id', requireTab('grupo'), wrap(async (req, res) => {
+app.patch('/api/groups/:id', requireTab('tarefas'), wrap(async (req, res) => {
   const u = req.user, b = req.body || {};
   await tx(async (db) => {
     const onlyStatus = Object.keys(b).every((k) => k === 'status');
@@ -1071,13 +1072,13 @@ app.patch('/api/groups/:id', requireTab('grupo'), wrap(async (req, res) => {
   broadcast(u.company_id, { type: 'groups' });
   res.json({ ok: true });
 }));
-app.delete('/api/groups/:id', requireTab('grupo'), wrap(async (req, res) => {
+app.delete('/api/groups/:id', requireTab('tarefas'), wrap(async (req, res) => {
   await tx(async (db) => { const g = await loadGroup(db, req, { manage: true }); await db.query('DELETE FROM group_tasks WHERE id=$1', [g.id]); });
   broadcast(req.user.company_id, { type: 'groups' });
   res.json({ ok: true });
 }));
 // "Fazendo isso" na atividade (sem item específico)
-app.post('/api/groups/:id/doing', requireTab('grupo'), wrap(async (req, res) => {
+app.post('/api/groups/:id/doing', requireTab('tarefas'), wrap(async (req, res) => {
   const on = req.body?.on !== false;
   await tx(async (db) => {
     const g = await loadGroup(db, req);
@@ -1089,7 +1090,7 @@ app.post('/api/groups/:id/doing', requireTab('grupo'), wrap(async (req, res) => 
   broadcast(req.user.company_id, { type: 'groups' });
   res.json({ ok: true });
 }));
-app.post('/api/groups/:id/items', requireTab('grupo'), wrap(async (req, res) => {
+app.post('/api/groups/:id/items', requireTab('tarefas'), wrap(async (req, res) => {
   const n = await tx(async (db) => { const g = await loadGroup(db, req); return insertItems(db, g.id, req.user.id, req.body?.items); });
   if (!n) throw new HttpError(400, 'Informe ao menos um link ou descrição');
   broadcast(req.user.company_id, { type: 'groups' });
@@ -1138,7 +1139,7 @@ function rowsToItems(rawRows) {
   const href = (n, k) => (col[k] >= 0 ? cellHref(raw[n][col[k]]) || data[n][col[k]] || '' : '');
   return data.map((r, n) => ({ sku: at(r, 'sku'), link: href(n, 'link'), drive_link: href(n, 'drive_link'), description: at(r, 'description') })).filter((i) => i.sku);
 }
-app.post('/api/groups/:id/import', requireTab('grupo'), wrap(async (req, res) => {
+app.post('/api/groups/:id/import', requireTab('tarefas'), wrap(async (req, res) => {
   const { filename = '', data } = req.body || {};
   if (!data) throw new HttpError(400, 'Envie a planilha');
   const buf = Buffer.from(String(data).replace(/^data:[^,]*,/, ''), 'base64');
@@ -1163,7 +1164,7 @@ async function loadItem(db, req) {
   const g = await loadGroup(db, { ...req, params: { id: i.group_id } });
   return { i, g };
 }
-app.patch('/api/group-items/:id', requireTab('grupo'), wrap(async (req, res) => {
+app.patch('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) => {
   const u = req.user, b = req.body || {};
   await tx(async (db) => {
     const { i, g } = await loadItem(db, req);
@@ -1208,7 +1209,7 @@ app.patch('/api/group-items/:id', requireTab('grupo'), wrap(async (req, res) => 
   broadcast(u.company_id, { type: 'groups' });
   res.json({ ok: true });
 }));
-app.delete('/api/group-items/:id', requireTab('grupo'), wrap(async (req, res) => {
+app.delete('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) => {
   await tx(async (db) => {
     const { i, g } = await loadItem(db, req);
     if (i.created_by !== req.user.id && !isAdmin(req.user) && g.created_by !== req.user.id) throw new HttpError(403, 'Só quem adicionou o item (ou quem criou a tarefa) pode excluir');
@@ -1813,6 +1814,24 @@ for (const day of ['2026-11-04', '2026-11-05', '2026-11-06']) {
     }
     await q('INSERT INTO app_meta (key) VALUES ($1) ON CONFLICT DO NOTHING', [key]);
   }
+}
+// uma vez (pedido em 12/11): limpa tarefas de 12/11 em diante e desliga as rotinas automáticas.
+// Mantém as de 12/11 já concluídas (histórico do dia) e tudo de dias anteriores.
+if (!(await one("SELECT 1 AS x FROM app_meta WHERE key='v16_limpeza_12_11'"))) {
+  try {
+    const r = await tx(async (db) => {
+      const recs = await db.query('UPDATE recurrences SET active=false WHERE active RETURNING id');
+      const del = await db.query(`DELETE FROM tasks WHERE due_date > DATE '2026-11-12' OR (due_date = DATE '2026-11-12' AND status <> 'done') RETURNING id, company_id`);
+      const byCompany = {};
+      for (const t of del.rows) byCompany[t.company_id] = (byCompany[t.company_id] || 0) + 1;
+      for (const [cid, n] of Object.entries(byCompany)) {
+        await logEvent(db, { companyId: Number(cid), action: 'tasks_cleared', details: { from: '2026-11-12', tasks: n, recurrences_disabled: recs.rowCount } });
+      }
+      await db.query("INSERT INTO app_meta (key) VALUES ('v16_limpeza_12_11')");
+      return { tasks: del.rowCount, recurrences: recs.rowCount };
+    });
+    console.log('Limpeza 12/11:', r);
+  } catch (e) { console.error('Limpeza 12/11 falhou', e.message); }
 }
 startAutomationLoop();
 app.listen(PORT, () => console.log(`Servidor ouvindo na porta ${PORT}`));

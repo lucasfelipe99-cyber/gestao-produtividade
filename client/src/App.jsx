@@ -6,7 +6,6 @@ import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import AllTasks from './pages/AllTasks.jsx';
 import Clients from './pages/Clients.jsx';
-import Groups from './pages/Groups.jsx';
 import Goals from './pages/Goals.jsx';
 import Reports from './pages/Reports.jsx';
 import Team from './pages/Team.jsx';
@@ -56,7 +55,6 @@ function Shell({ me, onLogout }) {
     ['/', 'dashboard', isAdmin ? 'Dashboard' : 'Meu painel', 'dashboard', <Dashboard />],
     ['/resumo', 'note', 'Resumo', null, <Summary />],
     ['/tarefas', 'today', 'Tarefas', 'tarefas', <AllTasks />],
-    ['/grupo', 'users', 'Tarefas em grupo', 'grupo', <Groups />],
     ['/clientes', 'chat', 'Clientes', 'clientes', <Clients />],
     ['/linha-do-tempo', 'timeline', 'Linha do tempo', 'linha-do-tempo', <Timeline />],
     ['/metas', 'target', 'Metas e atingimento', 'metas', <Goals />],
@@ -96,6 +94,7 @@ function Shell({ me, onLogout }) {
           <div className="content">
             <Routes>
               {nav.map(([to, , , , el]) => <Route key={to} path={to} element={el} />)}
+              <Route path="/grupo" element={<Navigate to="/tarefas?tipo=group" replace />} />
               <Route path="/diarias" element={<Navigate to="/tarefas?tipo=daily" replace />} />
               <Route path="/semanais" element={<Navigate to="/tarefas?tipo=weekly" replace />} />
               <Route path="/pontuais" element={<Navigate to="/tarefas?tipo=oneoff" replace />} />

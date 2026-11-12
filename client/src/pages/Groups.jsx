@@ -29,59 +29,70 @@ function parseLines(text) {
 }
 const ITEM_STATUS = { todo: ['Livre', '#c4c4c4'], doing: ['Fazendo', '#fdab3d'], done: ['Feito', '#00c875'] };
 
-// Tarefas em grupo: a mesma atividade feita por várias pessoas ao mesmo tempo, todos vendo quem está fazendo o quê
-export default function Groups() {
-  const { me } = useApp();
+// Tarefas em grupo (dentro da aba Tarefas): separadas por cliente; clicar abre o quadro da atividade
+export function GroupsView({ creating, setCreating }) {
+  const { me, businesses } = useApp();
+  const [business, setBusiness] = useState('');
   const [status, setStatus] = useState('open');
   const [sel, setSel] = useState(null);
-  const [creating, setCreating] = useState(false);
-  const list = useData(`/groups?status=${status}`);
+  const list = useData(`/groups?status=${status}${business ? `&business=${business}` : ''}`);
   const groups = list.data || [];
-  const current = sel && groups.some((g) => g.id === sel) ? sel : groups[0]?.id;
 
-  return (
-    <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>Tarefas em grupo</h1>
-          <p className="muted">A mesma atividade feita por várias pessoas ao mesmo tempo. Clique em <b>Fazendo isso</b> e todos veem quem está em cada item.</p>
-        </div>
-        <button className="btn primary" onClick={() => setCreating(true)}><Icon name="plus" /> Nova tarefa em grupo</button>
+  // agrupa por cliente (empresa), na ordem do cadastro; sem empresa no fim
+  const sections = [];
+  for (const b of businesses) { const items = groups.filter((g) => g.business_id === b.id); if (items.length) sections.push({ key: b.id, name: b.name, color: b.color, items }); }
+  const none = groups.filter((g) => !g.business_id || !businesses.some((b) => b.id === g.business_id));
+  if (none.length) sections.push({ key: 0, name: 'Sem cliente', color: '#c4c4c4', items: none });
+
+  const form = creating && <GroupForm defaultBusiness={business} onClose={() => setCreating(false)} onSaved={(g) => { setStatus('open'); setSel(g.id); }} />;
+  if (sel) {
+    return (
+      <div className="client-feed">
+        <button className="link small" style={{ marginBottom: 10 }} onClick={() => setSel(null)}><Icon name="left" size={13} /> Voltar para as tarefas em grupo</button>
+        <GroupBoard key={sel} id={sel} me={me} onDeleted={() => setSel(null)} />
+        {form}
       </div>
-      <div className="groups-layout">
-        <aside className="client-list group-list">
-          <div className="mini-seg" style={{ margin: '2px 2px 8px' }}>
-            <button className={status === 'open' ? 'on' : ''} onClick={() => setStatus('open')}>Em andamento</button>
-            <button className={status === 'done' ? 'on' : ''} onClick={() => setStatus('done')}>Concluídas</button>
-          </div>
-          {!list.data ? <Loading /> : !groups.length ? <p className="muted small" style={{ padding: 8 }}>{status === 'open' ? 'Nenhuma tarefa em grupo em andamento.' : 'Nenhuma concluída ainda.'}</p>
-            : groups.map((g) => {
+    );
+  }
+  return (
+    <div>
+      <div className="row gap wrap" style={{ marginBottom: 12 }}>
+        <div className="mini-seg">
+          <button className={status === 'open' ? 'on' : ''} onClick={() => setStatus('open')}>Em andamento</button>
+          <button className={status === 'done' ? 'on' : ''} onClick={() => setStatus('done')}>Concluídas</button>
+        </div>
+        <select className="sm" value={business} onChange={(e) => setBusiness(e.target.value)}>
+          <option value="">Todos os clientes</option>{businesses.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+        </select>
+        <span className="muted small grow">A mesma atividade feita por várias pessoas ao mesmo tempo, com lista de SKUs. Clique em <b>Fazendo isso</b> e todos veem quem está em cada item.</span>
+      </div>
+      {!list.data ? <Loading /> : !groups.length ? (
+        <Empty>{status === 'open' ? 'Nenhuma tarefa em grupo em andamento. Use "Nova tarefa em grupo" e suba a planilha de SKUs.' : 'Nenhuma tarefa em grupo concluída.'}</Empty>
+      ) : sections.map((sec) => (
+        <div key={sec.key} className="group-section" style={{ '--c': sec.color }}>
+          <h3><i />{sec.name}<small>{sec.items.length} tarefa(s) em grupo</small></h3>
+          <div className="group-cards">
+            {sec.items.map((g) => {
               const doing = g.members.filter((m) => m.doing_since);
               const pct = g.items_total ? (g.items_done / g.items_total) * 100 : 0;
               return (
-                <button key={g.id} className={g.id === current ? 'on' : ''} onClick={() => setSel(g.id)}>
-                  <i style={{ background: g.business_color || '#0073ea' }} />
-                  <span className="grow">
-                    {g.title}
-                    <small>{g.business_name || 'Sem empresa'}{g.due_date && ` · até ${fmtDate(g.due_date)}`}</small>
-                    {g.items_total > 0 && <span className="mini-progress"><span style={{ width: `${pct}%` }} /></span>}
-                    {doing.length > 0 && (
-                      <span className="doing-now">
-                        <span className="live-dot" />{doing.map((m) => m.name.split(' ')[0]).join(', ')} fazendo
-                      </span>
-                    )}
+                <button key={g.id} className="group-card" onClick={() => setSel(g.id)}>
+                  <b>{g.title}</b>
+                  <small className="muted">{g.channel_name || 'Todos os canais'}{g.due_date && ` · até ${fmtDate(g.due_date)}`}</small>
+                  <span className="row gap-s" style={{ alignItems: 'center' }}>
+                    <span className="mini-progress grow"><span style={{ width: `${pct}%` }} /></span>
+                    <small><b>{g.items_done}/{g.items_total}</b> SKUs</small>
                   </span>
-                  {g.items_total > 0 && <b>{g.items_done}/{g.items_total}</b>}
+                  {doing.length > 0
+                    ? <span className="doing-now"><span className="live-dot" />{doing.map((m) => m.name.split(' ')[0]).join(', ')} fazendo agora</span>
+                    : <small className="muted">ninguém fazendo agora</small>}
                 </button>
               );
             })}
-        </aside>
-        <section className="client-feed">
-          {current ? <GroupBoard key={current} id={current} me={me} onDeleted={() => setSel(null)} />
-            : <Empty>Crie uma tarefa em grupo para a equipe trabalhar junto, por exemplo "Revisar anúncios pausados da Popper", com um item para cada link.</Empty>}
-        </section>
-      </div>
-      {creating && <GroupForm onClose={() => setCreating(false)} onSaved={(g) => { setStatus('open'); setSel(g.id); }} />}
+          </div>
+        </div>
+      ))}
+      {form}
     </div>
   );
 }
@@ -327,14 +338,14 @@ function AddItems({ groupId }) {
   );
 }
 
-function GroupForm({ group, onClose, onSaved }) {
+function GroupForm({ group, onClose, onSaved, defaultBusiness }) {
   const { me, isAdmin, activeUsers, businesses, channels } = useApp();
   const dir = useData(isAdmin ? null : '/users/directory');
   const people = isAdmin ? activeUsers : dir.data || [];
   const editing = !!group;
   const [f, setF] = useState({
     title: group?.title || '', description: group?.description || '', link: group?.link || '',
-    business_id: group?.business_id || '', channel_id: group?.channel_id || '', due_date: group?.due_date || '',
+    business_id: group?.business_id || defaultBusiness || '', channel_id: group?.channel_id || '', due_date: group?.due_date || '',
     member_ids: group ? group.members.map((m) => m.id) : [me.id], all_members: !group, items: '',
   });
   const [busy, setBusy] = useState(false);
@@ -342,6 +353,7 @@ function GroupForm({ group, onClose, onSaved }) {
   const toggle = (id) => setF({ ...f, all_members: false, member_ids: f.member_ids.includes(id) ? f.member_ids.filter((x) => x !== id) : [...f.member_ids, id] });
   const save = async () => {
     if (!f.title.trim()) return toast('Informe o nome da atividade', 'error');
+    if (!f.business_id) return toast('Escolha o cliente (empresa) da tarefa em grupo', 'error');
     setBusy(true);
     try {
       const body = { ...f, business_id: f.business_id || null, channel_id: f.channel_id || null, due_date: f.due_date || null };
@@ -359,8 +371,8 @@ function GroupForm({ group, onClose, onSaved }) {
         <Field label="Nome da atividade *"><input autoFocus value={f.title} onChange={set('title')} placeholder="Ex.: Revisar anúncios pausados — Popper" /></Field>
         <Field label="Link"><input value={f.link} onChange={set('link')} placeholder="https://… (planilha, pasta, painel)" /></Field>
         <div className="full"><Field label="Descrição"><textarea rows={3} value={f.description} onChange={set('description')} placeholder="O que fazer, critérios, combinados…" /></Field></div>
-        <Field label="Empresa">
-          <select value={f.business_id} onChange={set('business_id')}><option value="">—</option>{businesses.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select>
+        <Field label="Cliente (empresa) *">
+          <select value={f.business_id} onChange={set('business_id')}><option value="">— Escolha —</option>{businesses.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select>
         </Field>
         <Field label="Canal">
           <select value={f.channel_id} onChange={set('channel_id')}><option value="">—</option>{channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>

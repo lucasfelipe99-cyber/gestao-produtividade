@@ -5,10 +5,11 @@ import { Icon, Segmented, Loading, Progress } from '../ui.jsx';
 import { useApp } from '../App.jsx';
 import { TaskTable, Kanban, CalendarView, TaskFilters, qs } from '../components/Tasks.jsx';
 import TaskForm from '../components/TaskForm.jsx';
+import { GroupsView } from './Groups.jsx';
 
-const TYPES = [['all', 'Todas'], ['daily', 'Diárias'], ['weekly', 'Semanais'], ['oneoff', 'Pontuais']];
+const TYPES = [['all', 'Todas'], ['daily', 'Diárias'], ['weekly', 'Semanais'], ['oneoff', 'Pontuais'], ['group', 'Em grupo']];
 // padrão: separado por empresa (cada cliente em um grupo)
-const DEFAULT_GROUP = { all: 'business', daily: 'business', weekly: 'business', oneoff: 'business' };
+const DEFAULT_GROUP = { all: 'business', daily: 'business', weekly: 'business', oneoff: 'business', group: 'business' };
 const ls = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch { /* */ } return null; };
 
 // Aba única de tarefas: diárias do dia, semanais da semana e pontuais em aberto
@@ -23,6 +24,9 @@ export default function AllTasks() {
   const group = groupSel || DEFAULT_GROUP[type];
   const [filters, setFilters] = useState({});
   const [creating, setCreating] = useState(false);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const isGroup = type === 'group';
+  const groupsOpen = useData('/groups?status=open');
   const [showLate, setShowLate] = useState(false);
   const [showAllDone, setShowAllDone] = useState(false);
   const changeView = (v) => { setView(v); ls('tasksView', v); };
@@ -44,7 +48,7 @@ export default function AllTasks() {
 
   const lists = { daily: daily.data || [], weekly: weekly.data || [], oneoff: oneoffShown };
   const loaded = daily.data && weekly.data && oneoff.data;
-  const tasks = type === 'all' ? [...lists.daily, ...lists.weekly, ...lists.oneoff] : lists[type];
+  const tasks = type === 'all' ? [...lists.daily, ...lists.weekly, ...lists.oneoff] : lists[type] || [];
   const openCount = (l) => l.filter((t) => !['done', 'cancelled'].includes(t.status)).length;
 
   const valid = tasks.filter((t) => t.status !== 'cancelled');
@@ -69,18 +73,22 @@ export default function AllTasks() {
             <button className="icon-btn" onClick={() => shiftDays(1)}><Icon name="right" /></button>
             {date !== me.today && <button className="btn sm" onClick={() => setDate(me.today)}>Hoje</button>}
           </div>
-          <button className="btn primary" onClick={() => setCreating(true)}><Icon name="plus" /> Nova tarefa</button>
+          {isGroup
+            ? <button className="btn primary" onClick={() => setCreatingGroup(true)}><Icon name="plus" /> Nova tarefa em grupo</button>
+            : <button className="btn primary" onClick={() => setCreating(true)}><Icon name="plus" /> Nova tarefa</button>}
         </div>
       </div>
 
       <div className="type-chips">
         {TYPES.map(([k, l]) => (
           <button key={k} className={type === k ? 'on' : ''} onClick={() => setType(k)}>
-            {l} {loaded && <b title="em aberto">{k === 'all' ? openCount(lists.daily) + openCount(lists.weekly) + openCount(lists.oneoff) : openCount(lists[k])}</b>}
+            {l} {k === 'group' ? groupsOpen.data && <b title="em andamento">{groupsOpen.data.length}</b>
+              : loaded && <b title="em aberto">{k === 'all' ? openCount(lists.daily) + openCount(lists.weekly) + openCount(lists.oneoff) : openCount(lists[k])}</b>}
           </button>
         ))}
       </div>
 
+      {isGroup ? <GroupsView creating={creatingGroup} setCreating={setCreatingGroup} /> : (<>
       <div className="toolbar">
         <Segmented value={view} onChange={changeView} options={[['table', 'Tabela', 'list'], ['kanban', 'Kanban', 'kanban'], ['calendar', 'Calendário', 'calendar']]} />
         {view === 'table' && (
@@ -118,6 +126,7 @@ export default function AllTasks() {
         : view === 'table' ? <TaskTable tasks={tasks} groupBy={group} showDate={type !== 'daily'} />
         : <Kanban tasks={tasks} />}
 
+      </>)}
       {creating && (
         <TaskForm
           initial={{ kind: type === 'all' ? 'daily' : type, due_date: type === 'weekly' ? addDays(ws, 4) : type === 'oneoff' ? addDays(date, 7) : date }}

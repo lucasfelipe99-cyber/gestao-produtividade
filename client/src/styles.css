@@ -551,3 +551,12 @@ label.btn { cursor: pointer; }
 table.group-items { min-width: 1120px; }
 table.group-items th.ck-col, table.group-items td.ck-col { width: 62px; }
 .pill.sm { width: auto !important; min-width: 0; } table.group-items .row.gap-s.wrap { flex-wrap: nowrap; }
+
+.group-section { margin-bottom: 18px; }
+.group-section h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 16px; color: var(--c); }
+.group-section h3 i { width: 12px; height: 12px; border-radius: 3px; background: var(--c); }
+.group-section h3 small { color: #676879; font-weight: 400; font-size: 12.5px; }
+.group-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; border-left: 5px solid var(--c); padding-left: 10px; }
+.group-card { text-align: left; background: #fff; border: 1px solid #e6e9ef; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; font: inherit; color: #323338; box-shadow: var(--shadow, 0 1px 3px rgba(0,0,0,.06)); }
+.group-card:hover { border-color: #9cc3f5; }
+.group-card .mini-progress { margin: 0; }
