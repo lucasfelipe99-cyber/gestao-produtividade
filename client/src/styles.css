@@ -523,3 +523,31 @@ table.group-items input { width: 100%; }
 .member-pick .check { grid-column: auto; }
 .item-link { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; vertical-align: middle; }
 table.group-items { table-layout: fixed; }
+
+.add-grid { display: grid; grid-template-columns: 140px 1fr 1fr 1fr auto; gap: 8px; }
+@media (max-width: 900px) { .add-grid { grid-template-columns: 1fr 1fr; } }
+.check-summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 10px; }
+.check-summary > div { background: #f6f7fb; border-radius: 8px; padding: 8px 10px; }
+.check-summary > div.full { background: #e6f9f0; }
+.check-summary small { display: block; color: #676879; font-size: 12px; }
+.check-summary b { font-size: 16px; }
+table.group-items { min-width: 1240px; }
+table.group-items th.ck-col, table.group-items td.ck-col { width: 66px; text-align: center; }
+.ck { width: 24px; height: 24px; border-radius: 6px; border: 2px solid #c3c6d4; background: #fff; color: #fff; font-weight: 700; font-size: 14px; line-height: 1; cursor: pointer; padding: 0; }
+.ck:hover:not(:disabled) { border-color: #00c875; }
+.ck.on { background: #00c875; border-color: #00c875; }
+.ck:disabled { cursor: default; opacity: .7; }
+.pill.sm { font-size: 11px; padding: 2px 8px; display: inline-block; margin-bottom: 3px; }
+.sku { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.item-link.drive { color: #1a73e8; }
+label.btn { cursor: pointer; }
+
+/* tarefas em grupo: lista de atividades em faixa no topo, quadro com largura total */
+.groups-layout { display: flex; flex-direction: column; gap: 14px; }
+.groups-layout .group-list { position: static; flex-direction: row; flex-wrap: nowrap; overflow-x: auto; align-items: stretch; gap: 8px; padding: 8px; }
+.groups-layout .group-list .mini-seg { flex-direction: column; align-self: center; margin: 0 4px 0 0 !important; }
+.groups-layout .group-list > button { flex: 0 0 250px; border: 1px solid #e6e9ef; }
+.groups-layout .group-list > button.on { border-color: #9cc3f5; }
+table.group-items { min-width: 1120px; }
+table.group-items th.ck-col, table.group-items td.ck-col { width: 62px; }
+.pill.sm { width: auto !important; min-width: 0; } table.group-items .row.gap-s.wrap { flex-wrap: nowrap; }

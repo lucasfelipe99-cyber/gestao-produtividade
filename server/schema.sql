@@ -363,3 +363,8 @@ DO $$ BEGIN
     INSERT INTO app_meta (key) VALUES ('v14_aba_grupo');
   END IF;
 END $$;
+
+-- v15: itens de SKU nas tarefas em grupo (link do drive de fotos/vídeos e checklist)
+ALTER TABLE group_items ADD COLUMN IF NOT EXISTS sku TEXT;
+ALTER TABLE group_items ADD COLUMN IF NOT EXISTS drive_link TEXT;
+ALTER TABLE group_items ADD COLUMN IF NOT EXISTS checks JSONB NOT NULL DEFAULT '{}'::jsonb;

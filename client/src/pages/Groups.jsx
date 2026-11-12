@@ -10,6 +10,23 @@ const since = (iso) => {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h${pad2(m % 60)}`;
 };
 const shortLink = (url) => { try { const u = new URL(url); return (u.hostname.replace(/^www\./, '') + u.pathname).replace(/\/$/, '').slice(0, 60); } catch { return url.slice(0, 60); } };
+const CHECKS = [['fotos', 'Fotos'], ['videos', 'Vídeos'], ['anuncio', 'Anúncio'], ['ads', 'ADS'], ['afiliados', 'Afiliados']];
+// cola de planilha: colunas separadas por tab (SKU, link, drive, descrição) ou "link - descrição"
+function parseLines(text) {
+  return text.split('\n').map((l) => l.replace(/\r$/, '')).filter((l) => l.trim()).map((l) => {
+    if (l.includes('\t')) {
+      const c = l.split('\t').map((x) => x.trim());
+      const isUrl = (x) => /^(https?:\/\/|www\.)/i.test(x || '');
+      const drive = c.find((x) => /drive\.google|dropbox|photos\.google/i.test(x)) || '';
+      const link = c.find((x) => isUrl(x) && x !== drive) || '';
+      const rest = c.filter((x) => x && x !== drive && x !== link);
+      return { sku: isUrl(c[0]) ? '' : rest[0] || '', link, drive_link: drive, description: rest.slice(isUrl(c[0]) ? 0 : 1).join(' ') };
+    }
+    const [first, ...more] = l.trim().split(/\s+[-–|;]\s+/);
+    if (/^(https?:\/\/|www\.)/i.test(first)) return /drive\.google/i.test(first) ? { drive_link: first, description: more.join(' ') } : { link: first, description: more.join(' ') };
+    return { description: l.trim() };
+  });
+}
 const ITEM_STATUS = { todo: ['Livre', '#c4c4c4'], doing: ['Fazendo', '#fdab3d'], done: ['Feito', '#00c875'] };
 
 // Tarefas em grupo: a mesma atividade feita por várias pessoas ao mesmo tempo, todos vendo quem está fazendo o quê
@@ -31,7 +48,7 @@ export default function Groups() {
         </div>
         <button className="btn primary" onClick={() => setCreating(true)}><Icon name="plus" /> Nova tarefa em grupo</button>
       </div>
-      <div className="clients">
+      <div className="groups-layout">
         <aside className="client-list group-list">
           <div className="mini-seg" style={{ margin: '2px 2px 8px' }}>
             <button className={status === 'open' ? 'on' : ''} onClick={() => setStatus('open')}>Em andamento</button>
@@ -146,12 +163,30 @@ function GroupBoard({ id, me, onDeleted }) {
         </div>
       </div>
 
+      {g.items.length > 0 && (
+        <div className="check-summary">
+          {CHECKS.map(([k, l]) => {
+            const n = g.items.filter((i) => i.checks?.[k]).length;
+            return (
+              <div key={k} className={n === g.items.length ? 'full' : ''}>
+                <small>{l}</small><b>{n}/{g.items.length}</b>
+                <span className="mini-progress"><span style={{ width: `${(n / g.items.length) * 100}%` }} /></span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {!done && <AddItems groupId={g.id} />}
 
       {!g.items.length ? <Empty>Sem itens ainda. Adicione um link e uma descrição acima. Cada pessoa clica em "Fazendo isso" no item que pegar.</Empty> : (
         <div className="table-scroll">
           <table className="group-items">
-            <thead><tr><th style={{ width: 36 }}>#</th><th style={{ width: "19%" }}>Link</th><th>Descrição</th><th style={{ width: 96 }}>Status</th><th style={{ width: 130 }}>Quem</th><th style={{ width: 240 }}>Ações</th></tr></thead>
+            <thead><tr>
+              <th style={{ width: 30 }}>#</th><th style={{ width: 100 }}>SKU</th><th style={{ width: 130 }}>Link do anúncio</th><th style={{ width: 110 }}>Drive (fotos/vídeos)</th><th>Descrição</th>
+              {CHECKS.map(([k, l]) => <th key={k} className="ck-col">{l}</th>)}
+              <th style={{ width: 120 }}>Quem</th><th style={{ width: 220 }}>Ações</th>
+            </tr></thead>
             <tbody>
               {items.map((i) => <ItemRow key={i.id} i={i} n={g.items.indexOf(i) + 1} me={me} canManage={canManage} groupDone={done} call={call} />)}
             </tbody>
@@ -165,7 +200,7 @@ function GroupBoard({ id, me, onDeleted }) {
 
 function ItemRow({ i, n, me, canManage, groupDone, call }) {
   const [edit, setEdit] = useState(false);
-  const [f, setF] = useState({ link: i.link || '', description: i.description || '' });
+  const [f, setF] = useState({ sku: i.sku || '', link: i.link || '', drive_link: i.drive_link || '', description: i.description || '' });
   const mine = i.user_id === me.id;
   const [label, color] = ITEM_STATUS[i.status];
   const act = (action) => call(`/group-items/${i.id}`, 'PATCH', { action });
@@ -173,9 +208,11 @@ function ItemRow({ i, n, me, canManage, groupDone, call }) {
     return (
       <tr className="editing">
         <td>{n}</td>
-        <td><input className="sm" value={f.link} onChange={(e) => setF({ ...f, link: e.target.value })} placeholder="https://…" /></td>
+        <td><input className="sm" value={f.sku} onChange={(e) => setF({ ...f, sku: e.target.value })} placeholder="SKU" /></td>
+        <td><input className="sm" value={f.link} onChange={(e) => setF({ ...f, link: e.target.value })} placeholder="Link do anúncio" /></td>
+        <td><input className="sm" value={f.drive_link} onChange={(e) => setF({ ...f, drive_link: e.target.value })} placeholder="Link do Drive" /></td>
         <td><input className="sm" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} placeholder="Descrição" /></td>
-        <td colSpan={3}>
+        <td colSpan={CHECKS.length + 2}>
           <div className="row gap-s">
             <button className="btn sm" onClick={() => setEdit(false)}>Cancelar</button>
             <button className="btn primary sm" onClick={async () => (await call(`/group-items/${i.id}`, 'PATCH', f)) && setEdit(false)}>Salvar</button>
@@ -187,10 +224,21 @@ function ItemRow({ i, n, me, canManage, groupDone, call }) {
   return (
     <tr className={'gi-' + i.status + (mine && i.status === 'doing' ? ' gi-mine' : '')}>
       <td className="muted">{n}</td>
+      <td><b className="sku">{i.sku || <span className="muted">—</span>}</b></td>
       <td>{i.link ? <a href={i.link} target="_blank" rel="noreferrer" className="item-link" title={i.link}>{shortLink(i.link)}</a> : <span className="muted">—</span>}</td>
+      <td>{i.drive_link ? <a href={i.drive_link} target="_blank" rel="noreferrer" className="item-link drive" title={i.drive_link}>📁 Abrir Drive</a> : <span className="muted">—</span>}</td>
       <td className="item-desc">{i.description || <span className="muted">—</span>}</td>
-      <td><span className="pill" style={{ background: color }}>{label}</span></td>
+      {CHECKS.map(([k, l]) => {
+        const c = i.checks?.[k];
+        return (
+          <td key={k} className="ck-col">
+            <button className={'ck' + (c ? ' on' : '')} disabled={groupDone} onClick={() => call(`/group-items/${i.id}`, 'PATCH', { action: 'check', key: k, value: !c })}
+              title={c ? `${l}: feito por ${c.name} às ${hm(c.at)}` : `Marcar ${l} como feito`}>{c ? '✓' : ''}</button>
+          </td>
+        );
+      })}
       <td>
+        <span className="pill sm" style={{ background: color }}>{label}</span>
         {i.user_name ? (
           <span className="row gap-s"><Avatar name={i.user_name} id={i.user_id} size={22} />
             <span className="small">{i.user_name.split(' ')[0]}<br /><small className="muted">{i.status === 'done' && i.done_at ? `feito ${hm(i.done_at)}` : i.started_at ? `desde ${hm(i.started_at)}` : ''}</small></span>
@@ -214,39 +262,65 @@ function ItemRow({ i, n, me, canManage, groupDone, call }) {
   );
 }
 
-// adiciona item: um campo para link e outro para descrição (ou vários links de uma vez)
+// adiciona item: SKU, link do anúncio, link do Drive (fotos e vídeos) e descrição; colar vários; subir planilha
 function AddItems({ groupId }) {
-  const [f, setF] = useState({ link: '', description: '' });
+  const empty = { sku: '', link: '', drive_link: '', description: '' };
+  const [f, setF] = useState(empty);
   const [bulk, setBulk] = useState(false);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const send = async (items) => {
     setBusy(true);
-    try { await api(`/groups/${groupId}/items`, { method: 'POST', body: { items } }); emitLocal(); return true; }
-    catch (e) { toast(e.message, 'error'); return false; } finally { setBusy(false); }
+    try { const r = await api(`/groups/${groupId}/items`, { method: 'POST', body: { items } }); emitLocal(); return r; }
+    catch (e) { toast(e.message, 'error'); return null; } finally { setBusy(false); }
   };
-  const addOne = async () => { if (!f.link.trim() && !f.description.trim()) return; if (await send([f])) setF({ link: '', description: '' }); };
+  const any = Object.values(f).some((v) => v.trim());
+  const addOne = async () => { if (any && (await send([f]))) setF(empty); };
   const addBulk = async () => {
-    const items = text.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
-      const [link, ...rest] = l.split(/\s+[-–|;]\s+|\t/);
-      return /^(https?:\/\/|www\.)/i.test(link) ? { link, description: rest.join(' ') } : { description: l };
-    });
-    if (items.length && (await send(items))) { setText(''); setBulk(false); toast(`${items.length} item(ns) adicionado(s)`, 'success'); }
+    const items = parseLines(text);
+    const r = items.length && (await send(items));
+    if (r) { setText(''); setBulk(false); toast(`${r.added} item(ns) adicionado(s)`, 'success'); }
   };
+  const upload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) return toast('Planilha muito grande (máx. 10 MB)', 'error');
+    setBusy(true);
+    try {
+      const data = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = fail; r.readAsDataURL(file); });
+      const r = await api(`/groups/${groupId}/import`, { method: 'POST', body: { filename: file.name, data } });
+      emitLocal();
+      toast(`${r.added} SKU(s) adicionado(s)${r.skipped ? ` · ${r.skipped} já estavam na lista` : ''}`, 'success');
+    } catch (err) { toast(err.message, 'error'); } finally { setBusy(false); }
+  };
+  const onKey = (e) => e.key === 'Enter' && addOne();
   return (
     <div className="add-items">
       {bulk ? (
         <>
           <textarea rows={5} value={text} onChange={(e) => setText(e.target.value)} autoFocus
-            placeholder={'Um item por linha. Ex.:\nhttps://shopee.com.br/produto-1 - revisar título e fotos\nhttps://shopee.com.br/produto-2 - ajustar preço'} />
+            placeholder={'Cole aqui as linhas copiadas da planilha (SKU, link, drive, descrição)\nou um item por linha: link - descrição'} />
           <div className="row gap-s"><span className="grow" /><button className="btn sm" onClick={() => setBulk(false)}>Cancelar</button><button className="btn primary sm" disabled={busy || !text.trim()} onClick={addBulk}>Adicionar itens</button></div>
         </>
       ) : (
-        <div className="row gap-s wrap">
-          <input className="grow" style={{ minWidth: 200 }} value={f.link} onChange={(e) => setF({ ...f, link: e.target.value })} placeholder="Link (ex.: anúncio, planilha, pasta)" onKeyDown={(e) => e.key === 'Enter' && addOne()} />
-          <input className="grow" style={{ minWidth: 200 }} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} placeholder="Descrição do que fazer" onKeyDown={(e) => e.key === 'Enter' && addOne()} />
-          <button className="btn primary sm" disabled={busy || (!f.link.trim() && !f.description.trim())} onClick={addOne}><Icon name="plus" size={14} /> Adicionar</button>
-          <button className="link small" onClick={() => setBulk(true)}>colar vários</button>
+        <div className="add-grid">
+          <input value={f.sku} onChange={set('sku')} placeholder="SKU" onKeyDown={onKey} />
+          <input value={f.link} onChange={set('link')} placeholder="Link do anúncio" onKeyDown={onKey} />
+          <input value={f.drive_link} onChange={set('drive_link')} placeholder="Link do Drive (fotos e vídeos)" onKeyDown={onKey} />
+          <input value={f.description} onChange={set('description')} placeholder="Descrição" onKeyDown={onKey} />
+          <button className="btn primary sm" disabled={busy || !any} onClick={addOne}><Icon name="plus" size={14} /> Adicionar</button>
+        </div>
+      )}
+      {!bulk && (
+        <div className="row gap wrap small">
+          <label className={'btn sm' + (busy ? ' disabled' : '')}>
+            <Icon name="download" size={14} /> Subir planilha de SKUs
+            <input type="file" accept=".xlsx,.csv,.tsv,.txt" hidden onChange={upload} disabled={busy} />
+          </label>
+          <button className="link small" onClick={() => setBulk(true)}>colar linhas da planilha</button>
+          <span className="muted">Planilha .xlsx ou .csv com a coluna <b>SKU</b> (opcionais: <b>Link</b>, <b>Drive</b>, <b>Descrição</b>). SKU repetido é ignorado.</span>
         </div>
       )}
     </div>
@@ -271,10 +345,7 @@ function GroupForm({ group, onClose, onSaved }) {
     setBusy(true);
     try {
       const body = { ...f, business_id: f.business_id || null, channel_id: f.channel_id || null, due_date: f.due_date || null };
-      body.items = f.items.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
-        const [link, ...rest] = l.split(/\s+[-–|;]\s+|\t/);
-        return /^(https?:\/\/|www\.)/i.test(link) ? { link, description: rest.join(' ') } : { description: l };
-      });
+      body.items = parseLines(f.items);
       if (editing) delete body.items;
       const r = await api(editing ? `/groups/${group.id}` : '/groups', { method: editing ? 'PATCH' : 'POST', body });
       emitLocal(); toast(editing ? 'Atividade atualizada' : 'Tarefa em grupo criada', 'success');
@@ -307,7 +378,7 @@ function GroupForm({ group, onClose, onSaved }) {
         </div>
         {!editing && (
           <div className="full">
-            <Field label="Itens (opcional)" hint="Um por linha: link - descrição. Também dá para adicionar depois, na própria atividade.">
+            <Field label="Itens (opcional)" hint="Cole linhas da planilha (SKU, link, drive, descrição) ou um por linha: link - descrição. Também dá para subir a planilha de SKUs depois, na própria atividade.">
               <textarea rows={4} value={f.items} onChange={set('items')} placeholder={'https://shopee.com.br/produto-1 - revisar título\nhttps://shopee.com.br/produto-2 - trocar fotos'} />
             </Field>
           </div>

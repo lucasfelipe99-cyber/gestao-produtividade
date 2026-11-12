@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { pool, q, one, many, tx, migrate, logEvent, subscribe, broadcast } from './db.js';
 import { runAutomationForCompany, startAutomationLoop, ensureAutomation, insertTaskFromTemplate, generateRecurrence, nextOccurrence, RECURRENCE_HORIZON_DAYS } from './automation.js';
 import { timeline, effectiveLunch } from './timeline.js';
+import ExcelJS from 'exceljs';
 import { aiEnabled, summarizeNotes } from './ai.js';
 import { dashboard, report, attainment, perUser, weeklySeries } from './metrics.js';
 import { todayIn, addDays, weekStart, isDate, isBusinessDay, addMonths } from './dates.js';
@@ -26,6 +27,7 @@ const isProd = process.env.NODE_ENV === 'production';
 
 app.set('trust proxy', 1);
 app.use(compression());
+app.use('/api/groups/:id/import', express.json({ limit: '15mb' }));
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
@@ -962,7 +964,8 @@ app.post('/api/timeline/backfill', adminOnly, wrap(async (req, res) => {
 const cleanLink = (v) => {
   const t = String(v || '').trim().slice(0, 2000);
   if (!t) return null;
-  return /^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return t;
+  return /^[^\s]+\.[^\s]{2,}/.test(t) ? `https://${t}` : null; // texto que não parece link é ignorado
 };
 const cleanText = (v, n = 5000) => { const t = String(v ?? '').trim(); return t ? t.slice(0, n) : null; };
 async function loadGroup(db, req, { manage = false } = {}) {
@@ -1009,17 +1012,22 @@ app.get('/api/groups', requireTab('grupo'), wrap(async (req, res) => {
 app.get('/api/groups/:id', requireTab('grupo'), wrap(async (req, res) => {
   const g0 = await tx((db) => loadGroup(db, req));
   const g = await one(`${GROUP_SELECT} WHERE g.id=$1`, [g0.id]);
-  g.items = await many(`SELECT i.id, i.link, i.description, i.status, i.user_id, u.name AS user_name, i.started_at, i.done_at, i.created_at, i.created_by
+  g.items = await many(`SELECT i.id, i.sku, i.link, i.drive_link, i.checks, i.description, i.status, i.user_id, u.name AS user_name, i.started_at, i.done_at, i.created_at, i.created_by
     FROM group_items i LEFT JOIN users u ON u.id=i.user_id WHERE i.group_id=$1 ORDER BY i.position, i.id`, [g0.id]);
   res.json(g);
 }));
 async function insertItems(db, groupId, userId, items) {
-  const list = (Array.isArray(items) ? items : []).map((i) => ({ link: cleanLink(i.link), description: cleanText(i.description, 2000) })).filter((i) => i.link || i.description).slice(0, 500);
+  let list = (Array.isArray(items) ? items : []).map((i) => ({
+    sku: cleanText(i.sku, 120), link: cleanLink(i.link), drive_link: cleanLink(i.drive_link), description: cleanText(i.description, 2000),
+  })).filter((i) => i.sku || i.link || i.description || i.drive_link).slice(0, 3000);
+  // SKU repetido (já na lista ou na própria importação) não entra de novo
+  const have = new Set((await db.query('SELECT lower(sku) AS s FROM group_items WHERE group_id=$1 AND sku IS NOT NULL', [groupId])).rows.map((r) => r.s));
+  list = list.filter((i) => { if (!i.sku) return true; const k = i.sku.toLowerCase(); if (have.has(k)) return false; have.add(k); return true; });
   if (!list.length) return 0;
   const start = (await db.query('SELECT COALESCE(max(position),0) AS p FROM group_items WHERE group_id=$1', [groupId])).rows[0].p;
-  for (const [k, i] of list.entries()) {
-    await db.query('INSERT INTO group_items (group_id, link, description, created_by, position) VALUES ($1,$2,$3,$4,$5)', [groupId, i.link, i.description, userId, start + k + 1]);
-  }
+  await db.query(`INSERT INTO group_items (group_id, sku, link, drive_link, description, created_by, position)
+    SELECT $1, x.sku, x.link, x.drive, x.descr, $2, $3 + x.n FROM unnest($4::text[], $5::text[], $6::text[], $7::text[]) WITH ORDINALITY AS x(sku, link, drive, descr, n)`,
+    [groupId, userId, start, list.map((i) => i.sku), list.map((i) => i.link), list.map((i) => i.drive_link), list.map((i) => i.description)]);
   return list.length;
 }
 app.post('/api/groups', requireTab('grupo'), wrap(async (req, res) => {
@@ -1087,6 +1095,68 @@ app.post('/api/groups/:id/items', requireTab('grupo'), wrap(async (req, res) => 
   broadcast(req.user.company_id, { type: 'groups' });
   res.json({ added: n });
 }));
+const CHECK_KEYS = ['fotos', 'videos', 'anuncio', 'ads', 'afiliados'];
+// planilha (xlsx ou csv) com lista de SKU -> itens. Reconhece colunas pelo cabeçalho.
+function cellText(v) {
+  if (v == null) return '';
+  if (typeof v === 'object') return String(v.text ?? v.hyperlink ?? v.result ?? (v.richText ? v.richText.map((r) => r.text).join('') : '')).trim();
+  return String(v).trim();
+}
+function parseCsv(text) {
+  const sep = (text.split('\n')[0].match(/;/g) || []).length > (text.split('\n')[0].match(/,/g) || []).length ? ';' : (text.includes('\t') ? '\t' : ',');
+  const rows = []; let row = [], cur = '', q = false;
+  for (let k = 0; k < text.length; k++) {
+    const c = text[k];
+    if (q) { if (c === '"' && text[k + 1] === '"') { cur += '"'; k++; } else if (c === '"') q = false; else cur += c; }
+    else if (c === '"') q = true;
+    else if (c === sep) { row.push(cur); cur = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[k + 1] === '\n') k++; row.push(cur); rows.push(row); row = []; cur = ''; }
+    else cur += c;
+  }
+  if (cur || row.length) { row.push(cur); rows.push(row); }
+  return rows;
+}
+const cellHref = (v) => (v && typeof v === 'object' && v.hyperlink ? String(v.hyperlink) : '');
+function rowsToItems(rawRows) {
+  rawRows = rawRows.filter((r) => r.map(cellText).some(Boolean));
+  const rows = rawRows.map((r) => r.map(cellText));
+  const norm = (s) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const hi = rows.findIndex((r) => r.some((c) => /^(sku|cod|codigo|referencia|ref)\b/.test(norm(c))));
+  let col = { sku: 0, description: 1, link: -1, drive_link: -1 }, data = rows, raw = rawRows;
+  if (hi >= 0) {
+    const h = rows[hi].map(norm);
+    const find = (re, not) => h.findIndex((c) => re.test(c) && !(not && not.test(c)));
+    col = {
+      sku: find(/^(sku|cod|codigo|referencia|ref)\b/),
+      drive_link: find(/drive|foto|video|pasta|midia/),
+      link: find(/link|url|anuncio|mlb|shopee/, /drive|foto|video|pasta/),
+      description: find(/descri|produto|nome|titulo|item/),
+    };
+    data = rows.slice(hi + 1); raw = rawRows.slice(hi + 1);
+  }
+  const at = (r, k) => (col[k] >= 0 ? r[col[k]] || '' : '');
+  const href = (n, k) => (col[k] >= 0 ? cellHref(raw[n][col[k]]) || data[n][col[k]] || '' : '');
+  return data.map((r, n) => ({ sku: at(r, 'sku'), link: href(n, 'link'), drive_link: href(n, 'drive_link'), description: at(r, 'description') })).filter((i) => i.sku);
+}
+app.post('/api/groups/:id/import', requireTab('grupo'), wrap(async (req, res) => {
+  const { filename = '', data } = req.body || {};
+  if (!data) throw new HttpError(400, 'Envie a planilha');
+  const buf = Buffer.from(String(data).replace(/^data:[^,]*,/, ''), 'base64');
+  let rows = [];
+  if (/\.(csv|txt|tsv)$/i.test(filename)) rows = parseCsv(buf.toString('utf8').replace(/^\uFEFF/, ''));
+  else {
+    const wb = new ExcelJS.Workbook();
+    try { await wb.xlsx.load(buf); } catch { throw new HttpError(400, 'Não consegui ler a planilha. Envie em .xlsx ou .csv'); }
+    const ws = wb.worksheets[0];
+    if (!ws) throw new HttpError(400, 'A planilha está vazia');
+    ws.eachRow({ includeEmpty: false }, (r) => { const vals = []; for (let c = 1; c <= r.cellCount; c++) vals.push(r.getCell(c).value); rows.push(vals); });
+  }
+  const items = rowsToItems(rows);
+  if (!items.length) throw new HttpError(400, 'Não encontrei SKUs. Use uma coluna "SKU" (e, se quiser, "Link", "Drive" e "Descrição")');
+  const added = await tx(async (db) => { const g = await loadGroup(db, req); return insertItems(db, g.id, req.user.id, items); });
+  broadcast(req.user.company_id, { type: 'groups' });
+  res.json({ found: items.length, added, skipped: items.length - added });
+}));
 async function loadItem(db, req) {
   const i = (await db.query('SELECT * FROM group_items WHERE id=$1', [req.params.id])).rows[0];
   if (!i) throw new HttpError(404, 'Item não encontrado');
@@ -1111,14 +1181,27 @@ app.patch('/api/group-items/:id', requireTab('grupo'), wrap(async (req, res) => 
     } else if (b.action === 'done') {
       if (takenByOther && !canManage) throw new HttpError(409, 'Outra pessoa está fazendo este item');
       await db.query(`UPDATE group_items SET status='done', user_id=COALESCE(user_id,$2), done_at=now() WHERE id=$1`, [i.id, u.id]);
+    } else if (b.action === 'check') {
+      if (!CHECK_KEYS.includes(b.key)) throw new HttpError(400, 'Item de checklist inválido');
+      if (g.status === 'done') throw new HttpError(400, 'Esta tarefa em grupo já foi concluída');
+      const checks = { ...(i.checks || {}) };
+      if (b.value) checks[b.key] = { by: u.id, name: u.name, at: new Date().toISOString() }; else delete checks[b.key];
+      const all = CHECK_KEYS.every((k) => checks[k]);
+      // checklist completo = item feito; desmarcou algo de um item feito = volta para livre
+      const status = all ? 'done' : i.status === 'done' ? 'todo' : i.status;
+      await db.query(`UPDATE group_items SET checks=$2, status=$3,
+          done_at=CASE WHEN $3='done' THEN COALESCE(done_at, now()) ELSE NULL END,
+          user_id=CASE WHEN $3='done' THEN COALESCE(user_id, $4) WHEN $3='todo' THEN NULL ELSE user_id END,
+          started_at=CASE WHEN $3='todo' THEN NULL ELSE started_at END WHERE id=$1`, [i.id, JSON.stringify(checks), status, u.id]);
     } else if (b.action === 'release' || b.action === 'reopen') {
       if (i.user_id && i.user_id !== u.id && !canManage) throw new HttpError(403, 'Só quem pegou o item (ou quem criou a tarefa) pode soltar');
       await db.query(`UPDATE group_items SET status='todo', user_id=NULL, started_at=NULL, done_at=NULL WHERE id=$1`, [i.id]);
     } else {
       if (i.created_by !== u.id && !canManage) throw new HttpError(403, 'Só quem adicionou o item (ou quem criou a tarefa) pode editar');
       const link = 'link' in b ? cleanLink(b.link) : i.link, description = 'description' in b ? cleanText(b.description, 2000) : i.description;
-      if (!link && !description) throw new HttpError(400, 'Informe o link ou a descrição');
-      await db.query('UPDATE group_items SET link=$2, description=$3 WHERE id=$1', [i.id, link, description]);
+      const sku = 'sku' in b ? cleanText(b.sku, 120) : i.sku, drive = 'drive_link' in b ? cleanLink(b.drive_link) : i.drive_link;
+      if (!link && !description && !sku) throw new HttpError(400, 'Informe o SKU, o link ou a descrição');
+      await db.query('UPDATE group_items SET link=$2, description=$3, sku=$4, drive_link=$5 WHERE id=$1', [i.id, link, description, sku, drive]);
     }
     await db.query('UPDATE group_tasks SET updated_at=now() WHERE id=$1', [g.id]);
   });
