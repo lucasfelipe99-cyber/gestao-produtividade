@@ -137,7 +137,7 @@ function DoneRow({ r, me, openTask, onReminder }) {
     const t = r.t;
     return (
       <li className="done-row" onClick={() => openTask(t.id)} title="Abrir tarefa">
-        <span className="done-ico ok">✓</span><span className="muted mono">{hm(t.completed_at)}</span>
+        <span className="done-ico ok">✓</span>
         <span className="grow"><b>{t.title}</b> <span className="tag kind">{KIND_LABEL[t.kind] || ''}</span>
           {t.channel_name && <span className="chan" style={{ background: t.channel_color }}>{t.channel_name}</span>}</span>
         {fmtSecs(t.tracked_seconds) && <small className="muted">{fmtSecs(t.tracked_seconds)}</small>}
@@ -148,7 +148,7 @@ function DoneRow({ r, me, openTask, onReminder }) {
     const c = r.c;
     return (
       <li className="done-row">
-        <span className="done-ico sku">▦</span><span className="muted mono">{hm(c.at)}</span>
+        <span className="done-ico sku">▦</span>
         <span className="grow"><b className="sku">{c.sku || c.description || 'Item'}</b>
           {c.channel_name && <span className="chan" style={{ background: c.channel_color, marginLeft: 6 }}>{c.channel_name}</span>}
           {(c.code || c.link) && <span className="muted"> {c.link ? <a href={c.link} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>{c.code || 'anúncio'}</a> : c.code}</span>}
@@ -171,7 +171,7 @@ function NoteRow({ n, mine, onReminder }) {
   const del = async () => { if (confirm('Excluir este apontamento?')) { try { await api(`/notes/${n.id}`, { method: 'DELETE' }); emitLocal(); } catch (e) { toast(e.message, 'error'); } } };
   return (
     <li className="done-row note">
-      <span className="done-ico note">✎</span><span className="muted mono">{hm(n.created_at)}</span>
+      <span className="done-ico note">✎</span>
       <span className="grow">
         {editing ? (
           <span className="inline-form"><textarea rows={3} value={body} onChange={(e) => setBody(e.target.value)} autoFocus />
