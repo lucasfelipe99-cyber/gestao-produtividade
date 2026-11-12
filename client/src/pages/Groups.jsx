@@ -504,7 +504,8 @@ function AddItems({ groupId }) {
       emitLocal();
       toast(r.abc
         ? `Curva ABC ${r.period || ''} atualizada: ${r.updated} SKU(s) atualizados, ${r.added} novos${r.without_sales ? `, ${r.without_sales} sem venda no período` : ''}`
-        : `${r.added} SKU(s) adicionado(s)${r.skipped ? ` · ${r.skipped} já estavam na lista` : ''}`, 'success');
+        : `${r.added} SKU(s) novo(s), ${r.updated} já existente(s) atualizado(s), ${r.listings} anúncio(s) adicionado(s)`, 'success');
+      if (r.no_channel?.length) toast(`Sem canal reconhecido (não entraram): ${r.no_channel.join('; ')}`, 'error');
     } catch (err) { toast(err.message, 'error'); } finally { setBusy(false); }
   };
   const onKey = (e) => e.key === 'Enter' && addOne();
@@ -531,8 +532,9 @@ function AddItems({ groupId }) {
             <Icon name="download" size={14} /> Subir planilha (SKUs ou Curva ABC)
             <input type="file" accept=".xlsx,.csv,.tsv,.txt" hidden onChange={upload} disabled={busy} />
           </label>
+          <a className="btn sm" href="/api/sku-template.xlsx" download><Icon name="download" size={14} /> Baixar modelo</a>
           <button className="link small" onClick={() => setBulk(true)}>colar linhas da planilha</button>
-          <span className="muted">Planilha .xlsx ou .csv com a coluna <b>SKU</b> (opcionais: <b>Link</b>, <b>Drive</b>, <b>Descrição</b>), ou a planilha de <b>Curva ABC</b> (atualiza curva e faturamento de cada SKU).</span>
+          <span className="muted">Use o <b>modelo</b> (uma linha por anúncio: SKU, descrição, Drive, canal, anúncio, fotos/vídeos prontos) ou a planilha de <b>Curva ABC</b> (atualiza curva e faturamento). Pode reenviar: não duplica.</span>
         </div>
       )}
     </div>

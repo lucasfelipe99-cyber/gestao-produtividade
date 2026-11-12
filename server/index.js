@@ -1289,11 +1289,127 @@ app.post('/api/groups/:id/import', requireTab('tarefas'), wrap(async (req, res) 
     broadcast(req.user.company_id, { type: 'groups' });
     return res.json({ abc: true, ...r });
   }
-  const items = rowsToItems(rows);
-  if (!items.length) throw new HttpError(400, 'Não encontrei SKUs. Use uma coluna "SKU" (e, se quiser, "Link", "Drive" e "Descrição")');
-  const added = await tx(async (db) => { const g = await loadGroup(db, req); return insertItems(db, g.id, req.user.id, items); });
+  const parsed = parseSkuSheet(rows);
+  if (!parsed.length) throw new HttpError(400, 'Não encontrei SKUs. Use o modelo (botão "Baixar modelo") ou uma planilha com a coluna "SKU"');
+  const r = await tx(async (db) => { const g = await loadGroup(db, req); return importSkus(db, g, req.user, parsed); });
   broadcast(req.user.company_id, { type: 'groups' });
-  res.json({ found: items.length, added, skipped: items.length - added });
+  res.json({ found: parsed.length, ...r });
+}));
+
+// planilha de SKUs (modelo): SKU | Descrição | Link do Drive | Canal | Anúncio (link ou código) | Fotos prontas | Vídeos prontos
+// uma linha por anúncio; o mesmo SKU pode repetir em várias linhas (um anúncio por linha)
+function parseSkuSheet(rawRows) {
+  const rows = rawRows.filter((r) => r.map(cellText).some(Boolean));
+  const hi = rows.findIndex((r) => r.some((c) => /^(sku|cod|codigo|referencia|ref)\b/.test(normTxt(cellText(c)))));
+  const h = hi >= 0 ? rows[hi].map((c) => normTxt(cellText(c))) : [];
+  const col = (re, not) => h.findIndex((c) => re.test(c) && !(not && not.test(c)));
+  const ci = hi >= 0 ? {
+    sku: col(/^(sku|cod|codigo|referencia|ref)\b/),
+    desc: col(/descri|produto|nome|titulo/),
+    drive: col(/drive|pasta/),
+    canal: col(/^canal|marketplace/),
+    anuncio: col(/anuncio|link|url|mlb/, /drive|pasta/),
+    fotos: col(/foto/, /drive|pasta|link/),
+    videos: col(/video/, /drive|pasta|link/),
+  } : { sku: 0, desc: 1, drive: -1, canal: -1, anuncio: -1, fotos: -1, videos: -1 };
+  const at = (r, k) => (ci[k] >= 0 ? cellText(r[ci[k]]) : '');
+  const href = (r, k) => (ci[k] >= 0 ? cellHref(r[ci[k]]) || cellText(r[ci[k]]) : '');
+  const yes = (v) => /^(s|sim|x|ok|yes|y|1|true|pronto|pronta)$/i.test(normTxt(v));
+  const bySku = new Map();
+  for (const r of rows.slice(hi + 1)) {
+    const sku = at(r, 'sku');
+    if (!sku || /^exemplo/i.test(sku)) continue;
+    const k = sku.toLowerCase();
+    const e = bySku.get(k) || { sku, description: '', drive: '', fotos: false, videos: false, listings: [] };
+    e.description ||= at(r, 'desc'); e.drive ||= href(r, 'drive');
+    e.fotos ||= yes(at(r, 'fotos')); e.videos ||= yes(at(r, 'videos'));
+    const an = href(r, 'anuncio');
+    if (an) e.listings.push({ canal: at(r, 'canal'), value: an });
+    bySku.set(k, e);
+  }
+  return [...bySku.values()];
+}
+async function importSkus(db, g, u, parsed) {
+  const channels = (await db.query('SELECT id, name FROM channels WHERE company_id=$1', [g.company_id])).rows;
+  const HOSTS = [[/mercadoli[vb]re|mlb-?\d/i, /mercado ?livre/i], [/shopee/i, /shopee/i], [/tiktok/i, /tiktok/i], [/magazineluiza|magalu/i, /magalu|magazine/i],
+    [/amazon/i, /amazon/i], [/americanas/i, /americanas/i], [/shein/i, /shein/i]];
+  const chanOf = (name, value) => {
+    const m = normTxt(name).replace(/[^a-z0-9]/g, '');
+    if (m) { const c = channels.find((x) => { const n = normTxt(x.name).replace(/[^a-z0-9]/g, ''); return n === m || n.startsWith(m) || m.startsWith(n); }); if (c) return c.id; }
+    const hit = HOSTS.find(([re]) => re.test(value));
+    return hit ? channels.find((c) => hit[1].test(c.name))?.id || null : null;
+  };
+  const existing = new Map((await db.query('SELECT * FROM group_items WHERE group_id=$1 AND sku IS NOT NULL', [g.id])).rows.map((x) => [x.sku.toLowerCase(), x]));
+  let pos = (await db.query('SELECT COALESCE(max(position),0) AS p FROM group_items WHERE group_id=$1', [g.id])).rows[0].p;
+  let added = 0, updated = 0, listingsAdded = 0;
+  const noChannel = [];
+  const now = new Date().toISOString();
+  for (const e of parsed) {
+    const ex = existing.get(e.sku.toLowerCase());
+    const list = ex && Array.isArray(ex.listings) ? [...ex.listings] : [];
+    for (const l of e.listings) {
+      const ch = chanOf(l.canal, l.value); const li = listingFrom(l.value);
+      if (!ch) { noChannel.push(`${e.sku}: ${l.canal || l.value}`); continue; }
+      if (!li || list.some((x) => x.channel_id === ch && ((li.code && x.code === li.code) || (li.link && x.link === li.link)))) continue;
+      list.push({ id: newId(), channel_id: ch, ...li, by: u.id, name: u.name, at: now }); listingsAdded++;
+    }
+    const checks = { ...((ex && ex.checks) || {}) };
+    if (e.fotos && !checks.fotos) checks.fotos = { by: u.id, name: u.name, at: now };
+    if (e.videos && !checks.videos) checks.videos = { by: u.id, name: u.name, at: now };
+    if (ex) {
+      await db.query(`UPDATE group_items SET description=COALESCE(description, $2), drive_link=COALESCE(drive_link, $3), listings=$4, checks=$5 WHERE id=$1`,
+        [ex.id, cleanText(e.description, 2000), cleanLink(e.drive), JSON.stringify(list), JSON.stringify(checks)]);
+      updated++;
+    } else {
+      await db.query(`INSERT INTO group_items (group_id, sku, description, drive_link, listings, checks, created_by, position) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [g.id, cleanText(e.sku, 120), cleanText(e.description, 2000), cleanLink(e.drive), JSON.stringify(list), JSON.stringify(checks), u.id, ++pos]);
+      added++;
+    }
+  }
+  await db.query('UPDATE group_tasks SET updated_at=now() WHERE id=$1', [g.id]);
+  return { added, updated, listings: listingsAdded, no_channel: noChannel.slice(0, 20) };
+}
+
+// modelo de planilha para subir SKUs (com a lista de canais da empresa)
+app.get('/api/sku-template.xlsx', requireTab('tarefas'), wrap(async (req, res) => {
+  const channels = await many('SELECT name FROM channels WHERE company_id=$1 ORDER BY name', [req.user.company_id]);
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('SKUs', { views: [{ state: 'frozen', ySplit: 1 }] });
+  ws.columns = [
+    { header: 'SKU', key: 'sku', width: 18 }, { header: 'Descrição', key: 'desc', width: 38 },
+    { header: 'Link do Drive (fotos e vídeos)', key: 'drive', width: 42 }, { header: 'Canal', key: 'canal', width: 18 },
+    { header: 'Anúncio (link ou código)', key: 'anuncio', width: 46 }, { header: 'Fotos prontas', key: 'fotos', width: 14 }, { header: 'Vídeos prontos', key: 'videos', width: 15 },
+  ];
+  const head = ws.getRow(1);
+  head.font = { bold: true, color: { argb: 'FFFFFFFF' } }; head.height = 22;
+  head.eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0073EA' } }; c.alignment = { vertical: 'middle' }; });
+  const lists = wb.addWorksheet('Canais');
+  lists.getCell('A1').value = 'Canais cadastrados'; lists.getCell('A1').font = { bold: true };
+  channels.forEach((c, k) => { lists.getCell(`A${k + 2}`).value = c.name; });
+  lists.getColumn(1).width = 24;
+  for (let r = 2; r <= 1000; r++) {
+    if (channels.length) ws.getCell(`D${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [`Canais!$A$2:$A$${channels.length + 1}`] };
+    for (const c of ['F', 'G']) ws.getCell(`${c}${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: ['"Sim,Não"'] };
+  }
+  const help = wb.addWorksheet('Como preencher');
+  help.getColumn(1).width = 110;
+  [
+    ['Como preencher a planilha de SKUs', true],
+    ['• Uma linha por anúncio. Se o SKU tem anúncio em mais de um canal (ou mais de um anúncio no mesmo canal), repita o SKU em outra linha.'],
+    ['• SKU sem anúncio ainda: preencha só SKU, Descrição e Drive (deixe Canal e Anúncio em branco).'],
+    ['• Canal: escolha da lista (aba "Canais"). Anúncio: cole o link ou o código (ex.: MLB1234567890).'],
+    ['• Drive: um link por SKU (fotos e vídeos). Basta preencher na primeira linha do SKU.'],
+    ['• Fotos prontas / Vídeos prontos: "Sim" marca a base do SKU como pronta.'],
+    ['• Pode subir de novo quando quiser: SKUs que já existem recebem os anúncios novos, sem duplicar.'],
+    [''],
+    ['Exemplo:', true],
+    ['SKU: KIT-001 | Descrição: Kit 3 cuecas | Drive: https://drive.google.com/... | Canal: Mercado Livre | Anúncio: MLB1234567890 | Fotos prontas: Sim | Vídeos prontos: Não'],
+    ['SKU: KIT-001 | (linha repetida) | Canal: Shopee | Anúncio: https://shopee.com.br/...'],
+    ['SKU: KIT-002 | Descrição: Kit 5 meias | Drive: https://drive.google.com/... | (sem anúncio ainda)'],
+  ].forEach(([t, bold], k) => { const c = help.getCell(`A${k + 1}`); c.value = t; if (bold) c.font = { bold: true, size: 12 }; });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="modelo-skus.xlsx"');
+  await wb.xlsx.write(res); res.end();
 }));
 async function loadItem(db, req) {
   const i = (await db.query('SELECT * FROM group_items WHERE id=$1', [req.params.id])).rows[0];
