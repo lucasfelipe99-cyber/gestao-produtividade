@@ -667,3 +667,5 @@ table.lst-table tr.lst-pending td { background: #fff5f5; }
 .drive-cell { display: inline-flex; align-items: center; gap: 2px; }
 .drive-cell .icon-btn { opacity: .5; } .drive-cell:hover .icon-btn { opacity: 1; }
 .sku-desc { display: block; color: #676879; font-size: 11.5px; line-height: 1.3; margin: 2px 0 0 16px; white-space: normal; }
+.dot.notice { background: #00c875; } .badge.green { background: #00c875; }
+.grp-sub { color: #b26b00; }

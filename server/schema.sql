@@ -392,3 +392,17 @@ ALTER TABLE group_tasks ADD COLUMN IF NOT EXISTS abc_file TEXT;
 
 -- v20: anúncios por canal dentro de cada SKU (vários anúncios por canal)
 ALTER TABLE group_items ADD COLUMN IF NOT EXISTS listings JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+-- v22: avisos para todo o time (ex.: SKU com fotos e vídeos prontos)
+CREATE TABLE IF NOT EXISTS team_notices (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT,
+  group_id INTEGER REFERENCES group_tasks(id) ON DELETE CASCADE,
+  item_id INTEGER REFERENCES group_items(id) ON DELETE SET NULL,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS team_notices_company ON team_notices (company_id, created_at DESC);

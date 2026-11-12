@@ -26,7 +26,8 @@ const JWT_SECRET = process.env.JWT_SECRET || (() => {
 const isProd = process.env.NODE_ENV === 'production';
 
 app.set('trust proxy', 1);
-app.use(compression());
+// SSE (/api/stream) não pode ser comprimido: a compressão segura as mensagens e o tempo real atrasa
+app.use(compression({ filter: (req, res) => (req.path === '/api/stream' ? false : compression.filter(req, res)) }));
 app.use('/api/groups/:id/import', express.json({ limit: '15mb' }));
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
@@ -1342,7 +1343,7 @@ async function importSkus(db, g, u, parsed) {
   const existing = new Map((await db.query('SELECT * FROM group_items WHERE group_id=$1 AND sku IS NOT NULL', [g.id])).rows.map((x) => [x.sku.toLowerCase(), x]));
   let pos = (await db.query('SELECT COALESCE(max(position),0) AS p FROM group_items WHERE group_id=$1', [g.id])).rows[0].p;
   let added = 0, updated = 0, listingsAdded = 0;
-  const noChannel = [];
+  const noChannel = [], readyNow = [];
   const now = new Date().toISOString();
   for (const e of parsed) {
     const ex = existing.get(e.sku.toLowerCase());
@@ -1354,8 +1355,10 @@ async function importSkus(db, g, u, parsed) {
       list.push({ id: newId(), channel_id: ch, ...li, by: u.id, name: u.name, at: now }); listingsAdded++;
     }
     const checks = { ...((ex && ex.checks) || {}) };
+    const before = !!(checks.fotos && checks.videos);
     if (e.fotos && !checks.fotos) checks.fotos = { by: u.id, name: u.name, at: now };
     if (e.videos && !checks.videos) checks.videos = { by: u.id, name: u.name, at: now };
+    if (!before && checks.fotos && checks.videos) readyNow.push(e.sku);
     if (ex) {
       await db.query(`UPDATE group_items SET description=COALESCE(description, $2), drive_link=COALESCE(drive_link, $3), listings=$4, checks=$5 WHERE id=$1`,
         [ex.id, cleanText(e.description, 2000), cleanLink(e.drive), JSON.stringify(list), JSON.stringify(checks)]);
@@ -1367,6 +1370,12 @@ async function importSkus(db, g, u, parsed) {
     }
   }
   await db.query('UPDATE group_tasks SET updated_at=now() WHERE id=$1', [g.id]);
+  if (readyNow.length) {
+    const biz = (await db.query('SELECT name FROM businesses WHERE id=$1', [g.business_id])).rows[0]?.name;
+    await db.query(`INSERT INTO team_notices (company_id, kind, title, body, group_id, created_by) VALUES ($1,'sku_base_ready',$2,$3,$4,$5)`,
+      [g.company_id, readyNow.length === 1 ? `📸 Fotos e vídeos prontos: ${readyNow[0]}` : `📸 Fotos e vídeos prontos: ${readyNow.length} SKUs`,
+        `${biz ? biz + ' · ' : ''}${readyNow.slice(0, 15).join(', ')}${readyNow.length > 15 ? '…' : ''} · por ${u.name} (planilha)`, g.id, u.id]);
+  }
   return { added, updated, listings: listingsAdded, no_channel: noChannel.slice(0, 20) };
 }
 
@@ -1479,8 +1488,16 @@ app.patch('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) =
       if (g.status === 'done') throw new HttpError(400, 'Esta tarefa em grupo já foi concluída');
       const checks = { ...(i.checks || {}) };
       for (const k of Object.keys(checks)) if (!['fotos', 'videos'].includes(k)) delete checks[k];
+      const wasReady = !!(i.checks?.fotos && i.checks?.videos);
       if (b.value) checks[b.key] = { by: u.id, name: u.name, at: new Date().toISOString() }; else delete checks[b.key];
       await db.query('UPDATE group_items SET checks=$2 WHERE id=$1', [i.id, JSON.stringify(checks)]);
+      // aviso para todo o time quando a base do SKU (fotos e vídeos) fica pronta
+      if (!wasReady && checks.fotos && checks.videos) {
+        const biz = (await db.query('SELECT b.name FROM businesses b WHERE b.id=$1', [g.business_id])).rows[0]?.name;
+        await db.query(`INSERT INTO team_notices (company_id, kind, title, body, group_id, item_id, created_by) VALUES ($1,'sku_base_ready',$2,$3,$4,$5,$6)`,
+          [g.company_id, `📸 Fotos e vídeos prontos: ${i.sku || i.description || 'SKU'}`,
+            `${biz ? biz + ' · ' : ''}${i.description ? i.description + ' · ' : ''}finalizado por ${u.name}${i.drive_link ? ' · Drive: ' + i.drive_link : ''}`, g.id, i.id, u.id]);
+      }
     } else if (b.action === 'release' || b.action === 'reopen') {
       if (i.user_id && i.user_id !== u.id && !canManage) throw new HttpError(403, 'Só quem pegou o item (ou quem criou a tarefa) pode soltar');
       await db.query(`UPDATE group_items SET status='todo', user_id=NULL, started_at=NULL, done_at=NULL WHERE id=$1`, [i.id]);
@@ -2027,9 +2044,12 @@ app.get('/api/alerts', wrap(async (req, res) => {
      FROM notes n LEFT JOIN tasks t ON t.id=n.task_id
      WHERE n.user_id=$1 AND n.kind='reminder' AND n.remind_date <= $2 AND COALESCE(t.status,'') NOT IN ('done','cancelled')
      ORDER BY n.remind_date, n.remind_time NULLS FIRST LIMIT 20`, [u.id, today]);
+  const notices = canTab(u, 'tarefas') ? await many(
+    `SELECT n.id AS notice_id, n.kind AS notice_kind, n.title, n.body, n.group_id, n.created_by, n.created_at, 'notice' AS level, 'notice' AS kind
+     FROM team_notices n WHERE n.company_id=$1 AND n.created_at > now() - interval '3 days' ORDER BY n.created_at DESC LIMIT 20`, [u.company_id]) : [];
   // a tarefa do lembrete já aparece como lembrete: evita duplicar
   const ids = new Set(reminders.map((r) => r.id));
-  res.json([...reminders, ...rows.filter((r) => !ids.has(r.id))]);
+  res.json([...notices, ...reminders, ...rows.filter((r) => !ids.has(r.id))]);
 }));
 
 // ---------- histórico ----------

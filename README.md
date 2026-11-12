@@ -79,3 +79,5 @@ Build: `npm install && npm run build` · Start: `npm start` · Health check: `/h
   - **Base do SKU**: Fotos e Vídeos prontos no geral (marcados no próprio SKU, valem para todos os anúncios); placar "Base pronta" e registro no Resumo.
   - **Modelo de planilha de SKUs** (botão "Baixar modelo"): uma linha por anúncio — SKU, Descrição, Link do Drive, Canal (lista), Anúncio, Fotos prontas, Vídeos prontos. Reenviar não duplica.
   - Anúncio pode ser adicionado **sem link** (fica "Falta o link"/pendente); o link é obrigatório para o anúncio ficar completo e para concluir o SKU.
+  - **Aviso para o time** quando um SKU fica com fotos e vídeos prontos (sino + notificação para todos).
+- Tempo real corrigido: o canal de atualizações (/api/stream) não passa mais pela compressão.

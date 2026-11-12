@@ -82,7 +82,10 @@ function DayDone({ day, user, by, setBy, onReminder }) {
   const outer = by === 'client'
     ? (r) => { const b = bizOf(r.biz); return [b.id, b.name, b.color]; }
     : (r) => [r.uid || 0, r.uname || 'Sem responsável', null];
-  const inner = by === 'client' ? (r) => [r.uid || 0, r.uname || 'Sem responsável'] : (r) => { const b = bizOf(r.biz); return [b.id, b.name, b.color]; };
+  // por cliente: o que foi feito nas tarefas em grupo fica direto no cliente, sem separar por colaborador
+  const inner = by === 'client'
+    ? (r) => (r.type === 'check' ? ['group', 'Tarefas em grupo', 'group'] : [r.uid || 0, r.uname || 'Sem responsável'])
+    : (r) => { const b = bizOf(r.biz); return [b.id, b.name, b.color]; };
   const groups = [];
   for (const r of rows) {
     const [k, name, color] = outer(r);
@@ -93,6 +96,7 @@ function DayDone({ day, user, by, setBy, onReminder }) {
     if (!sub) g.subs.push((sub = { k: ik, name: iname, color: icolor, rows: [] }));
     sub.rows.push(r);
   }
+  for (const g of groups) g.subs.sort((a, b) => (b.k === 'group') - (a.k === 'group'));
   // clientes na ordem do cadastro, "Sem cliente" no fim; colaboradores em ordem alfabética
   if (by === 'client') groups.sort((a, b) => (a.k === 0) - (b.k === 0) || businesses.findIndex((x) => x.id === a.k) - businesses.findIndex((x) => x.id === b.k));
   else groups.sort((a, b) => a.name.localeCompare(b.name));
@@ -116,7 +120,8 @@ function DayDone({ day, user, by, setBy, onReminder }) {
               {g.subs.map((sub) => (
                 <div key={sub.k} className="done-sub">
                   <div className="done-sub-head">
-                    {sub.color ? <span className="cat small"><i style={{ background: sub.color }} />{sub.name}</span> : <><Avatar name={sub.name} id={sub.k} size={22} /><b>{sub.name}</b></>}
+                    {sub.color === 'group' ? <b className="grp-sub">▦ {sub.name}</b>
+                      : sub.color ? <span className="cat small"><i style={{ background: sub.color }} />{sub.name}</span> : <><Avatar name={sub.name} id={sub.k} size={22} /><b>{sub.name}</b></>}
                     <small className="muted">{sub.rows.length}</small>
                   </div>
                   <ul className="done-list">

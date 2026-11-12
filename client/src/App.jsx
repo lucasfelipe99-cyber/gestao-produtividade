@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { Routes, Route, NavLink, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, NavLink, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { api, connectLive, disconnectLive, useData, onToast, toast, useTick, fmtClock, fmtDate, STATUS, emitLocal, canTab } from './lib.js';
 import { Icon, Avatar, Modal, Field } from './ui.jsx';
 import Login from './pages/Login.jsx';
@@ -154,14 +154,22 @@ function ActiveTimer() {
 }
 
 function Alerts() {
-  const { openTask } = useApp();
+  const { openTask, me } = useApp();
   const { data } = useData('/alerts');
   const [open, setOpen] = useState(false);
   const list = data || [];
   const overdue = list.filter((a) => a.level === 'overdue').length;
   const LABEL = { overdue: 'Não realizada', today: 'Vence hoje', tomorrow: 'Vence amanhã', reminder: 'Lembrete' };
+  const navigate = useNavigate();
+  // avisos do time (ex.: fotos e vídeos prontos de um SKU): toast + notificação uma vez; contam no sino até abrir
+  const readSeen = () => { try { return JSON.parse(localStorage.getItem('notices-seen') || '[]'); } catch { return []; } };
+  const [seenTick, setSeenTick] = useState(0);
+  const seen = readSeen();
+  const notices = list.filter((a) => a.level === 'notice');
+  const unseen = notices.filter((n) => !seen.includes(n.notice_id) && n.created_by !== me?.id);
+  const markSeen = () => { try { localStorage.setItem('notices-seen', JSON.stringify([...new Set([...readSeen(), ...notices.map((n) => n.notice_id)])].slice(-200))); } catch { /* */ } setSeenTick(seenTick + 1); };
+  const countBadge = list.length - notices.length + unseen.length;
   // aviso na hora do lembrete (toast + notificação do navegador, uma vez por lembrete)
-  const { me } = useApp();
   useTick(30000);
   useEffect(() => {
     const now = new Date();
@@ -176,19 +184,38 @@ function Alerts() {
       toast(`🔔 Lembrete: ${r.title}`, 'info');
       try { if (typeof Notification !== 'undefined' && Notification.permission === 'granted') new Notification('Lembrete', { body: r.title }); } catch { /* */ }
     }
+    for (const n of unseen) {
+      const key = `notice-toast-${n.notice_id}`;
+      let shown = false;
+      try { shown = !!localStorage.getItem(key); } catch { /* */ }
+      if (shown) continue;
+      try { localStorage.setItem(key, '1'); } catch { /* */ }
+      toast(`${n.title}${n.body ? ' — ' + n.body : ''}`, 'success');
+      try { if (typeof Notification !== 'undefined' && Notification.permission === 'granted') new Notification(n.title, { body: n.body || '' }); } catch { /* */ }
+    }
   });
   return (
     <div className="alerts">
-      <button className="icon-btn" onClick={() => setOpen(!open)} aria-label="Alertas">
-        <Icon name="bell" />{list.length > 0 && <span className={'badge' + (overdue ? ' red' : '')}>{list.length}</span>}
+      <button className="icon-btn" onClick={() => { if (!open) markSeen(); setOpen(!open); }} aria-label="Alertas">
+        <Icon name="bell" />{countBadge > 0 && <span className={'badge' + (overdue ? ' red' : unseen.length ? ' green' : '')}>{countBadge}</span>}
       </button>
       {open && (
         <>
           <div className="click-away" onClick={() => setOpen(false)} />
           <div className="dropdown alerts-list">
+            {notices.length > 0 && (<>
+              <h4>Avisos do time</h4>
+              {notices.map((n) => (
+                <button key={'n' + n.notice_id} className="alert-item" onClick={() => { navigate('/tarefas?tipo=group'); setOpen(false); }}>
+                  <span className="dot notice" />
+                  <span className="grow"><b>{n.title}</b><small>{n.body}</small>
+                    <small>{new Date(n.created_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</small></span>
+                </button>
+              ))}
+            </>)}
             <h4>Alertas de prazo</h4>
-            {!list.length && <p className="muted pad">Nenhuma tarefa vencida ou próxima do vencimento.</p>}
-            {list.map((a) => (
+            {list.length === notices.length && <p className="muted pad">Nenhuma tarefa vencida ou próxima do vencimento.</p>}
+            {list.filter((a) => a.level !== 'notice').map((a) => (
               <button key={(a.level === 'reminder' ? 'r' : 't') + (a.note_id || a.id)} className="alert-item" onClick={() => { if (a.id) openTask(a.id); setOpen(false); }}>
                 <span className={'dot ' + a.level} />
                 <span className="grow">
