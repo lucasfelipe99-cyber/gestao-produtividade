@@ -193,7 +193,7 @@ function GroupBoard({ id, me, onDeleted }) {
         <div className="table-scroll">
           <table className="group-items">
             <thead><tr>
-              <th style={{ width: 28 }}>#</th><th style={{ width: 92 }}>SKU</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 158 }}>Anúncios por canal</th><th style={{ width: 56 }}>Drive</th><th style={{ width: 96 }} title="Fotos e vídeos prontos no geral (base para todos os anúncios)">Base do SKU</th><th>Descrição</th>
+              <th style={{ width: 28 }}>#</th><th>SKU / descrição</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 158 }}>Anúncios por canal</th><th style={{ width: 118 }}>Drive</th><th style={{ width: 96 }} title="Fotos e vídeos prontos no geral (base para todos os anúncios)">Base do SKU</th>
               {CHECKS.map(([k, l]) => <th key={k} className="ck-col">{l}</th>)}
               <th style={{ width: 96 }}>Quem</th><th style={{ width: 172 }}>Ações</th>
             </tr></thead>
@@ -295,7 +295,7 @@ function ListingsPanel({ i, call, colSpan, disabled }) {
             <span className="muted small">{list.length} anúncio(s) · {complete} completo(s) · {channels.filter((c) => list.some((l) => l.channel_id === c.id)).length}/{channels.length} canais</span>
             <ChannelChips list={list} channels={channels} />
             <span className="small muted">Base:</span><BaseToggles i={i} call={call} disabled={disabled} />
-            {i.drive_link && <a className="small item-link drive" href={i.drive_link} target="_blank" rel="noreferrer">📁 Drive do SKU (fotos e vídeos)</a>}
+            <span className="small"><DriveCell key={i.drive_link || ''} i={i} call={call} disabled={disabled} wide /></span>
           </div>
           {list.length > 0 && (
             <table className="lst-table">
@@ -391,6 +391,31 @@ function ListingSummary({ g }) {
   );
 }
 
+// link do Drive do SKU editável direto na lista (sem precisar do lápis)
+function DriveCell({ i, call, disabled, wide }) {
+  const [editing, setEditing] = useState(false);
+  const [v, setV] = useState(i.drive_link || '');
+  const save = async () => {
+    const t = v.trim();
+    if (t === (i.drive_link || '')) { setEditing(false); return; }
+    if (await call(`/group-items/${i.id}`, 'PATCH', { action: 'set_drive', value: t })) setEditing(false);
+  };
+  if (!disabled && (editing || !i.drive_link)) {
+    return (
+      <input className={'sm drive-input' + (wide ? ' wide' : '')} placeholder="Colar link do Drive" value={v} autoFocus={editing}
+        onChange={(e) => setV(e.target.value)} onBlur={save}
+        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setV(i.drive_link || ''); setEditing(false); } }} />
+    );
+  }
+  if (!i.drive_link) return <span className="muted">—</span>;
+  return (
+    <span className="drive-cell">
+      <a href={i.drive_link} target="_blank" rel="noreferrer" className="item-link drive" title={i.drive_link}>📁 {wide ? 'Drive do SKU (fotos e vídeos)' : 'Drive'}</a>
+      {!disabled && <button className="icon-btn sm" title="Trocar link do Drive" onClick={() => { setV(i.drive_link || ''); setEditing(true); }}><Icon name="edit" size={11} /></button>}
+    </span>
+  );
+}
+
 // base do SKU: fotos e vídeos prontos no geral (servem para todos os anúncios)
 function BaseToggles({ i, call, disabled }) {
   const b = i.checks || {};
@@ -420,17 +445,17 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
   const [label, color] = ITEM_STATUS[i.status];
   const act = (action) => call(`/group-items/${i.id}`, 'PATCH', { action });
   const list = i.listings || [];
-  const cols = 6 + (hasAbc ? 2 : 0) + CHECKS.length + 2;
+  const cols = 5 + (hasAbc ? 2 : 0) + CHECKS.length + 2;
   if (edit) {
     return (
       <tr className="editing">
         <td>{n}</td>
-        <td><input className="sm" value={f.sku} onChange={(e) => setF({ ...f, sku: e.target.value })} placeholder="SKU" /></td>
+        <td><input className="sm" value={f.sku} onChange={(e) => setF({ ...f, sku: e.target.value })} placeholder="SKU" />
+          <input className="sm" style={{ marginTop: 4 }} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} placeholder="Descrição" /></td>
         {hasAbc && <AbcCells i={i} />}
         <td><ChannelChips list={list} channels={channels} /></td>
         <td><input className="sm" value={f.drive_link} onChange={(e) => setF({ ...f, drive_link: e.target.value })} placeholder="Link do Drive" /></td>
         <td><BaseToggles i={i} call={call} disabled /></td>
-        <td><input className="sm" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} placeholder="Descrição" /></td>
         <td colSpan={CHECKS.length + 2}>
           <div className="row gap-s">
             <button className="btn sm" onClick={() => setEdit(false)}>Cancelar</button>
@@ -443,14 +468,14 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
   return (<>
     <tr className={'gi-' + i.status + (mine && i.status === 'doing' ? ' gi-mine' : '') + (open ? ' gi-open' : '')}>
       <td className="muted">{n}</td>
-      <td><button className="sku-btn" onClick={() => setOpen(!open)} title="Ver anúncios do SKU"><Icon name={open ? 'down' : 'right'} size={12} /><b className="sku">{i.sku || '—'}</b></button></td>
+      <td><button className="sku-btn" onClick={() => setOpen(!open)} title="Ver anúncios do SKU"><Icon name={open ? 'down' : 'right'} size={12} /><b className="sku">{i.sku || '—'}</b></button>
+        {i.description && <small className="sku-desc">{i.description}</small>}</td>
       {hasAbc && <AbcCells i={i} />}
       <td><button className={'lst-chips' + (open ? ' open' : '')} onClick={() => setOpen(!open)} title="Anúncios por canal">
         <ChannelChips list={list} channels={channels} /><small className="muted lst-count">{list.length ? `${list.length} anúncio(s)` : '+ anúncio'}</small>
         {list.some((l) => !hasLink(l)) && <small className="pend-badge">⚠ {list.filter((l) => !hasLink(l)).length} sem link</small>}</button></td>
-      <td>{i.drive_link ? <a href={i.drive_link} target="_blank" rel="noreferrer" className="item-link drive" title={i.drive_link}>📁 Drive</a> : <span className="muted">—</span>}</td>
+      <td><DriveCell key={i.drive_link || ''} i={i} call={call} disabled={groupDone} /></td>
       <td><BaseToggles i={i} call={call} disabled={groupDone} /></td>
-      <td className="item-desc">{i.description || <span className="muted">—</span>}</td>
       {CHECKS.map(([k, l]) => {
         const nOk = list.filter((x) => x.checks?.[k]).length;
         const full = list.length > 0 && nOk === list.length;

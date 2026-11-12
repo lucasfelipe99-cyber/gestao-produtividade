@@ -660,3 +660,10 @@ table.lst-table tr.lst-pending td { background: #fff5f5; }
 .pend-badge { color: #d83a52; font-weight: 600; font-size: 11px; }
 .lst-chip.pend { background: #fff; color: #d83a52; border: 1.5px dashed #d83a52; }
 .pending-link { flex-wrap: nowrap; } .pending-link input.sm { width: 210px !important; flex: 0 0 auto; display: inline-block; } .pending-link .btn { flex: none; }
+
+.drive-input { width: 100%; font-size: 12px; padding: 4px 6px; border: 1px dashed #c3c6d4; background: #fbfcfe; }
+.drive-input.wide { width: 260px; }
+.drive-input:focus { border-style: solid; background: #fff; }
+.drive-cell { display: inline-flex; align-items: center; gap: 2px; }
+.drive-cell .icon-btn { opacity: .5; } .drive-cell:hover .icon-btn { opacity: 1; }
+.sku-desc { display: block; color: #676879; font-size: 11.5px; line-height: 1.3; margin: 2px 0 0 16px; white-space: normal; }

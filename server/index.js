@@ -1452,6 +1452,9 @@ app.patch('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) =
         list.splice(k, 1);
       }
       await saveListings(db, i, list, u.id);
+    } else if (b.action === 'set_drive') {
+      // link do Drive do SKU: qualquer participante pode colar/alterar direto na lista
+      await db.query('UPDATE group_items SET drive_link=$2 WHERE id=$1', [i.id, cleanLink(b.value)]);
     } else if (b.action === 'set_listing_link') {
       const list = Array.isArray(i.listings) ? i.listings.map((x) => ({ ...x })) : [];
       const l = list.find((x) => x.id === b.listing_id);
