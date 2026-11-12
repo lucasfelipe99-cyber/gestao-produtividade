@@ -998,7 +998,7 @@ async function setMembers(db, companyId, groupId, ids) {
   // quem saiu do grupo larga os itens que estava fazendo
   await db.query(`UPDATE group_items SET status='todo', user_id=NULL, started_at=NULL WHERE group_id=$1 AND status='doing' AND NOT (user_id = ANY($2::int[]))`, [groupId, valid]);
 }
-const GROUP_SELECT = `SELECT g.id, g.fixed, g.title, g.description, g.link, g.business_id, b.name AS business_name, b.color AS business_color,
+const GROUP_SELECT = `SELECT g.id, g.fixed, g.title, g.abc_period, g.abc_updated_at, g.abc_file, g.description, g.link, g.business_id, b.name AS business_name, b.color AS business_color,
     g.channel_id, ch.name AS channel_name, ch.color AS channel_color, to_char(g.due_date,'YYYY-MM-DD') AS due_date,
     g.status, g.created_by, cu.name AS created_by_name, g.created_at, g.updated_at, g.done_at,
     (SELECT count(*)::int FROM group_items i WHERE i.group_id=g.id) AS items_total,
@@ -1025,7 +1025,7 @@ app.get('/api/groups', requireTab('tarefas'), wrap(async (req, res) => {
 app.get('/api/groups/:id', requireTab('tarefas'), wrap(async (req, res) => {
   const g0 = await tx((db) => loadGroup(db, req));
   const g = await one(`${GROUP_SELECT} WHERE g.id=$1`, [g0.id]);
-  g.items = await many(`SELECT i.id, i.sku, i.link, i.drive_link, i.checks, i.description, i.status, i.user_id, u.name AS user_name, i.started_at, i.done_at, i.created_at, i.created_by
+  g.items = await many(`SELECT i.id, i.sku, i.link, i.drive_link, i.checks, i.curva, i.faturamento::float AS faturamento, i.abc, i.description, i.status, i.user_id, u.name AS user_name, i.started_at, i.done_at, i.created_at, i.created_by
     FROM group_items i LEFT JOIN users u ON u.id=i.user_id WHERE i.group_id=$1 ORDER BY i.position, i.id`, [g0.id]);
   res.json(g);
 }));
@@ -1157,6 +1157,72 @@ function rowsToItems(rawRows) {
   const href = (n, k) => (col[k] >= 0 ? cellHref(raw[n][col[k]]) || data[n][col[k]] || '' : '');
   return data.map((r, n) => ({ sku: at(r, 'sku'), link: href(n, 'link'), drive_link: href(n, 'drive_link'), description: at(r, 'description') })).filter((i) => i.sku);
 }
+
+// ---------- curva ABC (planilha "Classe, Marketplace, ..., SKU, ..., Qtd., Faturamento") ----------
+const normTxt = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+const numOf = (v) => { if (typeof v === 'number') return v; const t = cellText(v).replace(/[^\d,.-]/g, ''); return Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t) || 0; };
+function parseAbc(rawRows) {
+  const hi = rawRows.findIndex((r) => { const h = r.map((c) => normTxt(cellText(c))); return h.includes('classe') && h.includes('sku') && h.some((c) => c.startsWith('faturamento')); });
+  if (hi < 0) return null;
+  const h = rawRows[hi].map((c) => normTxt(cellText(c)));
+  const col = (re) => h.findIndex((c) => re.test(c));
+  const ci = { classe: col(/^classe$/), mk: col(/^marketplace$/), conta: col(/^marketplace venda|conta|loja/), anuncio: col(/^anuncio/), sku: col(/^sku$/), qtd: col(/^qtd/), fat: col(/^faturamento/) };
+  const title = rawRows.slice(0, hi).map((r) => r.map(cellText).filter(Boolean).join(' ')).find(Boolean) || '';
+  const [client, period] = title.split('·').map((x) => x.trim());
+  const bySku = new Map();
+  for (const r of rawRows.slice(hi + 1)) {
+    const sku = cellText(r[ci.sku]);
+    const classe = cellText(r[ci.classe]).toUpperCase();
+    if (!sku || !/^[ABC]$/.test(classe)) continue;
+    const key = sku.toLowerCase();
+    const e = bySku.get(key) || { sku, curva: 'C', faturamento: 0, qtd: 0, rows: [] };
+    if (classe < e.curva) e.curva = classe;            // melhor curva entre os anúncios do SKU
+    const fat = numOf(r[ci.fat]); const qtd = ci.qtd >= 0 ? numOf(r[ci.qtd]) : 0;
+    e.faturamento += fat; e.qtd += qtd;
+    const anuncio = ci.anuncio >= 0 ? cellText(r[ci.anuncio]) : '';
+    e.rows.push({ classe, marketplace: ci.mk >= 0 ? cellText(r[ci.mk]) : '', conta: ci.conta >= 0 ? cellText(r[ci.conta]) : '', anuncio, faturamento: Math.round(fat * 100) / 100, qtd });
+    bySku.set(key, e);
+  }
+  if (!bySku.size) return null;
+  return { client: client || '', period: period || '', skus: [...bySku.values()] };
+}
+const mlLink = (rows) => { const m = rows.map((r) => /^MLB-?(\d+)$/i.exec(r.anuncio)).find(Boolean); return m ? `https://produto.mercadolivre.com.br/MLB-${m[1]}` : null; };
+async function applyAbc(db, g, userId, abc, filename) {
+  if (g.business_id && abc.client) {
+    const b = (await db.query('SELECT name FROM businesses WHERE id=$1', [g.business_id])).rows[0];
+    const a = normTxt(abc.client).replace(/[^a-z0-9]/g, ''), c = normTxt(b?.name).replace(/[^a-z0-9]/g, '');
+    if (b && a && c && !a.includes(c) && !c.includes(a) && !a.startsWith(c.slice(0, 6))) {
+      throw new HttpError(400, `Esta planilha é do cliente "${abc.client}", mas esta tarefa em grupo é do cliente "${b.name}".`);
+    }
+  }
+  const existing = (await db.query('SELECT id, lower(sku) AS k, link FROM group_items WHERE group_id=$1 AND sku IS NOT NULL', [g.id])).rows;
+  const byKey = new Map(existing.map((e) => [e.k, e]));
+  const now = new Date().toISOString();
+  let updated = 0;
+  const toAdd = [];
+  for (const e of abc.skus) {
+    const info = { curva: e.curva, faturamento: Math.round(e.faturamento * 100) / 100, qtd: e.qtd, period: abc.period, rows: e.rows, at: now };
+    const ex = byKey.get(e.sku.toLowerCase());
+    if (ex) {
+      await db.query('UPDATE group_items SET curva=$2, faturamento=$3, abc=$4, link=COALESCE(link, $5) WHERE id=$1', [ex.id, e.curva, info.faturamento, JSON.stringify(info), mlLink(e.rows)]);
+      byKey.delete(e.sku.toLowerCase()); updated++;
+    } else toAdd.push({ e, info });
+  }
+  // SKUs da lista que não aparecem na planilha: sem venda no período
+  const missing = [...byKey.values()].map((x) => x.id);
+  if (missing.length) {
+    await db.query(`UPDATE group_items SET curva=NULL, faturamento=0, abc=$2 WHERE id = ANY($1::int[])`, [missing, JSON.stringify({ none: true, period: abc.period, at: now })]);
+  }
+  if (toAdd.length) {
+    const start = (await db.query('SELECT COALESCE(max(position),0) AS p FROM group_items WHERE group_id=$1', [g.id])).rows[0].p;
+    for (const [k, { e, info }] of toAdd.entries()) {
+      await db.query(`INSERT INTO group_items (group_id, sku, link, curva, faturamento, abc, created_by, position) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [g.id, e.sku, mlLink(e.rows), e.curva, info.faturamento, JSON.stringify(info), userId, start + k + 1]);
+    }
+  }
+  await db.query('UPDATE group_tasks SET abc_period=$2, abc_updated_at=now(), abc_file=$3, updated_at=now() WHERE id=$1', [g.id, abc.period || null, String(filename || '').slice(0, 200)]);
+  return { period: abc.period, skus: abc.skus.length, updated, added: toAdd.length, without_sales: missing.length };
+}
 app.post('/api/groups/:id/import', requireTab('tarefas'), wrap(async (req, res) => {
   const { filename = '', data } = req.body || {};
   if (!data) throw new HttpError(400, 'Envie a planilha');
@@ -1169,6 +1235,12 @@ app.post('/api/groups/:id/import', requireTab('tarefas'), wrap(async (req, res) 
     const ws = wb.worksheets[0];
     if (!ws) throw new HttpError(400, 'A planilha está vazia');
     ws.eachRow({ includeEmpty: false }, (r) => { const vals = []; for (let c = 1; c <= r.cellCount; c++) vals.push(r.getCell(c).value); rows.push(vals); });
+  }
+  const abc = parseAbc(rows);
+  if (abc) {
+    const r = await tx(async (db) => { const g = await loadGroup(db, req); return applyAbc(db, g, req.user.id, abc, filename); });
+    broadcast(req.user.company_id, { type: 'groups' });
+    return res.json({ abc: true, ...r });
   }
   const items = rowsToItems(rows);
   if (!items.length) throw new HttpError(400, 'Não encontrei SKUs. Use uma coluna "SKU" (e, se quiser, "Link", "Drive" e "Descrição")');

@@ -381,3 +381,11 @@ DO $$ BEGIN
     INSERT INTO app_meta (key) VALUES ('v17_next10');
   END IF;
 END $$;
+
+-- v19: curva ABC por SKU (planilha de curva ABC importada nas tarefas em grupo)
+ALTER TABLE group_items ADD COLUMN IF NOT EXISTS curva TEXT;
+ALTER TABLE group_items ADD COLUMN IF NOT EXISTS faturamento NUMERIC(14,2);
+ALTER TABLE group_items ADD COLUMN IF NOT EXISTS abc JSONB;
+ALTER TABLE group_tasks ADD COLUMN IF NOT EXISTS abc_period TEXT;
+ALTER TABLE group_tasks ADD COLUMN IF NOT EXISTS abc_updated_at TIMESTAMPTZ;
+ALTER TABLE group_tasks ADD COLUMN IF NOT EXISTS abc_file TEXT;

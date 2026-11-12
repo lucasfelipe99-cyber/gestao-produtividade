@@ -548,7 +548,7 @@ label.btn { cursor: pointer; }
 .groups-layout .group-list .mini-seg { flex-direction: column; align-self: center; margin: 0 4px 0 0 !important; }
 .groups-layout .group-list > button { flex: 0 0 250px; border: 1px solid #e6e9ef; }
 .groups-layout .group-list > button.on { border-color: #9cc3f5; }
-table.group-items { min-width: 1120px; }
+table.group-items { min-width: 1260px; }
 table.group-items th.ck-col, table.group-items td.ck-col { width: 62px; }
 .pill.sm { width: auto !important; min-width: 0; } table.group-items .row.gap-s.wrap { flex-wrap: nowrap; }
 
@@ -582,3 +582,20 @@ table.group-items th.ck-col, table.group-items td.ck-col { width: 62px; }
 .done-ico.sku { background: #fff1db; color: #b26b00; }
 .done-ico.note { background: #e5f0fd; color: #0060c2; }
 .done-row .inline-form { display: flex; flex-direction: column; gap: 6px; }
+
+/* curva ABC */
+.abc-summary { margin: 12px 0 10px; }
+.abc-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.abc-cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.abc-card { text-align: left; border: 1px solid #e6e9ef; border-radius: 8px; padding: 8px 10px; background: #fff; font: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 1px; border-top: 4px solid var(--cc, #c4c4c4); }
+.abc-card small { color: #676879; font-size: 12px; }
+.abc-card b { font-size: 16px; }
+.abc-card.cA { --cc: #00c875; } .abc-card.cB { --cc: #fdab3d; } .abc-card.cC { --cc: #e2445c; } .abc-card.cnone { --cc: #c4c4c4; }
+.abc-card.total { cursor: default; --cc: #0073ea; background: #f6f9ff; }
+.abc-card.on { box-shadow: 0 0 0 2px var(--cc); }
+.curva { display: inline-flex; width: 24px; height: 24px; border-radius: 6px; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 13px; }
+.curva.cA { background: #00c875; } .curva.cB { background: #fdab3d; } .curva.cC { background: #e2445c; }
+table.group-items td.num { font-variant-numeric: tabular-nums; }
+small.block { display: block; }
+@media (max-width: 900px) { .abc-cards { grid-template-columns: 1fr 1fr; } }
+table.group-items { min-width: 1120px !important; } table.group-items th.ck-col, table.group-items td.ck-col { width: 54px !important; } table.group-items th { font-size: 11.5px; }

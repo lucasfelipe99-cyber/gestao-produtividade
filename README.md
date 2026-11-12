@@ -73,3 +73,4 @@ Build: `npm install && npm run build` · Start: `npm start` · Health check: `/h
 - Cliente **Next10** adicionado (nov/2026).
 - **Não realizadas**: aba própria com as tarefas cujo dia/prazo passou sem conclusão (saem da aba Tarefas). Filtros por período, empresa, canal; admin pode excluir em lote.
 - **Resumo (sem IA)**: aba Realizado mostra, para cada data, as tarefas concluídas, o checklist de SKU marcado e os apontamentos, separados por cliente e colaborador (ou o contrário); aba Lembretes separada.
+  - **Curva ABC**: subir a planilha de curva ABC (Classe, Marketplace, Anúncio, SKU, Qtd., Faturamento) na tarefa em grupo atualiza a curva (melhor classe entre os anúncios do SKU) e o faturamento somado de cada SKU; SKUs novos entram na lista; SKUs ausentes ficam "sem venda". Pode ser reenviada sempre que quiser atualizar.

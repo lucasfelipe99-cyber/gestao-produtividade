@@ -101,13 +101,20 @@ function GroupBoard({ id, me, onDeleted }) {
   const { isAdmin } = useApp();
   const { data: g } = useData(`/groups/${id}`);
   const [filter, setFilter] = useState('all');
+  const [curvaF, setCurvaF] = useState('');
+  const [sort, setSort] = useState('list');
   const [editing, setEditing] = useState(false);
   if (!g) return <Loading />;
   const canManage = isAdmin || g.created_by === me.id;
   const mine = g.members.find((m) => m.id === me.id);
   const iAmDoing = !!mine?.doing_since;
   const doing = g.members.filter((m) => m.doing_since);
-  const items = g.items.filter((i) => filter === 'all' || i.status === filter || (filter === 'mine' && i.user_id === me.id));
+  const hasAbc = g.items.some((i) => i.abc);
+  const items = g.items
+    .filter((i) => filter === 'all' || i.status === filter || (filter === 'mine' && i.user_id === me.id))
+    .filter((i) => !curvaF || (curvaF === 'none' ? !i.curva : i.curva === curvaF))
+    .sort(sort === 'fat' ? (a, b) => (b.faturamento || 0) - (a.faturamento || 0)
+      : sort === 'curva' ? (a, b) => (a.curva || 'Z').localeCompare(b.curva || 'Z') || (b.faturamento || 0) - (a.faturamento || 0) : () => 0);
   const count = (s) => g.items.filter((i) => i.status === s).length;
   const done = g.status === 'done';
   const call = async (path, method, body) => { try { await api(path, { method, body }); emitLocal(); return true; } catch (e) { toast(e.message, 'error'); return false; } };
@@ -176,6 +183,8 @@ function GroupBoard({ id, me, onDeleted }) {
         </div>
       </div>
 
+      {hasAbc && <AbcSummary g={g} curvaF={curvaF} setCurvaF={setCurvaF} sort={sort} setSort={setSort} />}
+
       {g.items.length > 0 && (
         <div className="check-summary">
           {CHECKS.map(([k, l]) => {
@@ -196,12 +205,12 @@ function GroupBoard({ id, me, onDeleted }) {
         <div className="table-scroll">
           <table className="group-items">
             <thead><tr>
-              <th style={{ width: 30 }}>#</th><th style={{ width: 100 }}>SKU</th><th style={{ width: 130 }}>Link do anúncio</th><th style={{ width: 110 }}>Drive (fotos/vídeos)</th><th>Descrição</th>
+              <th style={{ width: 28 }}>#</th><th style={{ width: 92 }}>SKU</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 110 }}>Anúncio</th><th style={{ width: 92 }}>Drive</th><th>Descrição</th>
               {CHECKS.map(([k, l]) => <th key={k} className="ck-col">{l}</th>)}
-              <th style={{ width: 120 }}>Quem</th><th style={{ width: 220 }}>Ações</th>
+              <th style={{ width: 104 }}>Quem</th><th style={{ width: 196 }}>Ações</th>
             </tr></thead>
             <tbody>
-              {items.map((i) => <ItemRow key={i.id} i={i} n={g.items.indexOf(i) + 1} me={me} canManage={canManage} groupDone={done} call={call} />)}
+              {items.map((i) => <ItemRow key={i.id} hasAbc={hasAbc} i={i} n={g.items.indexOf(i) + 1} me={me} canManage={canManage} groupDone={done} call={call} />)}
             </tbody>
           </table>
         </div>
@@ -211,7 +220,45 @@ function GroupBoard({ id, me, onDeleted }) {
   );
 }
 
-function ItemRow({ i, n, me, canManage, groupDone, call }) {
+const brl = (v) => (v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
+function AbcCells({ i }) {
+  const rows = i.abc?.rows || [];
+  const tip = rows.length ? rows.map((r) => `${r.classe} · ${r.marketplace}${r.conta ? ` (${r.conta})` : ''} ${r.anuncio}: ${brl(r.faturamento)} · ${r.qtd} un.`).join('\n') : i.abc?.none ? 'Sem venda no período da planilha' : '';
+  return (<>
+    <td title={tip}>{i.curva ? <span className={'curva c' + i.curva}>{i.curva}</span> : <span className="muted small">{i.abc ? 'sem venda' : '—'}</span>}</td>
+    <td title={tip} className="num">{i.abc ? <><b>{brl(i.faturamento)}</b>{i.abc.qtd ? <small className="muted block">{i.abc.qtd} un.</small> : null}</> : <span className="muted">—</span>}</td>
+  </>);
+}
+function AbcSummary({ g, curvaF, setCurvaF, sort, setSort }) {
+  const total = g.items.reduce((a, i) => a + (i.faturamento || 0), 0);
+  const by = (c) => g.items.filter((i) => (c === 'none' ? !i.curva : i.curva === c));
+  return (
+    <div className="abc-summary">
+      <div className="abc-head">
+        <b>Curva ABC</b>
+        <span className="muted small">{g.abc_period && `${g.abc_period} · `}atualizada {g.abc_updated_at && new Date(g.abc_updated_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+          {' '}· para atualizar, suba a planilha nova de curva ABC</span>
+        <span className="grow" />
+        <select className="sm" value={sort} onChange={(e) => setSort(e.target.value)}>
+          <option value="list">Ordem da lista</option><option value="fat">Maior faturamento</option><option value="curva">Curva (A → C)</option>
+        </select>
+      </div>
+      <div className="abc-cards">
+        {[['A', 'Curva A'], ['B', 'Curva B'], ['C', 'Curva C'], ['none', 'Sem venda']].map(([c, l]) => {
+          const list = by(c); const fat = list.reduce((a, i) => a + (i.faturamento || 0), 0);
+          return (
+            <button key={c} className={'abc-card c' + c + (curvaF === c ? ' on' : '')} onClick={() => setCurvaF(curvaF === c ? '' : c)} title="Filtrar">
+              <small>{l}</small><b>{list.length} SKU(s)</b>{c !== 'none' && <small>{brl(fat)} · {total ? Math.round((fat / total) * 100) : 0}%</small>}
+            </button>
+          );
+        })}
+        <div className="abc-card total"><small>Faturamento total</small><b>{brl(total)}</b></div>
+      </div>
+    </div>
+  );
+}
+
+function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
   const [edit, setEdit] = useState(false);
   const [f, setF] = useState({ sku: i.sku || '', link: i.link || '', drive_link: i.drive_link || '', description: i.description || '' });
   const mine = i.user_id === me.id;
@@ -222,6 +269,7 @@ function ItemRow({ i, n, me, canManage, groupDone, call }) {
       <tr className="editing">
         <td>{n}</td>
         <td><input className="sm" value={f.sku} onChange={(e) => setF({ ...f, sku: e.target.value })} placeholder="SKU" /></td>
+        {hasAbc && <AbcCells i={i} />}
         <td><input className="sm" value={f.link} onChange={(e) => setF({ ...f, link: e.target.value })} placeholder="Link do anúncio" /></td>
         <td><input className="sm" value={f.drive_link} onChange={(e) => setF({ ...f, drive_link: e.target.value })} placeholder="Link do Drive" /></td>
         <td><input className="sm" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} placeholder="Descrição" /></td>
@@ -238,8 +286,9 @@ function ItemRow({ i, n, me, canManage, groupDone, call }) {
     <tr className={'gi-' + i.status + (mine && i.status === 'doing' ? ' gi-mine' : '')}>
       <td className="muted">{n}</td>
       <td><b className="sku">{i.sku || <span className="muted">—</span>}</b></td>
+      {hasAbc && <AbcCells i={i} />}
       <td>{i.link ? <a href={i.link} target="_blank" rel="noreferrer" className="item-link" title={i.link}>{shortLink(i.link)}</a> : <span className="muted">—</span>}</td>
-      <td>{i.drive_link ? <a href={i.drive_link} target="_blank" rel="noreferrer" className="item-link drive" title={i.drive_link}>📁 Abrir Drive</a> : <span className="muted">—</span>}</td>
+      <td>{i.drive_link ? <a href={i.drive_link} target="_blank" rel="noreferrer" className="item-link drive" title={i.drive_link}>📁 Drive</a> : <span className="muted">—</span>}</td>
       <td className="item-desc">{i.description || <span className="muted">—</span>}</td>
       {CHECKS.map(([k, l]) => {
         const c = i.checks?.[k];
@@ -305,7 +354,9 @@ function AddItems({ groupId }) {
       const data = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = fail; r.readAsDataURL(file); });
       const r = await api(`/groups/${groupId}/import`, { method: 'POST', body: { filename: file.name, data } });
       emitLocal();
-      toast(`${r.added} SKU(s) adicionado(s)${r.skipped ? ` · ${r.skipped} já estavam na lista` : ''}`, 'success');
+      toast(r.abc
+        ? `Curva ABC ${r.period || ''} atualizada: ${r.updated} SKU(s) atualizados, ${r.added} novos${r.without_sales ? `, ${r.without_sales} sem venda no período` : ''}`
+        : `${r.added} SKU(s) adicionado(s)${r.skipped ? ` · ${r.skipped} já estavam na lista` : ''}`, 'success');
     } catch (err) { toast(err.message, 'error'); } finally { setBusy(false); }
   };
   const onKey = (e) => e.key === 'Enter' && addOne();
@@ -329,11 +380,11 @@ function AddItems({ groupId }) {
       {!bulk && (
         <div className="row gap wrap small">
           <label className={'btn sm' + (busy ? ' disabled' : '')}>
-            <Icon name="download" size={14} /> Subir planilha de SKUs
+            <Icon name="download" size={14} /> Subir planilha (SKUs ou Curva ABC)
             <input type="file" accept=".xlsx,.csv,.tsv,.txt" hidden onChange={upload} disabled={busy} />
           </label>
           <button className="link small" onClick={() => setBulk(true)}>colar linhas da planilha</button>
-          <span className="muted">Planilha .xlsx ou .csv com a coluna <b>SKU</b> (opcionais: <b>Link</b>, <b>Drive</b>, <b>Descrição</b>). SKU repetido é ignorado.</span>
+          <span className="muted">Planilha .xlsx ou .csv com a coluna <b>SKU</b> (opcionais: <b>Link</b>, <b>Drive</b>, <b>Descrição</b>), ou a planilha de <b>Curva ABC</b> (atualiza curva e faturamento de cada SKU).</span>
         </div>
       )}
     </div>
