@@ -1142,7 +1142,7 @@ function listingFrom(value) {
 const newId = () => Math.random().toString(36).slice(2, 10);
 // salva os anúncios do SKU; SKU fica "Feito" quando todos os anúncios têm o checklist completo
 async function saveListings(db, i, list, userId) {
-  const all = list.length > 0 && list.every((l) => CHECK_KEYS.every((k) => l.checks?.[k]));
+  const all = list.length > 0 && list.every((l) => (l.link || l.code) && CHECK_KEYS.every((k) => l.checks?.[k]));
   const status = all ? 'done' : i.status === 'done' ? 'todo' : i.status;
   await db.query(`UPDATE group_items SET listings=$2, status=$3,
       done_at=CASE WHEN $3='done' THEN COALESCE(done_at, now()) ELSE NULL END,
@@ -1434,21 +1434,32 @@ app.patch('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) =
       await db.query('UPDATE group_task_members SET doing_since=COALESCE(doing_since, now()) WHERE group_id=$1 AND user_id=$2', [g.id, u.id]);
     } else if (b.action === 'done') {
       if (takenByOther && !canManage) throw new HttpError(409, 'Outra pessoa está fazendo este item');
+      const pend = (i.listings || []).filter((l) => !l.link && !l.code).length;
+      if (pend) throw new HttpError(400, `Falta o link de ${pend} anúncio(s) deste SKU. Preencha antes de concluir.`);
       await db.query(`UPDATE group_items SET status='done', user_id=COALESCE(user_id,$2), done_at=now() WHERE id=$1`, [i.id, u.id]);
     } else if (b.action === 'add_listing' || b.action === 'remove_listing') {
       const list = Array.isArray(i.listings) ? [...i.listings] : [];
       if (b.action === 'add_listing') {
         const ch = parseInt(b.channel_id, 10);
         if (!ch || !(await db.query('SELECT 1 FROM channels WHERE id=$1 AND company_id=$2', [ch, u.company_id])).rowCount) throw new HttpError(400, 'Canal inválido');
-        const l = listingFrom(b.value);
-        if (!l) throw new HttpError(400, 'Informe o link ou o código do anúncio');
-        if (list.some((x) => x.channel_id === ch && ((l.code && x.code === l.code) || (l.link && x.link === l.link)))) throw new HttpError(400, 'Este anúncio já está neste canal');
+        // sem link/código: o anúncio entra pendente (o link passa a ser obrigatório para concluir)
+        const l = listingFrom(b.value) || { code: null, link: null };
+        if ((l.code || l.link) && list.some((x) => x.channel_id === ch && ((l.code && x.code === l.code) || (l.link && x.link === l.link)))) throw new HttpError(400, 'Este anúncio já está neste canal');
         list.push({ id: newId(), channel_id: ch, ...l, by: u.id, name: u.name, at: new Date().toISOString() });
       } else {
         const k = list.findIndex((x) => x.id === b.listing_id);
         if (k < 0) throw new HttpError(404, 'Anúncio não encontrado');
         list.splice(k, 1);
       }
+      await saveListings(db, i, list, u.id);
+    } else if (b.action === 'set_listing_link') {
+      const list = Array.isArray(i.listings) ? i.listings.map((x) => ({ ...x })) : [];
+      const l = list.find((x) => x.id === b.listing_id);
+      if (!l) throw new HttpError(404, 'Anúncio não encontrado');
+      const v = listingFrom(b.value);
+      if (!v) throw new HttpError(400, 'Informe o link ou o código do anúncio');
+      if (list.some((x) => x.id !== l.id && x.channel_id === l.channel_id && ((v.code && x.code === v.code) || (v.link && x.link === v.link)))) throw new HttpError(400, 'Este anúncio já está neste canal');
+      Object.assign(l, v, { link_by: u.id, link_name: u.name, link_at: new Date().toISOString() });
       await saveListings(db, i, list, u.id);
     } else if (b.action === 'check_listing') {
       if (!CHECK_KEYS.includes(b.key)) throw new HttpError(400, 'Item de checklist inválido');

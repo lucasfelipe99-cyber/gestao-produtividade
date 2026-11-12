@@ -248,14 +248,27 @@ function AbcSummary({ g, curvaF, setCurvaF, sort, setSort }) {
 
 // anúncios do SKU por canal (cada anúncio tem o próprio checklist); Drive é um só por SKU
 const initials = (name) => { const w = name.split(/\s+/).filter(Boolean); return (w.length > 1 ? w.map((x) => x[0]).join('') : name.slice(0, 3)).slice(0, 3).toUpperCase(); };
-const listingDone = (l) => CHECKS.every(([k]) => l.checks?.[k]);
+const hasLink = (l) => !!(l.link || l.code);
+const listingDone = (l) => hasLink(l) && CHECKS.every(([k]) => l.checks?.[k]);
+// anúncio pendente: sem link ainda (obrigatório para concluir)
+function PendingLink({ i, l, call, disabled }) {
+  const [v, setV] = useState('');
+  const save = async () => { if (v.trim() && (await call(`/group-items/${i.id}`, 'PATCH', { action: 'set_listing_link', listing_id: l.id, value: v.trim() }))) setV(''); };
+  return (
+    <span className="pending-link">
+      <span className="tag danger">Falta o link</span>
+      {!disabled && <><input className="sm" placeholder="Cole o link ou código" value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && save()} />
+        <button className="btn xs primary" disabled={!v.trim()} onClick={save}>Salvar</button></>}
+    </span>
+  );
+}
 function ChannelChips({ list, channels }) {
   return (
     <span className="lst-chips-inner">
       {channels.map((c) => {
         const mine = list.filter((l) => l.channel_id === c.id);
         const ok = mine.filter(listingDone).length;
-        const cls = !mine.length ? '' : ok === mine.length ? ' on' : ' part';
+        const cls = !mine.length ? '' : ok === mine.length ? ' on' : mine.some((l) => !hasLink(l)) ? ' pend' : ' part';
         return <span key={c.id} className={'lst-chip' + cls} style={{ '--c': c.color }} title={`${c.name}: ${mine.length ? `${mine.length} anúncio(s), ${ok} completo(s)` : 'sem anúncio'}`}>{initials(c.name)}{mine.length > 0 && <sup>{mine.length}</sup>}</span>;
       })}
     </span>
@@ -267,7 +280,7 @@ function ListingsPanel({ i, call, colSpan, disabled }) {
   const [val, setVal] = useState('');
   const list = i.listings || [];
   const add = async () => {
-    if (!val.trim() || !ch) return;
+    if (!ch) return;
     if (await call(`/group-items/${i.id}`, 'PATCH', { action: 'add_listing', channel_id: ch, value: val.trim() })) setVal('');
   };
   const chanOf = (id) => channels.find((c) => c.id === id) || { name: '?', color: '#c4c4c4' };
@@ -292,9 +305,10 @@ function ListingsPanel({ i, call, colSpan, disabled }) {
                 {sorted.map((l) => {
                   const c = chanOf(l.channel_id); const ok = listingDone(l);
                   return (
-                    <tr key={l.id} className={ok ? 'lst-ok' : ''}>
+                    <tr key={l.id} className={ok ? 'lst-ok' : hasLink(l) ? '' : 'lst-pending'}>
                       <td><span className="chan" style={{ background: c.color }}>{c.name}</span></td>
-                      <td>{l.link ? <a href={l.link} target="_blank" rel="noreferrer" className="item-link" title={l.link}>{l.code || shortLink(l.link)}</a> : <span className="sku">{l.code}</span>}</td>
+                      <td>{l.link ? <a href={l.link} target="_blank" rel="noreferrer" className="item-link" title={l.link}>{l.code || shortLink(l.link)}</a>
+                        : l.code ? <span className="sku">{l.code}</span> : <PendingLink i={i} l={l} call={call} disabled={disabled} />}</td>
                       <td className="muted small">{l.conta || '—'}</td>
                       {CHECKS.map(([k, lb]) => {
                         const v = l.checks?.[k];
@@ -305,7 +319,7 @@ function ListingsPanel({ i, call, colSpan, disabled }) {
                           </td>
                         );
                       })}
-                      <td>{ok ? <span className="tag ok">Completo</span> : <span className="muted small">{CHECKS.filter(([k]) => l.checks?.[k]).length}/{CHECKS.length}</span>}</td>
+                      <td>{ok ? <span className="tag ok">Completo</span> : !hasLink(l) ? <span className="small danger-text">pendente</span> : <span className="muted small">{CHECKS.filter(([k]) => l.checks?.[k]).length}/{CHECKS.length}</span>}</td>
                       <td>{!disabled && <button className="icon-btn sm" title="Remover anúncio" onClick={() => confirm('Remover este anúncio e o checklist dele?') && call(`/group-items/${i.id}`, 'PATCH', { action: 'remove_listing', listing_id: l.id })}><Icon name="trash" size={13} /></button>}</td>
                     </tr>
                   );
@@ -316,8 +330,8 @@ function ListingsPanel({ i, call, colSpan, disabled }) {
           {!disabled && (
             <div className="lst-add-row">
               <select className="sm" value={ch} onChange={(e) => setCh(Number(e.target.value))}>{channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-              <input className="sm grow" placeholder="Link ou código do anúncio (ex.: MLB123…)" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} />
-              <button className="btn primary sm" disabled={!val.trim()} onClick={add}><Icon name="plus" size={13} /> Adicionar anúncio</button>
+              <input className="sm grow" placeholder="Link ou código do anúncio (pode deixar em branco e preencher depois)" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} />
+              <button className="btn primary sm" onClick={add}><Icon name="plus" size={13} /> {val.trim() ? 'Adicionar anúncio' : 'Adicionar sem link'}</button>
             </div>
           )}
           {!list.length && <p className="muted small" style={{ margin: '6px 0 0' }}>Nenhum anúncio ainda. Adicione um anúncio por canal; cada anúncio terá o seu checklist (fotos, vídeos, anúncio, ADS e afiliados).</p>}
@@ -344,7 +358,8 @@ function ListingSummary({ g }) {
           <small>Base pronta (fotos e vídeos)</small><b>{g.items.filter((i) => i.checks?.fotos && i.checks?.videos).length}/{g.items.length} SKUs</b>
           <small className="muted">📷 {g.items.filter((i) => i.checks?.fotos).length} · 🎬 {g.items.filter((i) => i.checks?.videos).length}</small>
         </div>
-        <div><small>Anúncios</small><b>{all.length}</b><small className="muted">{all.filter(listingDone).length} completo(s){skuNoListing ? ` · ${skuNoListing} SKU(s) sem anúncio` : ''}</small></div>
+        <div><small>Anúncios</small><b>{all.length}</b><small className="muted">{all.filter(listingDone).length} completo(s){skuNoListing ? ` · ${skuNoListing} SKU(s) sem anúncio` : ''}</small>
+          {all.some((l) => !hasLink(l)) && <small className="danger-text">⚠ {all.filter((l) => !hasLink(l)).length} anúncio(s) sem link</small>}</div>
         {CHECKS.map(([k, l]) => {
           const n = all.filter((x) => x.checks?.[k]).length;
           return (
@@ -431,7 +446,8 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
       <td><button className="sku-btn" onClick={() => setOpen(!open)} title="Ver anúncios do SKU"><Icon name={open ? 'down' : 'right'} size={12} /><b className="sku">{i.sku || '—'}</b></button></td>
       {hasAbc && <AbcCells i={i} />}
       <td><button className={'lst-chips' + (open ? ' open' : '')} onClick={() => setOpen(!open)} title="Anúncios por canal">
-        <ChannelChips list={list} channels={channels} /><small className="muted lst-count">{list.length ? `${list.length} anúncio(s)` : '+ anúncio'}</small></button></td>
+        <ChannelChips list={list} channels={channels} /><small className="muted lst-count">{list.length ? `${list.length} anúncio(s)` : '+ anúncio'}</small>
+        {list.some((l) => !hasLink(l)) && <small className="pend-badge">⚠ {list.filter((l) => !hasLink(l)).length} sem link</small>}</button></td>
       <td>{i.drive_link ? <a href={i.drive_link} target="_blank" rel="noreferrer" className="item-link drive" title={i.drive_link}>📁 Drive</a> : <span className="muted">—</span>}</td>
       <td><BaseToggles i={i} call={call} disabled={groupDone} /></td>
       <td className="item-desc">{i.description || <span className="muted">—</span>}</td>

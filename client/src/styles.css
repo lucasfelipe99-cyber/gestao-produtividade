@@ -653,3 +653,10 @@ table.group-items th.ck-col, table.group-items td.ck-col { width: 50px !importan
 .base-btn:disabled { cursor: default; opacity: .8; }
 table.group-items { min-width: 1160px !important; }
 @media (max-width: 1300px) { .lst-summary .check-summary { grid-template-columns: repeat(4, 1fr); } }
+
+.pending-link { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.pending-link input { width: 220px; }
+table.lst-table tr.lst-pending td { background: #fff5f5; }
+.pend-badge { color: #d83a52; font-weight: 600; font-size: 11px; }
+.lst-chip.pend { background: #fff; color: #d83a52; border: 1.5px dashed #d83a52; }
+.pending-link { flex-wrap: nowrap; } .pending-link input.sm { width: 210px !important; flex: 0 0 auto; display: inline-block; } .pending-link .btn { flex: none; }

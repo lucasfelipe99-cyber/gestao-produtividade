@@ -78,3 +78,4 @@ Build: `npm install && npm run build` · Start: `npm start` · Health check: `/h
   - **Checklist por anúncio**: cada SKU tem um Drive único e vários anúncios (canal + link/código); cada anúncio tem o próprio checklist (Fotos, Vídeos, Anúncio, ADS, Afiliados). O SKU mostra o progresso (ex.: Fotos 2/6) e fica Feito quando todos os anúncios estão completos. Placar geral e por canal (anúncios, SKUs com anúncio, checklist, completos).
   - **Base do SKU**: Fotos e Vídeos prontos no geral (marcados no próprio SKU, valem para todos os anúncios); placar "Base pronta" e registro no Resumo.
   - **Modelo de planilha de SKUs** (botão "Baixar modelo"): uma linha por anúncio — SKU, Descrição, Link do Drive, Canal (lista), Anúncio, Fotos prontas, Vídeos prontos. Reenviar não duplica.
+  - Anúncio pode ser adicionado **sem link** (fica "Falta o link"/pendente); o link é obrigatório para o anúncio ficar completo e para concluir o SKU.
