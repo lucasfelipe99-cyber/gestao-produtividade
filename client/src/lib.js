@@ -139,7 +139,7 @@ export const pctColor = (p, target = 90) => (p >= target ? '#00c875' : p >= targ
 
 // Abas que o administrador pode liberar para cada colaborador
 export const TABS = [
-  ['dashboard', 'Meu painel (dashboard)'], ['tarefas', 'Tarefas (diárias, semanais e pontuais)'], ['clientes', 'Clientes (comentários e reuniões)'],
+  ['dashboard', 'Meu painel (dashboard)'], ['tarefas', 'Tarefas (diárias, semanais e pontuais)'], ['grupo', 'Tarefas em grupo'], ['clientes', 'Clientes (comentários e reuniões)'],
   ['linha-do-tempo', 'Linha do tempo'], ['metas', 'Metas e atingimento'], ['relatorios', 'Relatórios'], ['historico', 'Histórico'],
 ];
 export const canTab = (me, tab) => me.role === 'admin' || !me.allowed_tabs || me.allowed_tabs.includes(tab);

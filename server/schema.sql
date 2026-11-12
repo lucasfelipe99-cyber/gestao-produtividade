@@ -320,3 +320,46 @@ DO $$ BEGIN
     INSERT INTO app_meta (key) VALUES ('v13_aba_clientes');
   END IF;
 END $$;
+
+-- v14: tarefas em grupo (atividade feita ao mesmo tempo por vários colaboradores, com itens de link + descrição)
+CREATE TABLE IF NOT EXISTS group_tasks (
+  id SERIAL PRIMARY KEY,
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  link TEXT,
+  business_id INTEGER REFERENCES businesses(id) ON DELETE SET NULL,
+  channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,
+  due_date DATE,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done')),
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  done_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS group_task_members (
+  group_id INTEGER NOT NULL REFERENCES group_tasks(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  doing_since TIMESTAMPTZ,            -- preenchido = "fazendo isso" agora
+  PRIMARY KEY (group_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS group_items (
+  id SERIAL PRIMARY KEY,
+  group_id INTEGER NOT NULL REFERENCES group_tasks(id) ON DELETE CASCADE,
+  link TEXT,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','doing','done')),
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,   -- quem está fazendo / fez
+  started_at TIMESTAMPTZ,
+  done_at TIMESTAMPTZ,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS group_items_group ON group_items (group_id, position, id);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v14_aba_grupo') THEN
+    UPDATE users SET allowed_tabs = array_append(allowed_tabs, 'grupo') WHERE allowed_tabs IS NOT NULL AND NOT 'grupo' = ANY(allowed_tabs);
+    INSERT INTO app_meta (key) VALUES ('v14_aba_grupo');
+  END IF;
+END $$;

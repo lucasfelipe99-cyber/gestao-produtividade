@@ -57,7 +57,7 @@ async function auth(req, _res, next) {
 }
 const adminOnly = (req, _res, next) => (isAdmin(req.user) ? next() : next(new HttpError(403, 'Apenas administradores')));
 // Abas do sistema que o administrador pode liberar/bloquear por colaborador
-export const TABS = ['dashboard', 'tarefas', 'clientes', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
+export const TABS = ['dashboard', 'tarefas', 'grupo', 'clientes', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
 const canTab = (u, tab) => isAdmin(u) || !u.allowed_tabs || u.allowed_tabs.includes(tab);
 const requireTab = (tab) => (req, _res, next) => (canTab(req.user, tab) ? next() : next(new HttpError(403, 'Você não tem acesso a esta área')));
 
@@ -956,6 +956,184 @@ app.post('/api/timeline/backfill', adminOnly, wrap(async (req, res) => {
   res.json(r);
 }));
 
+
+
+// ---------- tarefas em grupo ----------
+const cleanLink = (v) => {
+  const t = String(v || '').trim().slice(0, 2000);
+  if (!t) return null;
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`;
+};
+const cleanText = (v, n = 5000) => { const t = String(v ?? '').trim(); return t ? t.slice(0, n) : null; };
+async function loadGroup(db, req, { manage = false } = {}) {
+  const g = (await db.query('SELECT * FROM group_tasks WHERE id=$1 AND company_id=$2', [req.params.id, req.user.company_id])).rows[0];
+  if (!g) throw new HttpError(404, 'Tarefa em grupo não encontrada');
+  if (isAdmin(req.user) || g.created_by === req.user.id) return g;
+  const member = (await db.query('SELECT 1 FROM group_task_members WHERE group_id=$1 AND user_id=$2', [g.id, req.user.id])).rowCount;
+  if (!member) throw new HttpError(403, 'Você não participa desta tarefa em grupo');
+  if (manage) throw new HttpError(403, 'Só quem criou (ou um administrador) pode alterar');
+  return g;
+}
+async function setMembers(db, companyId, groupId, ids) {
+  const clean = [...new Set((ids || []).map((x) => parseInt(x, 10)).filter(Boolean))];
+  const valid = clean.length ? (await db.query('SELECT id FROM users WHERE company_id=$1 AND active AND id = ANY($2::int[])', [companyId, clean])).rows.map((r) => r.id) : [];
+  await db.query('DELETE FROM group_task_members WHERE group_id=$1 AND NOT (user_id = ANY($2::int[]))', [groupId, valid]);
+  for (const id of valid) await db.query('INSERT INTO group_task_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [groupId, id]);
+  // quem saiu do grupo larga os itens que estava fazendo
+  await db.query(`UPDATE group_items SET status='todo', user_id=NULL, started_at=NULL WHERE group_id=$1 AND status='doing' AND NOT (user_id = ANY($2::int[]))`, [groupId, valid]);
+}
+const GROUP_SELECT = `SELECT g.id, g.title, g.description, g.link, g.business_id, b.name AS business_name, b.color AS business_color,
+    g.channel_id, ch.name AS channel_name, ch.color AS channel_color, to_char(g.due_date,'YYYY-MM-DD') AS due_date,
+    g.status, g.created_by, cu.name AS created_by_name, g.created_at, g.updated_at, g.done_at,
+    (SELECT count(*)::int FROM group_items i WHERE i.group_id=g.id) AS items_total,
+    (SELECT count(*)::int FROM group_items i WHERE i.group_id=g.id AND i.status='done') AS items_done,
+    (SELECT count(*)::int FROM group_items i WHERE i.group_id=g.id AND i.status='doing') AS items_doing,
+    COALESCE((SELECT json_agg(json_build_object('id', u.id, 'name', u.name, 'doing_since', m.doing_since,
+        'item_id', (SELECT i.id FROM group_items i WHERE i.group_id=g.id AND i.user_id=u.id AND i.status='doing' LIMIT 1),
+        'done', (SELECT count(*) FROM group_items i WHERE i.group_id=g.id AND i.user_id=u.id AND i.status='done'))
+        ORDER BY u.name) FROM group_task_members m JOIN users u ON u.id=m.user_id WHERE m.group_id=g.id), '[]') AS members
+  FROM group_tasks g LEFT JOIN businesses b ON b.id=g.business_id LEFT JOIN channels ch ON ch.id=g.channel_id
+  LEFT JOIN users cu ON cu.id=g.created_by`;
+const groupVis = (req, params) => {
+  if (isAdmin(req.user)) return '';
+  params.push(req.user.id);
+  return ` AND (g.created_by=$${params.length} OR EXISTS (SELECT 1 FROM group_task_members m WHERE m.group_id=g.id AND m.user_id=$${params.length}))`;
+};
+app.get('/api/groups', requireTab('grupo'), wrap(async (req, res) => {
+  const params = [req.user.company_id];
+  let where = 'g.company_id=$1' + groupVis(req, params);
+  if (req.query.status === 'open' || req.query.status === 'done') { params.push(req.query.status); where += ` AND g.status=$${params.length}`; }
+  if (req.query.business) { params.push(parseInt(req.query.business, 10)); where += ` AND g.business_id=$${params.length}`; }
+  res.json(await many(`${GROUP_SELECT} WHERE ${where} ORDER BY g.status, g.due_date NULLS LAST, g.created_at DESC LIMIT 300`, params));
+}));
+app.get('/api/groups/:id', requireTab('grupo'), wrap(async (req, res) => {
+  const g0 = await tx((db) => loadGroup(db, req));
+  const g = await one(`${GROUP_SELECT} WHERE g.id=$1`, [g0.id]);
+  g.items = await many(`SELECT i.id, i.link, i.description, i.status, i.user_id, u.name AS user_name, i.started_at, i.done_at, i.created_at, i.created_by
+    FROM group_items i LEFT JOIN users u ON u.id=i.user_id WHERE i.group_id=$1 ORDER BY i.position, i.id`, [g0.id]);
+  res.json(g);
+}));
+async function insertItems(db, groupId, userId, items) {
+  const list = (Array.isArray(items) ? items : []).map((i) => ({ link: cleanLink(i.link), description: cleanText(i.description, 2000) })).filter((i) => i.link || i.description).slice(0, 500);
+  if (!list.length) return 0;
+  const start = (await db.query('SELECT COALESCE(max(position),0) AS p FROM group_items WHERE group_id=$1', [groupId])).rows[0].p;
+  for (const [k, i] of list.entries()) {
+    await db.query('INSERT INTO group_items (group_id, link, description, created_by, position) VALUES ($1,$2,$3,$4,$5)', [groupId, i.link, i.description, userId, start + k + 1]);
+  }
+  return list.length;
+}
+app.post('/api/groups', requireTab('grupo'), wrap(async (req, res) => {
+  const u = req.user, b = req.body || {};
+  const title = cleanText(b.title, 300);
+  if (!title) throw new HttpError(400, 'Informe o nome da tarefa em grupo');
+  const data = { business_id: b.business_id ? parseInt(b.business_id, 10) : null, channel_id: b.channel_id ? parseInt(b.channel_id, 10) : null };
+  const id = await tx(async (db) => {
+    await assertRefs(db, u.company_id, data);
+    const g = (await db.query(`INSERT INTO group_tasks (company_id, title, description, link, business_id, channel_id, due_date, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [u.company_id, title, cleanText(b.description), cleanLink(b.link), data.business_id, data.channel_id, isDate(b.due_date) ? b.due_date : null, u.id])).rows[0];
+    const ids = b.all_members ? (await db.query('SELECT id FROM users WHERE company_id=$1 AND active', [u.company_id])).rows.map((r) => r.id) : [...(b.member_ids || []), u.id];
+    await setMembers(db, u.company_id, g.id, ids);
+    await insertItems(db, g.id, u.id, b.items);
+    return g.id;
+  });
+  broadcast(u.company_id, { type: 'groups' });
+  res.json(await one(`${GROUP_SELECT} WHERE g.id=$1`, [id]));
+}));
+app.patch('/api/groups/:id', requireTab('grupo'), wrap(async (req, res) => {
+  const u = req.user, b = req.body || {};
+  await tx(async (db) => {
+    const onlyStatus = Object.keys(b).every((k) => k === 'status');
+    const g = await loadGroup(db, req, { manage: !onlyStatus });
+    const sets = [], params = [];
+    const add = (k, v) => { params.push(v); sets.push(`${k}=$${params.length}`); };
+    if ('title' in b) { const t = cleanText(b.title, 300); if (!t) throw new HttpError(400, 'O nome não pode ficar vazio'); add('title', t); }
+    if ('description' in b) add('description', cleanText(b.description));
+    if ('link' in b) add('link', cleanLink(b.link));
+    if ('due_date' in b) add('due_date', isDate(b.due_date) ? b.due_date : null);
+    for (const k of ['business_id', 'channel_id']) if (k in b) { const v = b[k] ? parseInt(b[k], 10) : null; await assertRefs(db, u.company_id, { [k]: v }); add(k, v); }
+    if (b.status === 'done' || b.status === 'open') {
+      add('status', b.status); sets.push(b.status === 'done' ? 'done_at=now()' : 'done_at=NULL');
+      if (b.status === 'done') await db.query('UPDATE group_task_members SET doing_since=NULL WHERE group_id=$1', [g.id]);
+    }
+    if (sets.length) { sets.push('updated_at=now()'); params.push(g.id); await db.query(`UPDATE group_tasks SET ${sets.join(',')} WHERE id=$${params.length}`, params); }
+    if (b.all_members) await setMembers(db, u.company_id, g.id, (await db.query('SELECT id FROM users WHERE company_id=$1 AND active', [u.company_id])).rows.map((r) => r.id));
+    else if (Array.isArray(b.member_ids)) await setMembers(db, u.company_id, g.id, [...b.member_ids, g.created_by].filter(Boolean));
+  });
+  broadcast(u.company_id, { type: 'groups' });
+  res.json({ ok: true });
+}));
+app.delete('/api/groups/:id', requireTab('grupo'), wrap(async (req, res) => {
+  await tx(async (db) => { const g = await loadGroup(db, req, { manage: true }); await db.query('DELETE FROM group_tasks WHERE id=$1', [g.id]); });
+  broadcast(req.user.company_id, { type: 'groups' });
+  res.json({ ok: true });
+}));
+// "Fazendo isso" na atividade (sem item específico)
+app.post('/api/groups/:id/doing', requireTab('grupo'), wrap(async (req, res) => {
+  const on = req.body?.on !== false;
+  await tx(async (db) => {
+    const g = await loadGroup(db, req);
+    if (g.status === 'done' && on) throw new HttpError(400, 'Esta tarefa em grupo já foi concluída');
+    await db.query('INSERT INTO group_task_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [g.id, req.user.id]);
+    await db.query('UPDATE group_task_members SET doing_since=$3 WHERE group_id=$1 AND user_id=$2', [g.id, req.user.id, on ? new Date() : null]);
+    if (!on) await db.query(`UPDATE group_items SET status='todo', user_id=NULL, started_at=NULL WHERE group_id=$1 AND user_id=$2 AND status='doing'`, [g.id, req.user.id]);
+  });
+  broadcast(req.user.company_id, { type: 'groups' });
+  res.json({ ok: true });
+}));
+app.post('/api/groups/:id/items', requireTab('grupo'), wrap(async (req, res) => {
+  const n = await tx(async (db) => { const g = await loadGroup(db, req); return insertItems(db, g.id, req.user.id, req.body?.items); });
+  if (!n) throw new HttpError(400, 'Informe ao menos um link ou descrição');
+  broadcast(req.user.company_id, { type: 'groups' });
+  res.json({ added: n });
+}));
+async function loadItem(db, req) {
+  const i = (await db.query('SELECT * FROM group_items WHERE id=$1', [req.params.id])).rows[0];
+  if (!i) throw new HttpError(404, 'Item não encontrado');
+  const g = await loadGroup(db, { ...req, params: { id: i.group_id } });
+  return { i, g };
+}
+app.patch('/api/group-items/:id', requireTab('grupo'), wrap(async (req, res) => {
+  const u = req.user, b = req.body || {};
+  await tx(async (db) => {
+    const { i, g } = await loadItem(db, req);
+    const canManage = isAdmin(u) || g.created_by === u.id;
+    const takenByOther = i.status === 'doing' && i.user_id && i.user_id !== u.id;
+    if (b.action === 'doing') {
+      if (g.status === 'done') throw new HttpError(400, 'Esta tarefa em grupo já foi concluída');
+      if (takenByOther) throw new HttpError(409, 'Outra pessoa já está fazendo este item');
+      if (i.status === 'done') throw new HttpError(400, 'Este item já foi feito');
+      // um item por vez: o que eu estava fazendo volta para "livre"
+      await db.query(`UPDATE group_items SET status='todo', user_id=NULL, started_at=NULL WHERE group_id=$1 AND user_id=$2 AND status='doing' AND id<>$3`, [g.id, u.id, i.id]);
+      await db.query(`UPDATE group_items SET status='doing', user_id=$2, started_at=now(), done_at=NULL WHERE id=$1`, [i.id, u.id]);
+      await db.query('INSERT INTO group_task_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [g.id, u.id]);
+      await db.query('UPDATE group_task_members SET doing_since=COALESCE(doing_since, now()) WHERE group_id=$1 AND user_id=$2', [g.id, u.id]);
+    } else if (b.action === 'done') {
+      if (takenByOther && !canManage) throw new HttpError(409, 'Outra pessoa está fazendo este item');
+      await db.query(`UPDATE group_items SET status='done', user_id=COALESCE(user_id,$2), done_at=now() WHERE id=$1`, [i.id, u.id]);
+    } else if (b.action === 'release' || b.action === 'reopen') {
+      if (i.user_id && i.user_id !== u.id && !canManage) throw new HttpError(403, 'Só quem pegou o item (ou quem criou a tarefa) pode soltar');
+      await db.query(`UPDATE group_items SET status='todo', user_id=NULL, started_at=NULL, done_at=NULL WHERE id=$1`, [i.id]);
+    } else {
+      if (i.created_by !== u.id && !canManage) throw new HttpError(403, 'Só quem adicionou o item (ou quem criou a tarefa) pode editar');
+      const link = 'link' in b ? cleanLink(b.link) : i.link, description = 'description' in b ? cleanText(b.description, 2000) : i.description;
+      if (!link && !description) throw new HttpError(400, 'Informe o link ou a descrição');
+      await db.query('UPDATE group_items SET link=$2, description=$3 WHERE id=$1', [i.id, link, description]);
+    }
+    await db.query('UPDATE group_tasks SET updated_at=now() WHERE id=$1', [g.id]);
+  });
+  broadcast(u.company_id, { type: 'groups' });
+  res.json({ ok: true });
+}));
+app.delete('/api/group-items/:id', requireTab('grupo'), wrap(async (req, res) => {
+  await tx(async (db) => {
+    const { i, g } = await loadItem(db, req);
+    if (i.created_by !== req.user.id && !isAdmin(req.user) && g.created_by !== req.user.id) throw new HttpError(403, 'Só quem adicionou o item (ou quem criou a tarefa) pode excluir');
+    await db.query('DELETE FROM group_items WHERE id=$1', [i.id]);
+  });
+  broadcast(req.user.company_id, { type: 'groups' });
+  res.json({ ok: true });
+}));
 
 // ---------- mural de clientes ----------
 const POST_SELECT = `SELECT p.id, p.business_id, p.parent_id, p.author_id, u.name AS author_name, p.kind,
