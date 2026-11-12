@@ -185,19 +185,7 @@ function GroupBoard({ id, me, onDeleted }) {
 
       {hasAbc && <AbcSummary g={g} curvaF={curvaF} setCurvaF={setCurvaF} sort={sort} setSort={setSort} />}
 
-      {g.items.length > 0 && (
-        <div className="check-summary">
-          {CHECKS.map(([k, l]) => {
-            const n = g.items.filter((i) => i.checks?.[k]).length;
-            return (
-              <div key={k} className={n === g.items.length ? 'full' : ''}>
-                <small>{l}</small><b>{n}/{g.items.length}</b>
-                <span className="mini-progress"><span style={{ width: `${(n / g.items.length) * 100}%` }} /></span>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {g.items.length > 0 && <ListingSummary g={g} />}
 
       {!done && <AddItems groupId={g.id} />}
 
@@ -205,9 +193,9 @@ function GroupBoard({ id, me, onDeleted }) {
         <div className="table-scroll">
           <table className="group-items">
             <thead><tr>
-              <th style={{ width: 28 }}>#</th><th style={{ width: 92 }}>SKU</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 168 }}>Anúncios por canal</th><th style={{ width: 80 }}>Drive</th><th>Descrição</th>
+              <th style={{ width: 28 }}>#</th><th style={{ width: 92 }}>SKU</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 158 }}>Anúncios por canal</th><th style={{ width: 62 }}>Drive</th><th>Descrição</th>
               {CHECKS.map(([k, l]) => <th key={k} className="ck-col">{l}</th>)}
-              <th style={{ width: 104 }}>Quem</th><th style={{ width: 196 }}>Ações</th>
+              <th style={{ width: 96 }}>Quem</th><th style={{ width: 172 }}>Ações</th>
             </tr></thead>
             <tbody>
               {items.map((i) => <ItemRow key={i.id} hasAbc={hasAbc} i={i} n={g.items.indexOf(i) + 1} me={me} canManage={canManage} groupDone={done} call={call} />)}
@@ -258,82 +246,148 @@ function AbcSummary({ g, curvaF, setCurvaF, sort, setSort }) {
   );
 }
 
-// anúncios do SKU por canal: chips com todos os canais (verde = tem anúncio)
+// anúncios do SKU por canal (cada anúncio tem o próprio checklist); Drive é um só por SKU
 const initials = (name) => { const w = name.split(/\s+/).filter(Boolean); return (w.length > 1 ? w.map((x) => x[0]).join('') : name.slice(0, 3)).slice(0, 3).toUpperCase(); };
-function ListingChips({ i, onOpen, open }) {
-  const { channels } = useApp();
-  const list = i.listings || [];
+const listingDone = (l) => CHECKS.every(([k]) => l.checks?.[k]);
+function ChannelChips({ list, channels }) {
   return (
-    <button className={'lst-chips' + (open ? ' open' : '')} onClick={onOpen} title="Ver e adicionar anúncios por canal">
+    <span className="lst-chips-inner">
       {channels.map((c) => {
-        const n = list.filter((l) => l.channel_id === c.id).length;
-        return <span key={c.id} className={'lst-chip' + (n ? ' on' : '')} style={{ '--c': c.color }} title={`${c.name}: ${n ? `${n} anúncio(s)` : 'sem anúncio'}`}>{initials(c.name)}{n > 1 && <sup>{n}</sup>}</span>;
+        const mine = list.filter((l) => l.channel_id === c.id);
+        const ok = mine.filter(listingDone).length;
+        const cls = !mine.length ? '' : ok === mine.length ? ' on' : ' part';
+        return <span key={c.id} className={'lst-chip' + cls} style={{ '--c': c.color }} title={`${c.name}: ${mine.length ? `${mine.length} anúncio(s), ${ok} completo(s)` : 'sem anúncio'}`}>{initials(c.name)}{mine.length > 0 && <sup>{mine.length}</sup>}</span>;
       })}
-      <Icon name={open ? 'down' : 'right'} size={12} />
-    </button>
+    </span>
   );
 }
 function ListingsPanel({ i, call, colSpan, disabled }) {
   const { channels } = useApp();
-  const [vals, setVals] = useState({});
+  const [ch, setCh] = useState(channels[0]?.id || '');
+  const [val, setVal] = useState('');
   const list = i.listings || [];
-  const done = channels.filter((c) => list.some((l) => l.channel_id === c.id)).length;
-  const add = async (ch) => {
-    const v = (vals[ch] || '').trim();
-    if (!v) return;
-    if (await call(`/group-items/${i.id}`, 'PATCH', { action: 'add_listing', channel_id: ch, value: v })) setVals({ ...vals, [ch]: '' });
+  const add = async () => {
+    if (!val.trim() || !ch) return;
+    if (await call(`/group-items/${i.id}`, 'PATCH', { action: 'add_listing', channel_id: ch, value: val.trim() })) setVal('');
   };
+  const chanOf = (id) => channels.find((c) => c.id === id) || { name: '?', color: '#c4c4c4' };
+  const sorted = [...list].sort((a, b) => channels.findIndex((c) => c.id === a.channel_id) - channels.findIndex((c) => c.id === b.channel_id));
+  const complete = list.filter(listingDone).length;
   return (
     <tr className="lst-panel-row">
       <td colSpan={colSpan}>
         <div className="lst-panel">
-          <div className="lst-head"><b>Anúncios do SKU {i.sku || ''}</b><span className="muted small">{done}/{channels.length} canais com anúncio · cole o link ou o código do anúncio (ex.: MLB123…)</span>
-            {i.link && !list.some((l) => l.link === i.link) && <span className="small">Link antigo: <a href={i.link} target="_blank" rel="noreferrer" className="item-link">{shortLink(i.link)}</a></span>}
+          <div className="lst-head">
+            <b>Anúncios do SKU {i.sku || ''}</b>
+            <span className="muted small">{list.length} anúncio(s) · {complete} completo(s) · {channels.filter((c) => list.some((l) => l.channel_id === c.id)).length}/{channels.length} canais</span>
+            <ChannelChips list={list} channels={channels} />
+            {i.drive_link && <a className="small item-link drive" href={i.drive_link} target="_blank" rel="noreferrer">📁 Drive do SKU (fotos e vídeos)</a>}
           </div>
-          <div className="lst-grid">
-            {channels.map((c) => {
-              const mine = list.filter((l) => l.channel_id === c.id);
-              return (
-                <div key={c.id} className={'lst-ch' + (mine.length ? ' on' : '')} style={{ '--c': c.color }}>
-                  <div className="lst-ch-head"><span className="chan" style={{ background: c.color }}>{c.name}</span>
-                    <span className={'small ' + (mine.length ? 'ok-text' : 'muted')}>{mine.length ? `✓ ${mine.length} anúncio(s)` : 'sem anúncio'}</span></div>
-                  {mine.map((l) => (
-                    <div key={l.id} className="lst-item">
-                      {l.link ? <a href={l.link} target="_blank" rel="noreferrer" className="item-link" title={l.link}>{l.code || shortLink(l.link)}</a> : <span className="sku">{l.code}</span>}
-                      {l.conta && <small className="muted"> · {l.conta}</small>}
-                      {!disabled && <button className="icon-btn sm" title="Remover anúncio" onClick={() => confirm('Remover este anúncio?') && call(`/group-items/${i.id}`, 'PATCH', { action: 'remove_listing', listing_id: l.id })}><Icon name="x" size={12} /></button>}
-                    </div>
-                  ))}
-                  {!disabled && (
-                    <div className="lst-add">
-                      <input className="sm" placeholder="Link ou código" value={vals[c.id] || ''} onChange={(e) => setVals({ ...vals, [c.id]: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && add(c.id)} />
-                      <button className="btn xs" disabled={!(vals[c.id] || '').trim()} onClick={() => add(c.id)}><Icon name="plus" size={12} /></button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          {list.length > 0 && (
+            <table className="lst-table">
+              <thead><tr><th style={{ width: 130 }}>Canal</th><th>Anúncio</th><th style={{ width: 150 }}>Conta</th>
+                {CHECKS.map(([k, l]) => <th key={k} className="ck-col">{l}</th>)}<th style={{ width: 90 }}>Situação</th><th style={{ width: 34 }} /></tr></thead>
+              <tbody>
+                {sorted.map((l) => {
+                  const c = chanOf(l.channel_id); const ok = listingDone(l);
+                  return (
+                    <tr key={l.id} className={ok ? 'lst-ok' : ''}>
+                      <td><span className="chan" style={{ background: c.color }}>{c.name}</span></td>
+                      <td>{l.link ? <a href={l.link} target="_blank" rel="noreferrer" className="item-link" title={l.link}>{l.code || shortLink(l.link)}</a> : <span className="sku">{l.code}</span>}</td>
+                      <td className="muted small">{l.conta || '—'}</td>
+                      {CHECKS.map(([k, lb]) => {
+                        const v = l.checks?.[k];
+                        return (
+                          <td key={k} className="ck-col">
+                            <button className={'ck' + (v ? ' on' : '')} disabled={disabled} title={v ? `${lb}: feito por ${v.name} às ${hm(v.at)}` : `Marcar ${lb} neste anúncio`}
+                              onClick={() => call(`/group-items/${i.id}`, 'PATCH', { action: 'check_listing', listing_id: l.id, key: k, value: !v })}>{v ? '✓' : ''}</button>
+                          </td>
+                        );
+                      })}
+                      <td>{ok ? <span className="tag ok">Completo</span> : <span className="muted small">{CHECKS.filter(([k]) => l.checks?.[k]).length}/{CHECKS.length}</span>}</td>
+                      <td>{!disabled && <button className="icon-btn sm" title="Remover anúncio" onClick={() => confirm('Remover este anúncio e o checklist dele?') && call(`/group-items/${i.id}`, 'PATCH', { action: 'remove_listing', listing_id: l.id })}><Icon name="trash" size={13} /></button>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          {!disabled && (
+            <div className="lst-add-row">
+              <select className="sm" value={ch} onChange={(e) => setCh(Number(e.target.value))}>{channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+              <input className="sm grow" placeholder="Link ou código do anúncio (ex.: MLB123…)" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} />
+              <button className="btn primary sm" disabled={!val.trim()} onClick={add}><Icon name="plus" size={13} /> Adicionar anúncio</button>
+            </div>
+          )}
+          {!list.length && <p className="muted small" style={{ margin: '6px 0 0' }}>Nenhum anúncio ainda. Adicione um anúncio por canal; cada anúncio terá o seu checklist (fotos, vídeos, anúncio, ADS e afiliados).</p>}
         </div>
       </td>
     </tr>
   );
 }
 
+// placar por anúncio: checklist geral e por canal
+function ListingSummary({ g }) {
+  const { channels } = useApp();
+  const all = g.items.flatMap((i) => (i.listings || []).map((l) => ({ ...l, sku: i.sku })));
+  const skuNoListing = g.items.filter((i) => !(i.listings || []).length).length;
+  const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+  const rows = channels.map((c) => {
+    const l = all.filter((x) => x.channel_id === c.id);
+    return { c, total: l.length, skus: new Set(g.items.filter((i) => (i.listings || []).some((x) => x.channel_id === c.id)).map((i) => i.id)).size, by: CHECKS.map(([k]) => l.filter((x) => x.checks?.[k]).length), done: l.filter(listingDone).length };
+  });
+  return (
+    <div className="lst-summary">
+      <div className="check-summary">
+        <div><small>Anúncios</small><b>{all.length}</b><small className="muted">{all.filter(listingDone).length} completo(s){skuNoListing ? ` · ${skuNoListing} SKU(s) sem anúncio` : ''}</small></div>
+        {CHECKS.map(([k, l]) => {
+          const n = all.filter((x) => x.checks?.[k]).length;
+          return (
+            <div key={k} className={all.length && n === all.length ? 'full' : ''}>
+              <small>{l}</small><b>{n}/{all.length}</b>
+              <span className="mini-progress"><span style={{ width: `${pct(n, all.length)}%` }} /></span>
+            </div>
+          );
+        })}
+      </div>
+      <details className="chan-table" open={all.length > 0}>
+        <summary>Por canal</summary>
+        <table>
+          <thead><tr><th>Canal</th><th>Anúncios</th><th>SKUs com anúncio</th>{CHECKS.map(([k, l]) => <th key={k}>{l}</th>)}<th>Completos</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.c.id} className={r.total ? '' : 'muted'}>
+                <td><span className="chan" style={{ background: r.c.color }}>{r.c.name}</span></td>
+                <td><b>{r.total}</b></td>
+                <td>{r.skus}/{g.items.length}</td>
+                {r.by.map((n, k) => <td key={k} className={r.total && n === r.total ? 'ok-text' : ''}>{r.total ? `${n}/${r.total}` : '—'}</td>)}
+                <td>{r.total ? <b className={r.done === r.total ? 'ok-text' : ''}>{r.done}/{r.total}</b> : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
+    </div>
+  );
+}
+
 function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
+  const { channels } = useApp();
   const [edit, setEdit] = useState(false);
   const [open, setOpen] = useState(false);
-  const [f, setF] = useState({ sku: i.sku || '', link: i.link || '', drive_link: i.drive_link || '', description: i.description || '' });
+  const [f, setF] = useState({ sku: i.sku || '', drive_link: i.drive_link || '', description: i.description || '' });
   const mine = i.user_id === me.id;
   const [label, color] = ITEM_STATUS[i.status];
   const act = (action) => call(`/group-items/${i.id}`, 'PATCH', { action });
+  const list = i.listings || [];
+  const cols = 5 + (hasAbc ? 2 : 0) + CHECKS.length + 2;
   if (edit) {
     return (
       <tr className="editing">
         <td>{n}</td>
         <td><input className="sm" value={f.sku} onChange={(e) => setF({ ...f, sku: e.target.value })} placeholder="SKU" /></td>
         {hasAbc && <AbcCells i={i} />}
-        <td><input className="sm" value={f.link} onChange={(e) => setF({ ...f, link: e.target.value })} placeholder="Link antigo (opcional)" /></td>
+        <td><ChannelChips list={list} channels={channels} /></td>
         <td><input className="sm" value={f.drive_link} onChange={(e) => setF({ ...f, drive_link: e.target.value })} placeholder="Link do Drive" /></td>
         <td><input className="sm" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} placeholder="Descrição" /></td>
         <td colSpan={CHECKS.length + 2}>
@@ -345,21 +399,23 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
       </tr>
     );
   }
-  const cols = 4 + (hasAbc ? 2 : 0) + 1 + CHECKS.length + 2;
   return (<>
     <tr className={'gi-' + i.status + (mine && i.status === 'doing' ? ' gi-mine' : '') + (open ? ' gi-open' : '')}>
       <td className="muted">{n}</td>
-      <td><b className="sku">{i.sku || <span className="muted">—</span>}</b></td>
+      <td><button className="sku-btn" onClick={() => setOpen(!open)} title="Ver anúncios do SKU"><Icon name={open ? 'down' : 'right'} size={12} /><b className="sku">{i.sku || '—'}</b></button></td>
       {hasAbc && <AbcCells i={i} />}
-      <td><ListingChips i={i} open={open} onOpen={() => setOpen(!open)} /></td>
+      <td><button className={'lst-chips' + (open ? ' open' : '')} onClick={() => setOpen(!open)} title="Anúncios por canal">
+        <ChannelChips list={list} channels={channels} /><small className="muted lst-count">{list.length ? `${list.length} anúncio(s)` : '+ anúncio'}</small></button></td>
       <td>{i.drive_link ? <a href={i.drive_link} target="_blank" rel="noreferrer" className="item-link drive" title={i.drive_link}>📁 Drive</a> : <span className="muted">—</span>}</td>
       <td className="item-desc">{i.description || <span className="muted">—</span>}</td>
       {CHECKS.map(([k, l]) => {
-        const c = i.checks?.[k];
+        const nOk = list.filter((x) => x.checks?.[k]).length;
+        const full = list.length > 0 && nOk === list.length;
         return (
           <td key={k} className="ck-col">
-            <button className={'ck' + (c ? ' on' : '')} disabled={groupDone} onClick={() => call(`/group-items/${i.id}`, 'PATCH', { action: 'check', key: k, value: !c })}
-              title={c ? `${l}: feito por ${c.name} às ${hm(c.at)}` : `Marcar ${l} como feito`}>{c ? '✓' : ''}</button>
+            {list.length ? (
+              <button className={'ck-count' + (full ? ' full' : nOk ? ' part' : '')} onClick={() => setOpen(true)} title={`${l}: ${nOk} de ${list.length} anúncio(s)`}>{full ? '✓' : `${nOk}/${list.length}`}</button>
+            ) : <span className="muted">—</span>}
           </td>
         );
       })}
@@ -379,8 +435,8 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
           {!groupDone && i.status === 'doing' && !mine && !canManage && <small className="muted">com {i.user_name?.split(' ')[0]}</small>}
           {!groupDone && i.status === 'done' && (mine || canManage) && <button className="btn xs" onClick={() => act('reopen')}>Reabrir</button>}
           {(i.created_by === me.id || canManage) && (<>
-            <button className="icon-btn sm" title="Editar" onClick={() => setEdit(true)}><Icon name="edit" size={13} /></button>
-            <button className="icon-btn sm" title="Excluir" onClick={() => confirm('Excluir este item?') && call(`/group-items/${i.id}`, 'DELETE')}><Icon name="trash" size={13} /></button>
+            <button className="icon-btn sm" title="Editar SKU" onClick={() => setEdit(true)}><Icon name="edit" size={13} /></button>
+            <button className="icon-btn sm" title="Excluir SKU" onClick={() => confirm('Excluir este SKU e os anúncios dele?') && call(`/group-items/${i.id}`, 'DELETE')}><Icon name="trash" size={13} /></button>
           </>)}
         </span>
       </td>
@@ -436,8 +492,8 @@ function AddItems({ groupId }) {
       ) : (
         <div className="add-grid">
           <input value={f.sku} onChange={set('sku')} placeholder="SKU" onKeyDown={onKey} />
-          <input value={f.link} onChange={set('link')} placeholder="Link do anúncio" onKeyDown={onKey} />
-          <input value={f.drive_link} onChange={set('drive_link')} placeholder="Link do Drive (fotos e vídeos)" onKeyDown={onKey} />
+          <input value={f.link} onChange={set('link')} placeholder="1º anúncio (link) — opcional" onKeyDown={onKey} />
+          <input value={f.drive_link} onChange={set('drive_link')} placeholder="Link do Drive do SKU (fotos e vídeos)" onKeyDown={onKey} />
           <input value={f.description} onChange={set('description')} placeholder="Descrição" onKeyDown={onKey} />
           <button className="btn primary sm" disabled={busy || !any} onClick={addOne}><Icon name="plus" size={14} /> Adicionar</button>
         </div>

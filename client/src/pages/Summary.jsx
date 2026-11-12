@@ -75,7 +75,7 @@ function DayDone({ day, user, by, setBy, onReminder }) {
   // junta tudo numa lista de linhas com cliente e colaborador
   const rows = [
     ...data.tasks.map((t) => ({ type: 'task', key: 't' + t.id, at: t.completed_at, biz: t.business_id, uid: t.user_id, uname: t.user_name, t })),
-    ...data.checks.map((c) => ({ type: 'check', key: `c${c.item_id}-${c.user_id}`, at: c.at, biz: c.business_id, uid: c.user_id, uname: c.user_name, c })),
+    ...data.checks.map((c) => ({ type: 'check', key: `c${c.item_id}-${c.listing_id}-${c.user_id}`, at: c.at, biz: c.business_id, uid: c.user_id, uname: c.user_name, c })),
     ...data.notes.map((n) => ({ type: 'note', key: 'n' + n.id, at: n.created_at, biz: n.business_id, uid: n.user_id, uname: n.user_name, n })),
   ].sort((a, b) => new Date(a.at) - new Date(b.at));
   const bizOf = (id) => businesses.find((b) => b.id === id) || { id: 0, name: 'Sem cliente', color: '#c4c4c4' };
@@ -106,7 +106,7 @@ function DayDone({ day, user, by, setBy, onReminder }) {
           <button className={by === 'client' ? 'on' : ''} onClick={() => setBy('client')}>Por cliente</button>
           <button className={by === 'user' ? 'on' : ''} onClick={() => setBy('user')}>Por colaborador</button>
         </div>
-        <span className="muted small"><b>{count('task')}</b> tarefa(s) concluída(s) · <b>{count('check')}</b> SKU(s) com checklist · <b>{count('note')}</b> apontamento(s)</span>
+        <span className="muted small"><b>{count('task')}</b> tarefa(s) concluída(s) · <b>{count('check')}</b> anúncio(s) com checklist · <b>{count('note')}</b> apontamento(s)</span>
       </div>
       {!rows.length ? <Empty>Nada realizado {isToday ? 'ainda hoje' : 'neste dia'}{user ? ' por este colaborador' : ''}.</Empty> : (
         <div className="done-groups">
@@ -149,7 +149,9 @@ function DoneRow({ r, me, openTask, onReminder }) {
     return (
       <li className="done-row">
         <span className="done-ico sku">▦</span><span className="muted mono">{hm(c.at)}</span>
-        <span className="grow"><b className="sku">{c.sku || c.description || 'Item'}</b>{c.sku && c.description && <span className="muted"> · {c.description}</span>}
+        <span className="grow"><b className="sku">{c.sku || c.description || 'Item'}</b>
+          {c.channel_name && <span className="chan" style={{ background: c.channel_color, marginLeft: 6 }}>{c.channel_name}</span>}
+          {(c.code || c.link) && <span className="muted"> {c.link ? <a href={c.link} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>{c.code || 'anúncio'}</a> : c.code}</span>}
           {' '}— {c.keys.map((k) => CHECK_LABEL[k] || k).join(', ')}{c.item_done && <span className="tag ok" style={{ marginLeft: 6 }}>SKU completo</span>}
           <small className="muted"> · {c.group_title}</small></span>
       </li>

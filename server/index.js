@@ -1140,6 +1140,15 @@ function listingFrom(value) {
   return { code: t.slice(0, 120), link: null };
 }
 const newId = () => Math.random().toString(36).slice(2, 10);
+// salva os anúncios do SKU; SKU fica "Feito" quando todos os anúncios têm o checklist completo
+async function saveListings(db, i, list, userId) {
+  const all = list.length > 0 && list.every((l) => CHECK_KEYS.every((k) => l.checks?.[k]));
+  const status = all ? 'done' : i.status === 'done' ? 'todo' : i.status;
+  await db.query(`UPDATE group_items SET listings=$2, status=$3,
+      done_at=CASE WHEN $3='done' THEN COALESCE(done_at, now()) ELSE NULL END,
+      user_id=CASE WHEN $3='done' THEN COALESCE(user_id, $4) WHEN $3='todo' THEN NULL ELSE user_id END,
+      started_at=CASE WHEN $3='todo' THEN NULL ELSE started_at END WHERE id=$1`, [i.id, JSON.stringify(list), status, userId]);
+}
 // planilha (xlsx ou csv) com lista de SKU -> itens. Reconhece colunas pelo cabeçalho.
 function cellText(v) {
   if (v == null) return '';
@@ -1324,7 +1333,16 @@ app.patch('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) =
         if (k < 0) throw new HttpError(404, 'Anúncio não encontrado');
         list.splice(k, 1);
       }
-      await db.query('UPDATE group_items SET listings=$2 WHERE id=$1', [i.id, JSON.stringify(list)]);
+      await saveListings(db, i, list, u.id);
+    } else if (b.action === 'check_listing') {
+      if (!CHECK_KEYS.includes(b.key)) throw new HttpError(400, 'Item de checklist inválido');
+      if (g.status === 'done') throw new HttpError(400, 'Esta tarefa em grupo já foi concluída');
+      const list = Array.isArray(i.listings) ? i.listings.map((x) => ({ ...x })) : [];
+      const l = list.find((x) => x.id === b.listing_id);
+      if (!l) throw new HttpError(404, 'Anúncio não encontrado');
+      l.checks = { ...(l.checks || {}) };
+      if (b.value) l.checks[b.key] = { by: u.id, name: u.name, at: new Date().toISOString() }; else delete l.checks[b.key];
+      await saveListings(db, i, list, u.id);
     } else if (b.action === 'check') {
       if (!CHECK_KEYS.includes(b.key)) throw new HttpError(400, 'Item de checklist inválido');
       if (g.status === 'done') throw new HttpError(400, 'Esta tarefa em grupo já foi concluída');
@@ -1763,12 +1781,15 @@ app.get('/api/day-done', wrap(async (req, res) => {
       WHERE t.company_id=$1 AND t.status='done' AND (t.completed_at AT TIME ZONE $3)::date=$2 ${uf('t.assignee_id')}
       ORDER BY t.completed_at`, p),
     many(`SELECT i.id AS item_id, i.sku, i.description, g.id AS group_id, g.title AS group_title, g.business_id,
+        l->>'id' AS listing_id, l->>'code' AS code, l->>'link' AS link, (l->>'channel_id')::int AS channel_id, ch.name AS channel_name, ch.color AS channel_color,
         (c.value->>'by')::int AS user_id, u.name AS user_name, array_agg(c.key ORDER BY (c.value->>'at')) AS keys,
         max((c.value->>'at')::timestamptz) AS at, (i.status='done') AS item_done
-      FROM group_items i JOIN group_tasks g ON g.id=i.group_id CROSS JOIN LATERAL jsonb_each(i.checks) c
-      LEFT JOIN users u ON u.id=(c.value->>'by')::int
+      FROM group_items i JOIN group_tasks g ON g.id=i.group_id
+      CROSS JOIN LATERAL jsonb_array_elements(i.listings) l
+      CROSS JOIN LATERAL jsonb_each(COALESCE(l->'checks','{}'::jsonb)) c
+      LEFT JOIN users u ON u.id=(c.value->>'by')::int LEFT JOIN channels ch ON ch.id=(l->>'channel_id')::int
       WHERE g.company_id=$1 AND ((c.value->>'at')::timestamptz AT TIME ZONE $3)::date=$2 ${uf("(c.value->>'by')::int")}
-      GROUP BY i.id, g.id, c.value->>'by', u.name ORDER BY at`, p),
+      GROUP BY i.id, g.id, l->>'id', l->>'code', l->>'link', l->>'channel_id', ch.name, ch.color, c.value->>'by', u.name ORDER BY at`, p),
     many(`SELECT n.id, n.body, n.business_id, n.channel_id, ch.name AS channel_name, ch.color AS channel_color, n.user_id, u.name AS user_name, n.created_at
       FROM notes n LEFT JOIN users u ON u.id=n.user_id LEFT JOIN channels ch ON ch.id=n.channel_id
       WHERE n.company_id=$1 AND n.kind='note' AND (n.created_at AT TIME ZONE $3)::date=$2 ${uf('n.user_id')}
