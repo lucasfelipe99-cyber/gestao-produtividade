@@ -1372,6 +1372,19 @@ app.post('/api/admin/clear-tasks', adminOnly, wrap(async (req, res) => {
   res.json({ ok: true, ...result });
 }));
 
+// admin: excluir tarefas não realizadas (lista de ids, só status 'late')
+app.post('/api/admin/delete-not-done', adminOnly, wrap(async (req, res) => {
+  const ids = (req.body?.ids || []).map((x) => parseInt(x, 10)).filter(Boolean);
+  if (!ids.length) throw new HttpError(400, 'Nenhuma tarefa selecionada');
+  const r = await tx(async (db) => {
+    const del = await db.query(`DELETE FROM tasks WHERE company_id=$1 AND status='late' AND id = ANY($2::int[]) RETURNING id`, [req.user.company_id, ids]);
+    await logEvent(db, { companyId: req.user.company_id, userId: req.user.id, action: 'tasks_cleared', details: { not_done: del.rowCount } });
+    return del.rowCount;
+  });
+  changed(req);
+  res.json({ deleted: r });
+}));
+
 // ---------- rotina em lote ----------
 // Cria recorrências para cada combinação colaborador × canal × empresa × atividade
 app.post('/api/routines/bulk', adminOnly, wrap(async (req, res) => {

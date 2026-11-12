@@ -299,7 +299,7 @@ export function CalendarView({ tasks, month, onPickDay }) {
   );
 }
 
-export function TaskFilters({ filters, setFilters, extra }) {
+export function TaskFilters({ filters, setFilters, extra, hideStatus }) {
   const { isAdmin, activeUsers, categories, teams, businesses, channels } = useApp();
   const set = (k) => (e) => setFilters({ ...filters, [k]: e.target.value });
   return (
@@ -326,11 +326,11 @@ export function TaskFilters({ filters, setFilters, extra }) {
           <option value="none">Sem canal</option>
         </select>
       )}
-      <select value={filters.status || ''} onChange={set('status')}>
+      {!hideStatus && <select value={filters.status || ''} onChange={set('status')}>
         <option value="">Todos os status</option>
         {Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
         <option value="overdue">Não realizadas / vencidas</option>
-      </select>
+      </select>}
       <select value={filters.category || ''} onChange={set('category')}>
         <option value="">Todas as categorias</option>
         {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}

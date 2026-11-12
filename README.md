@@ -71,3 +71,4 @@ Build: `npm install && npm run build` · Start: `npm start` · Health check: `/h
   - Itens por **SKU** com link do anúncio, **link do Drive (fotos e vídeos)** e descrição; **subir planilha** (.xlsx/.csv com coluna SKU) ou colar linhas; **checklist por SKU**: Fotos, Vídeos, Anúncio, ADS e Afiliados (quem marcou e quando). Checklist completo = item feito.
   - **Gestão de SKU** (fixa): uma tarefa em grupo por cliente, aberta a toda a equipe, criada automaticamente para cada empresa cadastrada (não pode ser concluída nem excluída).
 - Cliente **Next10** adicionado (nov/2026).
+- **Não realizadas**: aba própria com as tarefas cujo dia/prazo passou sem conclusão (saem da aba Tarefas). Filtros por período, empresa, canal; admin pode excluir em lote.

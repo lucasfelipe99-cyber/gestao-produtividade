@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import { useData, addDays, weekStart, fmtDate, fmtDateLong, fmtMonth, monthStart, monthEnd, fmtDur, fmtMin } from '../lib.js';
 import { Icon, Segmented, Loading, Progress } from '../ui.jsx';
 import { useApp } from '../App.jsx';
@@ -27,7 +27,6 @@ export default function AllTasks() {
   const [creatingGroup, setCreatingGroup] = useState(false);
   const isGroup = type === 'group';
   const groupsOpen = useData('/groups?status=open');
-  const [showLate, setShowLate] = useState(false);
   const [showAllDone, setShowAllDone] = useState(false);
   const changeView = (v) => { setView(v); ls('tasksView', v); };
   const ws = weekStart(date);
@@ -37,7 +36,7 @@ export default function AllTasks() {
   const weekly = useData(`/tasks?${qs({ kind: 'weekly', week: ws, ...filters })}`);
   const oneoff = useData(`/tasks?${qs({ kind: 'oneoff', ...filters })}`);
   const cal = useData(isCal ? `/tasks?${qs({ ...(type !== 'all' && { kind: type }), from: monthStart(date), to: monthEnd(date), ...filters })}` : null);
-  const late = useData(`/tasks?${qs({ kind: 'daily', to: addDays(me.today, -1), ...filters, status: 'late' })}`);
+  const late = useData(`/tasks?${qs({ to: addDays(me.today, -1), status: 'late' })}`);
   const lateList = (late.data || []).filter((t) => t.due_date < me.today);
 
   // pontuais: em aberto + concluídas no dia escolhido (ou nos últimos 30 dias, se o filtro for "Pontuais")
@@ -46,7 +45,9 @@ export default function AllTasks() {
   const oneoffAll = (oneoff.data || []).filter((t) => t.status !== 'cancelled');
   const oneoffShown = oneoffAll.filter((t) => t.status !== 'done' || (type === 'oneoff' ? showAllDone || recent(t) : doneOn(t)));
 
-  const lists = { daily: daily.data || [], weekly: weekly.data || [], oneoff: oneoffShown };
+  // não realizadas ficam na aba própria ("Não realizadas"), fora desta lista
+  const notLate = (l) => (filters.status === 'late' ? l : l.filter((t) => t.status !== 'late'));
+  const lists = { daily: notLate(daily.data || []), weekly: notLate(weekly.data || []), oneoff: notLate(oneoffShown) };
   const loaded = daily.data && weekly.data && oneoff.data;
   const tasks = type === 'all' ? [...lists.daily, ...lists.weekly, ...lists.oneoff] : lists[type] || [];
   const openCount = (l) => l.filter((t) => !['done', 'cancelled'].includes(t.status)).length;
@@ -103,14 +104,11 @@ export default function AllTasks() {
         )} />
       </div>
 
-      {!isCal && ['all', 'daily'].includes(type) && lateList.length > 0 && (
-        <div className="late-banner">
-          <Icon name="alert" size={18} />
-          <span className="grow"><b>{lateList.length} tarefa(s) não realizada(s)</b> em dias anteriores</span>
-          <button className="btn sm" onClick={() => setShowLate(!showLate)}>{showLate ? 'Ocultar' : 'Ver não realizadas'}</button>
-        </div>
+      {!isCal && lateList.length > 0 && (
+        <p className="muted small" style={{ margin: '-4px 0 10px' }}>
+          {lateList.length} tarefa(s) não realizada(s) em dias anteriores estão na aba <Link to="/nao-realizadas">Não realizadas</Link>.
+        </p>
       )}
-      {showLate && !isCal && lateList.length > 0 && <div className="late-list"><TaskTable tasks={lateList} groupBy="assignee" showDate /></div>}
 
       {!isCal && loaded && (
         <div className="summary-strip">
@@ -121,7 +119,7 @@ export default function AllTasks() {
         </div>
       )}
 
-      {isCal ? (!cal.data ? <Loading /> : <CalendarView tasks={cal.data} month={date} onPickDay={(d) => { setDate(d); changeView('table'); }} />)
+      {isCal ? (!cal.data ? <Loading /> : <CalendarView tasks={notLate(cal.data)} month={date} onPickDay={(d) => { setDate(d); changeView('table'); }} />)
         : !loaded ? <Loading />
         : view === 'table' ? <TaskTable tasks={tasks} groupBy={group} showDate={type !== 'daily'} />
         : <Kanban tasks={tasks} />}
