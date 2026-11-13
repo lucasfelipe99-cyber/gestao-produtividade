@@ -426,3 +426,9 @@ CREATE TABLE IF NOT EXISTS client_board (
   updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v25_aba_acompanhamento') THEN
+    UPDATE users SET allowed_tabs = array_append(allowed_tabs, 'acompanhamento') WHERE allowed_tabs IS NOT NULL AND 'clientes' = ANY(allowed_tabs) AND NOT 'acompanhamento' = ANY(allowed_tabs);
+    INSERT INTO app_meta (key) VALUES ('v25_aba_acompanhamento');
+  END IF;
+END $$;

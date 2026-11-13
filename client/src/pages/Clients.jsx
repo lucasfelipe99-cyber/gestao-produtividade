@@ -18,18 +18,9 @@ const ago = (iso) => {
   return `há ${Math.round(m / 1440)} d`;
 };
 
-// Aba Clientes: quadro de acompanhamento (resumo de cada cliente) + mural de comentários
-export default function Clients() {
-  const [view, setView] = useState(() => { try { return localStorage.getItem('clientsView') || 'board'; } catch { return 'board'; } });
-  const choose = (v) => { setView(v); try { localStorage.setItem('clientsView', v); } catch { /* */ } };
-  const tabs = (
-    <div className="mini-seg big no-print">
-      <button className={view === 'board' ? 'on' : ''} onClick={() => choose('board')}>Quadro de acompanhamento</button>
-      <button className={view === 'wall' ? 'on' : ''} onClick={() => choose('wall')}>Mural de comentários</button>
-    </div>
-  );
-  return view === 'board' ? <ClientBoard tabs={tabs} /> : <ClientWall tabs={tabs} />;
-}
+// Aba Clientes: mural de comentários. O quadro de acompanhamento fica na aba própria (Acompanhamento).
+export default function Clients() { return <ClientWall tabs={null} />; }
+export function Acompanhamento() { return <ClientBoard tabs={null} />; }
 
 const PRIO = { alta: ['Prioridade alta', 'p-alta'], media: ['Prioridade média', 'p-media'], baixa: ['Prioridade baixa', 'p-baixa'] };
 function EditCell({ value, onSave, placeholder, strong }) {
@@ -65,7 +56,7 @@ function ClientBoard({ tabs }) {
     <div className="page client-board-page">
       <div className="page-head no-print">
         <div>
-          <h1>Clientes</h1>
+          <h1>Acompanhamento de clientes</h1>
           <p className="muted">Resumo de cada cliente: situação atual, principais pontos e próximo passo. Clique em qualquer campo para editar.</p>
         </div>
         <div className="row gap wrap">{tabs}</div>

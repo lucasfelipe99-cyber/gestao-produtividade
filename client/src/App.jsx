@@ -5,7 +5,7 @@ import { Icon, Avatar, Modal, Field } from './ui.jsx';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import AllTasks from './pages/AllTasks.jsx';
-import Clients from './pages/Clients.jsx';
+import Clients, { Acompanhamento } from './pages/Clients.jsx';
 import NotDone from './pages/NotDone.jsx';
 import Goals from './pages/Goals.jsx';
 import Reports from './pages/Reports.jsx';
@@ -57,6 +57,7 @@ function Shell({ me, onLogout }) {
     ['/resumo', 'note', 'Resumo', null, <Summary />],
     ['/tarefas', 'today', 'Tarefas', 'tarefas', <AllTasks />],
     ['/nao-realizadas', 'alert', 'Não realizadas', 'tarefas', <NotDone />],
+    ['/acompanhamento', 'target', 'Acompanhamento', 'acompanhamento', <Acompanhamento />],
     ['/clientes', 'chat', 'Clientes', 'clientes', <Clients />],
     ['/linha-do-tempo', 'timeline', 'Linha do tempo', 'linha-do-tempo', <Timeline />],
     ['/metas', 'target', 'Metas e atingimento', 'metas', <Goals />],

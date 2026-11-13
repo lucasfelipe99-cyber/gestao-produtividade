@@ -60,7 +60,7 @@ async function auth(req, _res, next) {
 }
 const adminOnly = (req, _res, next) => (isAdmin(req.user) ? next() : next(new HttpError(403, 'Apenas administradores')));
 // Abas do sistema que o administrador pode liberar/bloquear por colaborador
-export const TABS = ['dashboard', 'tarefas', 'clientes', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
+export const TABS = ['dashboard', 'tarefas', 'acompanhamento', 'clientes', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
 const canTab = (u, tab) => isAdmin(u) || !u.allowed_tabs || u.allowed_tabs.includes(tab);
 const requireTab = (tab) => (req, _res, next) => (canTab(req.user, tab) ? next() : next(new HttpError(403, 'Você não tem acesso a esta área')));
 
@@ -1586,7 +1586,7 @@ app.delete('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) 
 
 
 // ---------- quadro de acompanhamento de clientes ----------
-app.get('/api/client-board', requireTab('clientes'), wrap(async (req, res) => {
+app.get('/api/client-board', requireTab('acompanhamento'), wrap(async (req, res) => {
   const c = req.user.company_id;
   const rows = await many(`SELECT b.id AS business_id, b.name, b.color, s.situacao, s.pontos, s.proximo, s.prioridade, s.updated_at, u.name AS updated_by_name
     FROM businesses b LEFT JOIN client_status s ON s.business_id=b.id LEFT JOIN users u ON u.id=s.updated_by
@@ -1594,7 +1594,7 @@ app.get('/api/client-board', requireTab('clientes'), wrap(async (req, res) => {
   const board = await one(`SELECT cb.foco, cb.updated_at, u.name AS updated_by_name FROM client_board cb LEFT JOIN users u ON u.id=cb.updated_by WHERE cb.company_id=$1`, [c]);
   res.json({ rows, foco: board?.foco || '', foco_updated_at: board?.updated_at || null });
 }));
-app.put('/api/client-board/:businessId', requireTab('clientes'), wrap(async (req, res) => {
+app.put('/api/client-board/:businessId', requireTab('acompanhamento'), wrap(async (req, res) => {
   const u = req.user, b = req.body || {};
   const biz = await one('SELECT id FROM businesses WHERE id=$1 AND company_id=$2', [req.params.businessId, u.company_id]);
   if (!biz) throw new HttpError(404, 'Cliente não encontrado');
@@ -1609,7 +1609,7 @@ app.put('/api/client-board/:businessId', requireTab('clientes'), wrap(async (req
   broadcast(u.company_id, { type: 'client_board' });
   res.json({ ok: true });
 }));
-app.put('/api/client-board-foco', requireTab('clientes'), wrap(async (req, res) => {
+app.put('/api/client-board-foco', requireTab('acompanhamento'), wrap(async (req, res) => {
   const u = req.user;
   await q(`INSERT INTO client_board (company_id, foco, updated_by, updated_at) VALUES ($1,$2,$3,now())
     ON CONFLICT (company_id) DO UPDATE SET foco=EXCLUDED.foco, updated_by=EXCLUDED.updated_by, updated_at=now()`, [u.company_id, cleanText(req.body?.foco, 4000), u.id]);
