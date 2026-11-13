@@ -410,3 +410,19 @@ CREATE INDEX IF NOT EXISTS team_notices_company ON team_notices (company_id, cre
 -- v23: responsável por SKU (distribuição dos SKUs entre colaboradores)
 ALTER TABLE group_items ADD COLUMN IF NOT EXISTS assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS group_items_assignee ON group_items (assignee_id) WHERE assignee_id IS NOT NULL;
+
+-- v24: quadro de acompanhamento de clientes (situação, pontos, próximo passo, prioridade) + foco geral
+CREATE TABLE IF NOT EXISTS client_status (
+  business_id INTEGER PRIMARY KEY REFERENCES businesses(id) ON DELETE CASCADE,
+  company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  situacao TEXT, pontos TEXT, proximo TEXT,
+  prioridade TEXT CHECK (prioridade IN ('alta','media','baixa')),
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS client_board (
+  company_id INTEGER PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+  foco TEXT,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

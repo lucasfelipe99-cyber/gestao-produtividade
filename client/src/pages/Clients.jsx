@@ -18,8 +18,99 @@ const ago = (iso) => {
   return `há ${Math.round(m / 1440)} d`;
 };
 
-// Mural de clientes: comentários gerais e pontos das reuniões de time, por empresa
+// Aba Clientes: quadro de acompanhamento (resumo de cada cliente) + mural de comentários
 export default function Clients() {
+  const [view, setView] = useState(() => { try { return localStorage.getItem('clientsView') || 'board'; } catch { return 'board'; } });
+  const choose = (v) => { setView(v); try { localStorage.setItem('clientsView', v); } catch { /* */ } };
+  const tabs = (
+    <div className="mini-seg big no-print">
+      <button className={view === 'board' ? 'on' : ''} onClick={() => choose('board')}>Quadro de acompanhamento</button>
+      <button className={view === 'wall' ? 'on' : ''} onClick={() => choose('wall')}>Mural de comentários</button>
+    </div>
+  );
+  return view === 'board' ? <ClientBoard tabs={tabs} /> : <ClientWall tabs={tabs} />;
+}
+
+const PRIO = { alta: ['Prioridade alta', 'p-alta'], media: ['Prioridade média', 'p-media'], baixa: ['Prioridade baixa', 'p-baixa'] };
+function EditCell({ value, onSave, placeholder, strong }) {
+  const [editing, setEditing] = useState(false);
+  const [v, setV] = useState(value || '');
+  if (editing) {
+    return (
+      <textarea className="board-edit" autoFocus rows={3} value={v} placeholder={placeholder} onChange={(e) => setV(e.target.value)}
+        onBlur={async () => { setEditing(false); if ((v || '') !== (value || '')) await onSave(v); }}
+        onKeyDown={(e) => { if (e.key === 'Escape') { setV(value || ''); setEditing(false); } if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) e.currentTarget.blur(); }} />
+    );
+  }
+  return (
+    <div className={'board-cell' + (value ? '' : ' blank') + (strong ? ' strong' : '')} onClick={() => { setV(value || ''); setEditing(true); }} title="Clique para editar">
+      {value || <span className="muted">{placeholder}</span>}
+    </div>
+  );
+}
+function ClientBoard({ tabs }) {
+  const { data } = useData('/client-board');
+  const [hideEmpty, setHideEmpty] = useState(false);
+  if (!data) return <div className="page"><Loading /></div>;
+  const save = async (id, body) => { try { await api(`/client-board/${id}`, { method: 'PUT', body }); emitLocal(); } catch (e) { toast(e.message, 'error'); } };
+  const saveFoco = async (foco) => { try { await api('/client-board-foco', { method: 'PUT', body: { foco } }); emitLocal(); } catch (e) { toast(e.message, 'error'); } };
+  const rows = data.rows.filter((r) => !hideEmpty || r.situacao || r.pontos || r.proximo);
+  const last = [...data.rows.map((r) => r.updated_at), data.foco_updated_at].filter(Boolean).sort().pop();
+  const printPdf = () => {
+    const t = document.title; document.title = `Acompanhamento de Clientes ${last ? fmtDate(last.slice(0, 10)).replace(/\//g, '-') : ''}`;
+    document.body.classList.add('printing-board');
+    setTimeout(() => { window.print(); document.title = t; document.body.classList.remove('printing-board'); }, 50);
+  };
+  return (
+    <div className="page client-board-page">
+      <div className="page-head no-print">
+        <div>
+          <h1>Clientes</h1>
+          <p className="muted">Resumo de cada cliente: situação atual, principais pontos e próximo passo. Clique em qualquer campo para editar.</p>
+        </div>
+        <div className="row gap wrap">{tabs}</div>
+      </div>
+      <div className="board-sheet">
+        <div className="row gap" style={{ alignItems: 'flex-end' }}>
+          <div className="grow">
+            <h2 className="board-title">Acompanhamento de Clientes – Resumo</h2>
+            <p className="muted board-sub">Atualizado em {last ? new Date(last).toLocaleDateString('pt-BR') : '—'}</p>
+          </div>
+          <label className="check small no-print"><input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} /> esconder clientes sem resumo</label>
+          <button className="btn sm primary no-print" onClick={printPdf}><Icon name="download" size={14} /> Baixar PDF</button>
+        </div>
+        <table className="board-table">
+          <thead><tr><th style={{ width: '18%' }}>Cliente</th><th style={{ width: '27%' }}>Situação atual</th><th style={{ width: '28%' }}>Principais pontos</th><th>Próximo passo</th></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.business_id} className={r.situacao || r.pontos || r.proximo ? '' : 'row-blank'}>
+                <td>
+                  <b className="board-client"><i style={{ background: r.color }} />{r.name}</b>
+                  {r.updated_at && <small className="muted board-upd no-print">{new Date(r.updated_at).toLocaleDateString('pt-BR')}{r.updated_by_name ? ` · ${r.updated_by_name.split(' ')[0]}` : ''}</small>}
+                </td>
+                <td>
+                  <EditCell value={r.situacao} placeholder="Situação atual…" onSave={(v) => save(r.business_id, { situacao: v })} />
+                  <select className={'prio-select ' + (PRIO[r.prioridade]?.[1] || 'p-none')} value={r.prioridade || ''} onChange={(e) => save(r.business_id, { prioridade: e.target.value || null })}>
+                    <option value="">+ prioridade</option><option value="alta">Prioridade alta</option><option value="media">Prioridade média</option><option value="baixa">Prioridade baixa</option>
+                  </select>
+                </td>
+                <td><EditCell value={r.pontos} placeholder="Principais pontos…" onSave={(v) => save(r.business_id, { pontos: v })} /></td>
+                <td><EditCell value={r.proximo} placeholder="Próximo passo…" onSave={(v) => save(r.business_id, { proximo: v })} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="board-foco">
+          <b>Foco das próximas semanas:</b>
+          <EditCell value={data.foco} placeholder="Escreva o foco das próximas semanas…" onSave={saveFoco} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Mural de clientes: comentários gerais e pontos das reuniões de time, por empresa
+function ClientWall({ tabs }) {
   const { businesses } = useApp();
   const [sel, setSel] = useState(() => { try { return localStorage.getItem('clientSel') || 'all'; } catch { return 'all'; } });
   const [onlyMeetings, setOnlyMeetings] = useState(false);
@@ -39,6 +130,7 @@ export default function Clients() {
           <h1>Clientes</h1>
           <p className="muted">Comentários gerais e pontos das reuniões de time, por cliente. Toda a equipe vê e participa.</p>
         </div>
+        <div className="row gap wrap">{tabs}</div>
       </div>
       <div className="clients">
         <aside className="client-list">

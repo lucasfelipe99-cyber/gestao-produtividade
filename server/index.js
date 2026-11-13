@@ -1584,6 +1584,39 @@ app.delete('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) 
   res.json({ ok: true });
 }));
 
+
+// ---------- quadro de acompanhamento de clientes ----------
+app.get('/api/client-board', requireTab('clientes'), wrap(async (req, res) => {
+  const c = req.user.company_id;
+  const rows = await many(`SELECT b.id AS business_id, b.name, b.color, s.situacao, s.pontos, s.proximo, s.prioridade, s.updated_at, u.name AS updated_by_name
+    FROM businesses b LEFT JOIN client_status s ON s.business_id=b.id LEFT JOIN users u ON u.id=s.updated_by
+    WHERE b.company_id=$1 ORDER BY b.name`, [c]);
+  const board = await one(`SELECT cb.foco, cb.updated_at, u.name AS updated_by_name FROM client_board cb LEFT JOIN users u ON u.id=cb.updated_by WHERE cb.company_id=$1`, [c]);
+  res.json({ rows, foco: board?.foco || '', foco_updated_at: board?.updated_at || null });
+}));
+app.put('/api/client-board/:businessId', requireTab('clientes'), wrap(async (req, res) => {
+  const u = req.user, b = req.body || {};
+  const biz = await one('SELECT id FROM businesses WHERE id=$1 AND company_id=$2', [req.params.businessId, u.company_id]);
+  if (!biz) throw new HttpError(404, 'Cliente não encontrado');
+  const cur = (await one('SELECT * FROM client_status WHERE business_id=$1', [biz.id])) || {};
+  const val = (k, n = 2000) => (k in b ? cleanText(b[k], n) : cur[k] ?? null);
+  const prio = 'prioridade' in b ? (['alta', 'media', 'baixa'].includes(b.prioridade) ? b.prioridade : null) : cur.prioridade ?? null;
+  await q(`INSERT INTO client_status (business_id, company_id, situacao, pontos, proximo, prioridade, updated_by, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,now())
+    ON CONFLICT (business_id) DO UPDATE SET situacao=EXCLUDED.situacao, pontos=EXCLUDED.pontos, proximo=EXCLUDED.proximo,
+      prioridade=EXCLUDED.prioridade, updated_by=EXCLUDED.updated_by, updated_at=now()`,
+    [biz.id, u.company_id, val('situacao'), val('pontos'), val('proximo'), prio, u.id]);
+  broadcast(u.company_id, { type: 'client_board' });
+  res.json({ ok: true });
+}));
+app.put('/api/client-board-foco', requireTab('clientes'), wrap(async (req, res) => {
+  const u = req.user;
+  await q(`INSERT INTO client_board (company_id, foco, updated_by, updated_at) VALUES ($1,$2,$3,now())
+    ON CONFLICT (company_id) DO UPDATE SET foco=EXCLUDED.foco, updated_by=EXCLUDED.updated_by, updated_at=now()`, [u.company_id, cleanText(req.body?.foco, 4000), u.id]);
+  broadcast(u.company_id, { type: 'client_board' });
+  res.json({ ok: true });
+}));
+
 // ---------- mural de clientes ----------
 const POST_SELECT = `SELECT p.id, p.business_id, p.parent_id, p.author_id, u.name AS author_name, p.kind,
     to_char(p.meeting_date,'YYYY-MM-DD') AS meeting_date, p.body, p.pinned, p.created_at, p.updated_at
@@ -2240,6 +2273,39 @@ for (const day of ['2026-11-04', '2026-11-05', '2026-11-06']) {
     }
     await q('INSERT INTO app_meta (key) VALUES ($1) ON CONFLICT DO NOTHING', [key]);
   }
+}
+
+// uma vez: quadro de acompanhamento com o resumo de 11/11/2026 (cria os clientes que faltam)
+if (!(await one("SELECT 1 AS x FROM app_meta WHERE key='v24_quadro_clientes'"))) {
+  try {
+    const SEED = [
+      ['Click Piscinas', '#00a9b5', 'Estruturação financeira e revisão tributária', 'Fluxo de caixa, DRE e ponto de equilíbrio prontos; inconsistências em custos e impostos', 'Padronizar custos e validar impostos com a contabilidade', null],
+      ['KLM', '#784bd1', 'Dashboard ativo, TACOS elevado na Shopee', 'Alto gasto com ADS pesando no faturamento', 'Reunião sobre TACOS (próx. semana); afiliados e ofertas', null],
+      ['INOVA', '#9d50dd', 'Prejuízo significativo, reestruturação em andamento', 'Produtos deficitários; pesquisa de preços da concorrência feita', 'Concluir revisão de preços e reforçar controle de caixa', null],
+      ['Popper', null, 'Retomada após 4 dias de bloqueio', 'Falta de estoque, principalmente gás hélio; novos anúncios, kits e ADS', 'Normalizar estoque e acompanhar ADS e kits', null],
+      ['Next10', null, 'Reestruturada, indicadores em evolução', 'Melhora em conversão, vendas, TACOS e ROAS', 'Reunião estratégica 12/11 às 11h para definir crescimento', null],
+      ['Unicci', null, 'Preços acima do mercado', 'Anúncios e conteúdo orgânico a reformular', 'Revisar preços e montar cronograma de execução', 'baixa'],
+      ['Gigante das Baterias', null, 'Bloqueios de contas e reconstrução de anúncios', 'Shopee bloqueada na campanha 11/11; ML Conta 2 voltou após 4 dias; Magalu iniciando', 'Regularizar contas e concluir anúncios no ML', null],
+      ['GLEYSON', '#ff7575', 'TACOS acima de 10% e margens negativas', 'Dashboards apresentados; diagnóstico inicial feito', 'Aprofundar análise de produtos negativos (próx. semana)', null],
+    ];
+    const FOCO = 'Transformar os diagnósticos em ações mensuráveis — primeiro corrigir o que afeta diretamente o resultado (custos, impostos, preços, contas bloqueadas), depois expandir as operações que já estão prontas para crescer.';
+    const key = (t) => String(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+    const companies = await many("SELECT DISTINCT company_id FROM businesses WHERE name IN ('Popper','Unicci','Gigante das Baterias','Next10')");
+    for (const { company_id: cid } of companies) {
+      const bizs = await many('SELECT id, name FROM businesses WHERE company_id=$1', [cid]);
+      for (const [name, color, sit, pts, prox, prio] of SEED) {
+        const k = key(name);
+        let b = bizs.find((x) => { const n = key(x.name); return n === k || n.startsWith(k) || k.startsWith(n) || (k === 'gigantedasbaterias' && n.startsWith('gigante')); });
+        if (!b) b = await one('INSERT INTO businesses (company_id, name, color) VALUES ($1,$2,$3) RETURNING id, name', [cid, name, color || '#579bfc']);
+        await q(`INSERT INTO client_status (business_id, company_id, situacao, pontos, proximo, prioridade, updated_at) VALUES ($1,$2,$3,$4,$5,$6, TIMESTAMPTZ '2026-11-11 12:00-03')
+          ON CONFLICT (business_id) DO NOTHING`, [b.id, cid, sit, pts, prox, prio]);
+      }
+      await q(`INSERT INTO client_board (company_id, foco, updated_at) VALUES ($1,$2, TIMESTAMPTZ '2026-11-11 12:00-03') ON CONFLICT (company_id) DO NOTHING`, [cid, FOCO]);
+      await ensureFixedSkuGroups(cid);
+    }
+    await q("INSERT INTO app_meta (key) VALUES ('v24_quadro_clientes')");
+    console.log('Quadro de clientes criado para', companies.length, 'empresa(s)');
+  } catch (e) { console.error('Quadro de clientes', e.message); }
 }
 for (const c of await many('SELECT id FROM companies')) {
   try { await ensureFixedSkuGroups(c.id); } catch (e) { console.error('Gestão de SKU', e.message); }
