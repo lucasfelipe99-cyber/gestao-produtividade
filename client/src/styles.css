@@ -706,3 +706,10 @@ table.lst-table tr.lst-pending td { background: #fff5f5; }
   body.printing-summary a { color: #000; text-decoration: none; }
   body.printing-summary .row.gap.wrap > span.muted.small { display: block; }
 }
+
+.done-group h3 .btn.xs { font-size: 11.5px; font-weight: 500; }
+@media print {
+  body.printing-one .day-summary, body.printing-one .done-group:not(.print-target), body.printing-one .row.gap.wrap { display: none !important; }
+  body.printing-one .card-print-head { display: block !important; font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+  body.printing-summary:not(.printing-one) .card-print-head { display: none !important; }
+}

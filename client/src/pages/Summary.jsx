@@ -164,6 +164,14 @@ function DayDone({ day, from, to, user, by, setBy, onReminder }) {
   const canWrite = isToday && (!user || Number(user) === me.id);
   const label = isWeek ? `semana de ${fmtDate(from)} a ${fmtDate(to)}` : fmtDate(from);
   const userName = user ? (activeUsers || []).find((u) => u.id === Number(user))?.name : null;
+  const printOne = (name, k) => {
+    const t = document.title;
+    document.title = `Resumo ${name} ${label.replace(/\//g, '-')}`;
+    const el = document.querySelector(`[data-print-k="${k}"]`);
+    el?.classList.add('print-target');
+    document.body.classList.add('printing-summary', 'printing-one');
+    setTimeout(() => { window.print(); document.title = t; document.body.classList.remove('printing-summary', 'printing-one'); el?.classList.remove('print-target'); }, 50);
+  };
   const printPdf = () => {
     const t = document.title;
     document.title = `Resumo ${label.replace(/\//g, '-')}${userName ? ' - ' + userName : ''}`;
@@ -215,8 +223,10 @@ function DayDone({ day, from, to, user, by, setBy, onReminder }) {
         <SummaryCard label={label} userName={userName} groups={groups} rows={rows} by={by} bizName={(id) => bizOf(id).name} onPdf={printPdf} />
         <div className="done-groups">
           {groups.map((g) => (
-            <div key={g.k} className="done-group" style={{ '--c': g.color || '#0073ea' }}>
-              <h3>{g.color ? <i /> : <Avatar name={g.name} id={g.k} size={24} />}{g.name}<small>{g.subs.reduce((a, s) => a + s.rows.length, 0)} registro(s)</small></h3>
+            <div key={g.k} className="done-group" data-print-k={g.k} style={{ '--c': g.color || '#0073ea' }}>
+              <div className="print-only card-print-head">Resumo de atividades — {label}{userName ? ` · ${userName}` : ''}</div>
+              <h3>{g.color ? <i /> : <Avatar name={g.name} id={g.k} size={24} />}{g.name}<small>{g.subs.reduce((a, s) => a + s.rows.length, 0)} registro(s)</small>
+                <span className="grow" /><button className="btn xs no-print" title={`Baixar PDF só de ${g.name}`} onClick={() => printOne(g.name, g.k)}><Icon name="download" size={12} /> PDF {by === 'client' ? 'do cliente' : 'do colaborador'}</button></h3>
               <ul className="group-summary">
                 {summarizeRows(g.subs.flatMap((x) => x.rows), { withPeople: by === 'client', withClients: by === 'user', bizName: (id) => bizOf(id).name }).map((l, k) => <li key={k}>{l}</li>)}
               </ul>
