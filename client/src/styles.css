@@ -750,3 +750,10 @@ table.lst-table tr.lst-pending td { background: #fff5f5; }
 }
 @media print { body.printing-board tr.row-blank, body.printing-board .board-cell.blank { display: none !important; } }
 @media print { body.printing-board .board-table { font-size: 11.5px; } body.printing-board .board-table td, body.printing-board .board-table th { padding: 6px 9px; } body.printing-board .board-title { font-size: 20px; } body.printing-board .board-foco { font-size: 11.5px; } body.printing-board .board-upd { display: none; } }
+
+.board-list { margin: 0; padding-left: 16px; line-height: 1.45; }
+.board-list li { margin-bottom: 3px; }
+.board-none { font-style: italic; font-size: 13px; }
+.board-table td .prio-select { display: block; margin-top: 6px; }
+.board-help { margin: 12px 0 0; line-height: 1.5; }
+@media print { body.printing-board .board-none { color: #999; } }

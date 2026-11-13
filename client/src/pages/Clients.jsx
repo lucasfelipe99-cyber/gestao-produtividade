@@ -39,16 +39,20 @@ function EditCell({ value, onSave, placeholder, strong }) {
     </div>
   );
 }
+function BoardList({ items, empty }) {
+  if (!items?.length) return <span className="muted board-none">{empty}</span>;
+  return <ul className="board-list">{items.map((t, k) => <li key={k}>{t}</li>)}</ul>;
+}
 function ClientBoard({ tabs }) {
   const { data } = useData('/client-board');
-  const [hideEmpty, setHideEmpty] = useState(false);
+  const [hideEmpty, setHideEmpty] = useState(true);
   if (!data) return <div className="page"><Loading /></div>;
   const save = async (id, body) => { try { await api(`/client-board/${id}`, { method: 'PUT', body }); emitLocal(); } catch (e) { toast(e.message, 'error'); } };
   const saveFoco = async (foco) => { try { await api('/client-board-foco', { method: 'PUT', body: { foco } }); emitLocal(); } catch (e) { toast(e.message, 'error'); } };
-  const rows = data.rows.filter((r) => !hideEmpty || r.situacao || r.pontos || r.proximo);
-  const last = [...data.rows.map((r) => r.updated_at), data.foco_updated_at].filter(Boolean).sort().pop();
+  const rows = data.rows.filter((r) => !hideEmpty || !r.empty);
+  const gen = new Date(data.generated_at);
   const printPdf = () => {
-    const t = document.title; document.title = `Acompanhamento de Clientes ${last ? fmtDate(last.slice(0, 10)).replace(/\//g, '-') : ''}`;
+    const t = document.title; document.title = `Acompanhamento de Clientes ${gen.toLocaleDateString('pt-BR').replace(/\//g, '-')}`;
     document.body.classList.add('printing-board');
     setTimeout(() => { window.print(); document.title = t; document.body.classList.remove('printing-board'); }, 50);
   };
@@ -57,7 +61,7 @@ function ClientBoard({ tabs }) {
       <div className="page-head no-print">
         <div>
           <h1>Acompanhamento de clientes</h1>
-          <p className="muted">Resumo de cada cliente: situação atual, principais pontos e próximo passo. Clique em qualquer campo para editar.</p>
+          <p className="muted">Montado automaticamente com os dados do sistema: tarefas, SKUs, curva ABC, mural de comentários e lembretes de cada cliente. Atualiza sozinho.</p>
         </div>
         <div className="row gap wrap">{tabs}</div>
       </div>
@@ -65,28 +69,27 @@ function ClientBoard({ tabs }) {
         <div className="row gap" style={{ alignItems: 'flex-end' }}>
           <div className="grow">
             <h2 className="board-title">Acompanhamento de Clientes – Resumo</h2>
-            <p className="muted board-sub">Atualizado em {last ? new Date(last).toLocaleDateString('pt-BR') : '—'}</p>
+            <p className="muted board-sub">Atualizado em {gen.toLocaleDateString('pt-BR')} às {gen.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+              {data.last_activity && ` · última atividade ${new Date(data.last_activity).toLocaleDateString('pt-BR')}`}</p>
           </div>
-          <label className="check small no-print"><input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} /> esconder clientes sem resumo</label>
+          <label className="check small no-print"><input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} /> esconder clientes sem atividade</label>
           <button className="btn sm primary no-print" onClick={printPdf}><Icon name="download" size={14} /> Baixar PDF</button>
         </div>
         <table className="board-table">
-          <thead><tr><th style={{ width: '18%' }}>Cliente</th><th style={{ width: '27%' }}>Situação atual</th><th style={{ width: '28%' }}>Principais pontos</th><th>Próximo passo</th></tr></thead>
+          <thead><tr><th style={{ width: '16%' }}>Cliente</th><th style={{ width: '30%' }}>Situação atual</th><th style={{ width: '29%' }}>Principais pontos</th><th>Próximo passo</th></tr></thead>
           <tbody>
+            {!rows.length && <tr><td colSpan={4} className="muted">Nenhum cliente com atividade ainda.</td></tr>}
             {rows.map((r) => (
-              <tr key={r.business_id} className={r.situacao || r.pontos || r.proximo ? '' : 'row-blank'}>
+              <tr key={r.business_id}>
                 <td>
                   <b className="board-client"><i style={{ background: r.color }} />{r.name}</b>
-                  {r.updated_at && <small className="muted board-upd no-print">{new Date(r.updated_at).toLocaleDateString('pt-BR')}{r.updated_by_name ? ` · ${r.updated_by_name.split(' ')[0]}` : ''}</small>}
-                </td>
-                <td>
-                  <EditCell value={r.situacao} placeholder="Situação atual…" onSave={(v) => save(r.business_id, { situacao: v })} />
                   <select className={'prio-select ' + (PRIO[r.prioridade]?.[1] || 'p-none')} value={r.prioridade || ''} onChange={(e) => save(r.business_id, { prioridade: e.target.value || null })}>
                     <option value="">+ prioridade</option><option value="alta">Prioridade alta</option><option value="media">Prioridade média</option><option value="baixa">Prioridade baixa</option>
                   </select>
                 </td>
-                <td><EditCell value={r.pontos} placeholder="Principais pontos…" onSave={(v) => save(r.business_id, { pontos: v })} /></td>
-                <td><EditCell value={r.proximo} placeholder="Próximo passo…" onSave={(v) => save(r.business_id, { proximo: v })} /></td>
+                <td><BoardList items={r.situacao} empty="Sem atividade registrada" /></td>
+                <td><BoardList items={r.pontos} empty="Sem comentários ou pendências — registre no mural (aba Clientes)" /></td>
+                <td><BoardList items={r.proximo} empty="Sem tarefas ou lembretes futuros cadastrados" /></td>
               </tr>
             ))}
           </tbody>
@@ -95,6 +98,11 @@ function ClientBoard({ tabs }) {
           <b>Foco das próximas semanas:</b>
           <EditCell value={data.foco} placeholder="Escreva o foco das próximas semanas…" onSave={saveFoco} />
         </div>
+        <p className="muted small no-print board-help">
+          De onde vêm os dados: <b>Situação</b> = tarefas concluídas nos últimos 7 dias, tarefas em aberto e não realizadas, andamento da Gestão de SKU e faturamento da curva ABC ·
+          <b> Principais pontos</b> = última reunião/comentário do cliente na aba Clientes (o fixado vem primeiro), pendências e o que foi feito ·
+          <b> Próximo passo</b> = próximas tarefas com prazo (semanais, pontuais e enviadas) e lembretes do cliente.
+        </p>
       </div>
     </div>
   );

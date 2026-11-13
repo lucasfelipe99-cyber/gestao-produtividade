@@ -1586,13 +1586,78 @@ app.delete('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) 
 
 
 // ---------- quadro de acompanhamento de clientes ----------
+// quadro montado com os dados do sistema (tarefas, SKUs, curva ABC, mural, lembretes) — atualiza sozinho
 app.get('/api/client-board', requireTab('acompanhamento'), wrap(async (req, res) => {
-  const c = req.user.company_id;
-  const rows = await many(`SELECT b.id AS business_id, b.name, b.color, s.situacao, s.pontos, s.proximo, s.prioridade, s.updated_at, u.name AS updated_by_name
-    FROM businesses b LEFT JOIN client_status s ON s.business_id=b.id LEFT JOIN users u ON u.id=s.updated_by
-    WHERE b.company_id=$1 ORDER BY b.name`, [c]);
-  const board = await one(`SELECT cb.foco, cb.updated_at, u.name AS updated_by_name FROM client_board cb LEFT JOIN users u ON u.id=cb.updated_by WHERE cb.company_id=$1`, [c]);
-  res.json({ rows, foco: board?.foco || '', foco_updated_at: board?.updated_at || null });
+  const c = req.user.company_id, tz = req.user.timezone;
+  const today = todayIn(tz), from = addDays(today, -6);
+  const bizs = await many(`SELECT b.id AS business_id, b.name, b.color, s.prioridade, s.updated_at AS prio_at
+    FROM businesses b LEFT JOIN client_status s ON s.business_id=b.id WHERE b.company_id=$1 ORDER BY b.name`, [c]);
+  const tk = await many(`SELECT t.business_id,
+      count(*) FILTER (WHERE t.status='done' AND (t.completed_at AT TIME ZONE $2)::date BETWEEN $3 AND $4)::int AS done7,
+      count(*) FILTER (WHERE t.status IN ('not_started','in_progress','paused') AND t.due_date BETWEEN $4 AND $4::date + 7)::int AS open,
+      count(*) FILTER (WHERE t.status='late')::int AS late,
+      max(t.completed_at) AS last_done,
+      (array_agg(t.title ORDER BY t.completed_at DESC) FILTER (WHERE t.status='done' AND (t.completed_at AT TIME ZONE $2)::date BETWEEN $3 AND $4))[1:3] AS done_titles
+    FROM tasks t WHERE t.company_id=$1 AND t.business_id IS NOT NULL GROUP BY t.business_id`, [c, tz, from, today]);
+  const next = await many(`SELECT * FROM (SELECT t.business_id, t.title, to_char(t.due_date,'YYYY-MM-DD') AS due, u.name AS who, t.kind,
+      row_number() OVER (PARTITION BY t.business_id ORDER BY t.due_date, t.id) AS rn
+    FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id
+    WHERE t.company_id=$1 AND t.business_id IS NOT NULL AND t.status IN ('not_started','in_progress','paused') AND t.due_date >= $2
+      AND t.kind <> 'daily') x WHERE rn <= 3`, [c, today]);
+  const sku = await many(`SELECT g.business_id, count(i.id)::int AS skus,
+      count(i.id) FILTER (WHERE i.checks ? 'fotos' AND i.checks ? 'videos')::int AS base_ok,
+      count(i.id) FILTER (WHERE i.status='done')::int AS sku_done,
+      sum(jsonb_array_length(i.listings))::int AS ads,
+      sum((SELECT count(*) FROM jsonb_array_elements(i.listings) l WHERE COALESCE(l->>'link', l->>'code') IS NULL))::int AS ads_nolink,
+      count(i.id) FILTER (WHERE i.status<>'done' AND i.assignee_id IS NULL)::int AS unassigned,
+      sum(i.faturamento)::float AS fat, max(g.abc_period) AS abc_period,
+      count(i.id) FILTER (WHERE i.curva='A')::int AS curva_a
+    FROM group_tasks g JOIN group_items i ON i.group_id=g.id WHERE g.company_id=$1 AND g.status='open' GROUP BY g.business_id`, [c]);
+  const ckDone = await many(`SELECT i_g.business_id, count(*)::int AS n FROM (
+      SELECT g.business_id, (l->'checks') AS ch FROM group_tasks g JOIN group_items i ON i.group_id=g.id CROSS JOIN LATERAL jsonb_array_elements(i.listings) l
+      WHERE g.company_id=$1) i_g WHERE (SELECT bool_and(i_g.ch ? k) FROM unnest(ARRAY['fotos','videos','anuncio','ads','afiliados']) k) GROUP BY i_g.business_id`, [c]);
+  const posts = await many(`SELECT DISTINCT ON (p.business_id) p.business_id, p.kind, p.body, to_char(p.meeting_date,'YYYY-MM-DD') AS meeting_date, p.created_at, u.name AS author
+    FROM client_posts p LEFT JOIN users u ON u.id=p.author_id WHERE p.company_id=$1 AND p.parent_id IS NULL AND p.business_id IS NOT NULL
+    ORDER BY p.business_id, p.pinned DESC, COALESCE(p.meeting_date, p.created_at::date) DESC, p.created_at DESC`, [c]);
+  const rem = await many(`SELECT * FROM (SELECT n.business_id, n.body, to_char(n.remind_date,'YYYY-MM-DD') AS d, row_number() OVER (PARTITION BY n.business_id ORDER BY n.remind_date) AS rn
+    FROM notes n WHERE n.company_id=$1 AND n.kind='reminder' AND n.business_id IS NOT NULL AND n.remind_date >= $2) x WHERE rn <= 2`, [c, today]);
+  const br = (d) => d && `${d.slice(8, 10)}/${d.slice(5, 7)}`;
+  const brl = (v) => `R$ ${Math.round(v || 0).toLocaleString('pt-BR')}`;
+  const firstLines = (t, n = 3) => String(t || '').split('\n').map((x) => x.replace(/^[-•*\s]+/, '').trim()).filter(Boolean).slice(0, n);
+  let lastAt = null;
+  const rows = bizs.map((b) => {
+    const t = tk.find((x) => x.business_id === b.business_id) || {};
+    const k = sku.find((x) => x.business_id === b.business_id);
+    const p = posts.find((x) => x.business_id === b.business_id);
+    const nx = next.filter((x) => x.business_id === b.business_id);
+    const rm = rem.filter((x) => x.business_id === b.business_id);
+    const adsOk = ckDone.find((x) => x.business_id === b.business_id)?.n || 0;
+    const situacao = [];
+    situacao.push(`${t.done7 || 0} tarefa(s) concluída(s) nos últimos 7 dias${t.open ? ` · ${t.open} em aberto para a próxima semana` : ''}${t.late ? ` · ${t.late} não realizada(s)` : ''}`);
+    if (k && k.skus) {
+      situacao.push(`SKUs: ${k.skus} na gestão · base pronta ${k.base_ok}/${k.skus}${k.ads ? ` · anúncios completos ${adsOk}/${k.ads}` : ''}${k.sku_done ? ` · ${k.sku_done} SKU(s) concluído(s)` : ''}`);
+      if (k.fat) situacao.push(`Faturamento (curva ABC${k.abc_period ? ' ' + k.abc_period : ''}): ${brl(k.fat)} · ${k.curva_a} SKU(s) curva A`);
+    }
+    const pontos = [];
+    if (p) {
+      const head = p.kind === 'meeting' ? `Reunião ${br(p.meeting_date)}` : `Comentário ${br(new Date(p.created_at).toISOString().slice(0, 10))}${p.author ? ` (${p.author.split(' ')[0]})` : ''}`;
+      pontos.push(`${head}: ${firstLines(p.body).join('; ')}`);
+    }
+    if (t.late) pontos.push(`${t.late} tarefa(s) não realizada(s)`);
+    if (k?.ads_nolink) pontos.push(`${k.ads_nolink} anúncio(s) sem link`);
+    if (k?.unassigned) pontos.push(`${k.unassigned} SKU(s) sem responsável`);
+    if (t.done_titles?.length) pontos.push(`Feito recentemente: ${t.done_titles.join(', ')}`);
+    const proximo = [
+      ...nx.map((x) => `${x.title} — até ${br(x.due)}${x.who ? ` (${x.who.split(' ')[0]})` : ''}`),
+      ...rm.map((x) => `Lembrete ${br(x.d)}: ${firstLines(x.body, 1)[0] || ''}`),
+    ];
+    const last = [t.last_done, p?.created_at, b.prio_at].filter(Boolean).map((d) => new Date(d)).sort((x, y) => y - x)[0] || null;
+    if (last && (!lastAt || last > lastAt)) lastAt = last;
+    const empty = !t.done7 && !t.open && !t.late && !k && !p && !nx.length && !rm.length;
+    return { business_id: b.business_id, name: b.name, color: b.color, prioridade: b.prioridade, situacao, pontos, proximo, last_activity: last, empty };
+  });
+  const board = await one(`SELECT cb.foco, cb.updated_at FROM client_board cb WHERE cb.company_id=$1`, [c]);
+  res.json({ rows, foco: board?.foco || '', foco_updated_at: board?.updated_at || null, generated_at: new Date(), last_activity: lastAt });
 }));
 app.put('/api/client-board/:businessId', requireTab('acompanhamento'), wrap(async (req, res) => {
   const u = req.user, b = req.body || {};
@@ -2275,37 +2340,23 @@ for (const day of ['2026-11-04', '2026-11-05', '2026-11-06']) {
   }
 }
 
-// uma vez: quadro de acompanhamento com o resumo de 11/11/2026 (cria os clientes que faltam)
-if (!(await one("SELECT 1 AS x FROM app_meta WHERE key='v24_quadro_clientes'"))) {
+// uma vez (13/11): remove os clientes que o quadro criou e os textos manuais (o quadro agora vem dos dados do sistema)
+if (!(await one("SELECT 1 AS x FROM app_meta WHERE key='v26_quadro_dados'"))) {
   try {
-    const SEED = [
-      ['Click Piscinas', '#00a9b5', 'Estruturação financeira e revisão tributária', 'Fluxo de caixa, DRE e ponto de equilíbrio prontos; inconsistências em custos e impostos', 'Padronizar custos e validar impostos com a contabilidade', null],
-      ['KLM', '#784bd1', 'Dashboard ativo, TACOS elevado na Shopee', 'Alto gasto com ADS pesando no faturamento', 'Reunião sobre TACOS (próx. semana); afiliados e ofertas', null],
-      ['INOVA', '#9d50dd', 'Prejuízo significativo, reestruturação em andamento', 'Produtos deficitários; pesquisa de preços da concorrência feita', 'Concluir revisão de preços e reforçar controle de caixa', null],
-      ['Popper', null, 'Retomada após 4 dias de bloqueio', 'Falta de estoque, principalmente gás hélio; novos anúncios, kits e ADS', 'Normalizar estoque e acompanhar ADS e kits', null],
-      ['Next10', null, 'Reestruturada, indicadores em evolução', 'Melhora em conversão, vendas, TACOS e ROAS', 'Reunião estratégica 12/11 às 11h para definir crescimento', null],
-      ['Unicci', null, 'Preços acima do mercado', 'Anúncios e conteúdo orgânico a reformular', 'Revisar preços e montar cronograma de execução', 'baixa'],
-      ['Gigante das Baterias', null, 'Bloqueios de contas e reconstrução de anúncios', 'Shopee bloqueada na campanha 11/11; ML Conta 2 voltou após 4 dias; Magalu iniciando', 'Regularizar contas e concluir anúncios no ML', null],
-      ['GLEYSON', '#ff7575', 'TACOS acima de 10% e margens negativas', 'Dashboards apresentados; diagnóstico inicial feito', 'Aprofundar análise de produtos negativos (próx. semana)', null],
-    ];
-    const FOCO = 'Transformar os diagnósticos em ações mensuráveis — primeiro corrigir o que afeta diretamente o resultado (custos, impostos, preços, contas bloqueadas), depois expandir as operações que já estão prontas para crescer.';
-    const key = (t) => String(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
-    const companies = await many("SELECT DISTINCT company_id FROM businesses WHERE name IN ('Popper','Unicci','Gigante das Baterias','Next10')");
-    for (const { company_id: cid } of companies) {
-      const bizs = await many('SELECT id, name FROM businesses WHERE company_id=$1', [cid]);
-      for (const [name, color, sit, pts, prox, prio] of SEED) {
-        const k = key(name);
-        let b = bizs.find((x) => { const n = key(x.name); return n === k || n.startsWith(k) || k.startsWith(n) || (k === 'gigantedasbaterias' && n.startsWith('gigante')); });
-        if (!b) b = await one('INSERT INTO businesses (company_id, name, color) VALUES ($1,$2,$3) RETURNING id, name', [cid, name, color || '#579bfc']);
-        await q(`INSERT INTO client_status (business_id, company_id, situacao, pontos, proximo, prioridade, updated_at) VALUES ($1,$2,$3,$4,$5,$6, TIMESTAMPTZ '2026-11-11 12:00-03')
-          ON CONFLICT (business_id) DO NOTHING`, [b.id, cid, sit, pts, prox, prio]);
-      }
-      await q(`INSERT INTO client_board (company_id, foco, updated_at) VALUES ($1,$2, TIMESTAMPTZ '2026-11-11 12:00-03') ON CONFLICT (company_id) DO NOTHING`, [cid, FOCO]);
-      await ensureFixedSkuGroups(cid);
+    const created = await many(`SELECT b.id, b.name FROM businesses b WHERE b.name IN ('Click Piscinas','KLM','INOVA','GLEYSON')
+      AND b.created_at >= TIMESTAMPTZ '2026-11-13 15:30Z'
+      AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.business_id=b.id)
+      AND NOT EXISTS (SELECT 1 FROM client_posts p WHERE p.business_id=b.id)
+      AND NOT EXISTS (SELECT 1 FROM group_tasks g JOIN group_items i ON i.group_id=g.id WHERE g.business_id=b.id)`);
+    const ids = created.map((x) => x.id);
+    if (ids.length) {
+      await q('DELETE FROM group_tasks WHERE business_id = ANY($1::int[])', [ids]);
+      await q('DELETE FROM businesses WHERE id = ANY($1::int[])', [ids]);
     }
-    await q("INSERT INTO app_meta (key) VALUES ('v24_quadro_clientes')");
-    console.log('Quadro de clientes criado para', companies.length, 'empresa(s)');
-  } catch (e) { console.error('Quadro de clientes', e.message); }
+    await q('UPDATE client_status SET situacao=NULL, pontos=NULL, proximo=NULL, prioridade=NULL');
+    await q("INSERT INTO app_meta (key) VALUES ('v26_quadro_dados')");
+    console.log('Quadro: clientes removidos', created.map((x) => x.name));
+  } catch (e) { console.error('Limpeza do quadro', e.message); }
 }
 for (const c of await many('SELECT id FROM companies')) {
   try { await ensureFixedSkuGroups(c.id); } catch (e) { console.error('Gestão de SKU', e.message); }
