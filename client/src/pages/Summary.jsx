@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { api, toast, emitLocal, useData, STATUS, PRIORITY, fmtDate, fmtDateLong, fmtDateTime, addDays, parseDate } from '../lib.js';
+import { api, toast, emitLocal, useData, STATUS, PRIORITY, fmtDate, fmtDateLong, fmtDateTime, addDays, parseDate, weekStart } from '../lib.js';
 import { Icon, Card, Loading, Empty, Modal, Field, Pill, Avatar } from '../ui.jsx';
 import { useApp } from '../App.jsx';
 
@@ -15,6 +15,9 @@ export default function Summary() {
   const [tab, setTab] = useState('done');
   const [user, setUser] = useState('');
   const [day, setDay] = useState(me.today);
+  const [period, setPeriod] = useState('day');
+  const step = period === 'week' ? 7 : 1;
+  const ws = weekStart(day);
   const [by, setBy] = useState(() => { try { return localStorage.getItem('summaryBy') || 'client'; } catch { return 'client'; } });
   const [remPrefill, setRemPrefill] = useState(null);
   const chooseBy = (v) => { setBy(v); try { localStorage.setItem('summaryBy', v); } catch { /* */ } };
@@ -25,7 +28,7 @@ export default function Summary() {
       <div className="page-head">
         <div>
           <h1>Resumo</h1>
-          <p className="muted">{tab === 'done' ? <>O que foi realizado em {fmtDateLong(day)}{day === me.today && ' · hoje'}, por cliente e colaborador</> : 'Lembretes para revisar: viram tarefa na data do lembrete'}</p>
+          <p className="muted">{tab === 'done' ? <>{period === 'week' ? <>O que foi realizado na semana de {fmtDate(ws)} a {fmtDate(addDays(ws, 6))}</> : <>O que foi realizado em {fmtDateLong(day)}{day === me.today && ' · hoje'}</>}, por cliente e colaborador</> : 'Lembretes para revisar: viram tarefa na data do lembrete'}</p>
         </div>
         <div className="row gap wrap">
           <div className="mini-seg big">
@@ -40,9 +43,13 @@ export default function Summary() {
           )}
           {tab === 'done' && (
             <div className="date-nav">
-              <button className="icon-btn" onClick={() => setDay(addDays(day, -1))}><Icon name="left" /></button>
+              <div className="mini-seg">
+                <button className={period === 'day' ? 'on' : ''} onClick={() => setPeriod('day')}>Dia</button>
+                <button className={period === 'week' ? 'on' : ''} onClick={() => setPeriod('week')}>Semana</button>
+              </div>
+              <button className="icon-btn" onClick={() => setDay(addDays(day, -step))}><Icon name="left" /></button>
               <input type="date" value={day} onChange={(e) => e.target.value && setDay(e.target.value)} />
-              <button className="icon-btn" onClick={() => setDay(addDays(day, 1))}><Icon name="right" /></button>
+              <button className="icon-btn" onClick={() => setDay(addDays(day, step))}><Icon name="right" /></button>
               {day !== me.today && <button className="btn sm" onClick={() => setDay(me.today)}>Hoje</button>}
             </div>
           )}
@@ -50,7 +57,7 @@ export default function Summary() {
       </div>
 
       {tab === 'done' ? (
-        <DayDone day={day} user={user} by={by} setBy={chooseBy}
+        <DayDone day={day} from={period === 'week' ? ws : day} to={period === 'week' ? addDays(ws, 6) : day} user={user} by={by} setBy={chooseBy}
           onReminder={(text) => { setRemPrefill({ title: text, at: Date.now() }); setTab('rem'); }} />
       ) : (
         <Reminders viewingOther={viewingOther} user={user} prefill={remPrefill} />
@@ -115,7 +122,7 @@ function summarizeRows(rows, { withPeople, withClients, bizName }) {
   }
   return out;
 }
-function SummaryCard({ day, groups, rows, by, bizName }) {
+function SummaryCard({ label, userName, groups, rows, by, bizName, onPdf }) {
   const [copied, setCopied] = useState(false);
   const tasks = rows.filter((r) => r.type === 'task').length;
   const lstAds = new Set(rows.filter((r) => r.type === 'check' && r.c.listing_id !== 'base').map((r) => r.c.listing_id)).size;
@@ -129,32 +136,40 @@ function SummaryCard({ day, groups, rows, by, bizName }) {
   if (baseSkus) parts.push(`marcou fotos/vídeos da base em ${plural(baseSkus, 'SKU', 'SKUs')}`);
   if (lstAds) parts.push(`avançou o checklist de ${plural(lstAds, 'anúncio', 'anúncios')}`);
   if (notes) parts.push(`registrou ${plural(notes, 'apontamento', 'apontamentos')}`);
-  const who = people > 1 ? `a equipe (${people} pessoas)` : people === 1 ? (groups.length && by === 'user' ? groups[0].name.split(' ')[0] : 'o colaborador') : 'a equipe';
-  const intro = `Em ${fmtDate(day)}, ${who} ${listJoin(parts, 5)}${clients ? `, em ${plural(clients, 'cliente', 'clientes')}` : ''}.${top && groups.length > 1 ? ` ${by === 'client' ? 'Cliente' : 'Pessoa'} com mais registros: ${top[0]} (${top[1]}).` : ''}`;
+  const who = userName ? userName.split(' ')[0] : people > 1 ? `a equipe (${people} pessoas)` : 'a equipe';
+  const intro = `${label.startsWith('semana') ? 'Na' : 'Em'} ${label}, ${who} ${listJoin(parts, 5)}${clients ? `, em ${plural(clients, 'cliente', 'clientes')}` : ''}.${top && groups.length > 1 ? ` ${by === 'client' ? 'Cliente' : 'Pessoa'} com mais registros: ${top[0]} (${top[1]}).` : ''}`;
   const lines = groups.map((g) => [g.name, summarizeRows(g.subs.flatMap((s) => s.rows), { withPeople: by === 'client', withClients: by === 'user', bizName })]);
-  const text = `Resumo ${fmtDate(day)}\n${intro}\n\n` + lines.map(([n, ls]) => `*${n}*\n` + ls.map((l) => `• ${l}`).join('\n')).join('\n\n');
+  const text = `Resumo ${label}\n${intro}\n\n` + lines.map(([n, ls]) => `*${n}*\n` + ls.map((l) => `• ${l}`).join('\n')).join('\n\n');
   const copy = async () => { try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { toast('Não consegui copiar', 'error'); } };
   return (
     <div className="day-summary">
+      <div className="print-only print-head"><b>Resumo de atividades — {label}</b>{userName && <span> · {userName}</span>}</div>
       <div className="row gap" style={{ alignItems: 'flex-start' }}>
-        <div className="grow"><b>Resumo do dia</b><p>{intro}</p></div>
-        <button className="btn sm" onClick={copy}><Icon name={copied ? 'check' : 'copy'} size={14} /> {copied ? 'Copiado!' : 'Copiar resumo'}</button>
-      </div>
-      <div className="day-summary-groups">
-        {lines.map(([n, ls]) => (
-          <div key={n}><b>{n}</b><ul>{ls.map((l, k) => <li key={k}>{l}</li>)}</ul></div>
-        ))}
+        <div className="grow"><b className="no-print">Resumo {label.startsWith('semana') ? 'da semana' : 'do dia'}</b><p>{intro}</p></div>
+        <span className="row gap-s no-print">
+          <button className="btn sm" onClick={copy}><Icon name={copied ? 'check' : 'copy'} size={14} /> {copied ? 'Copiado!' : 'Copiar resumo'}</button>
+          <button className="btn sm primary" onClick={onPdf}><Icon name="download" size={14} /> Baixar PDF</button>
+        </span>
       </div>
     </div>
   );
 }
 
-function DayDone({ day, user, by, setBy, onReminder }) {
-  const { me, businesses, openTask } = useApp();
-  const { data } = useData(`/day-done?date=${day}${user ? `&user=${user}` : ''}`);
+function DayDone({ day, from, to, user, by, setBy, onReminder }) {
+  const { me, businesses, openTask, activeUsers } = useApp();
+  const isWeek = from !== to;
+  const { data } = useData(`/day-done?date=${day}&from=${from}&to=${to}${user ? `&user=${user}` : ''}`);
   if (!data) return <Loading />;
-  const isToday = day === data.today;
+  const isToday = !isWeek && day === data.today;
   const canWrite = isToday && (!user || Number(user) === me.id);
+  const label = isWeek ? `semana de ${fmtDate(from)} a ${fmtDate(to)}` : fmtDate(from);
+  const userName = user ? (activeUsers || []).find((u) => u.id === Number(user))?.name : null;
+  const printPdf = () => {
+    const t = document.title;
+    document.title = `Resumo ${label.replace(/\//g, '-')}${userName ? ' - ' + userName : ''}`;
+    document.body.classList.add('printing-summary');
+    setTimeout(() => { window.print(); document.title = t; document.body.classList.remove('printing-summary'); }, 50);
+  };
 
   // junta tudo numa lista de linhas com cliente e colaborador
   const rows = [
@@ -197,12 +212,14 @@ function DayDone({ day, user, by, setBy, onReminder }) {
         <span className="muted small"><b>{count('task')}</b> tarefa(s) concluída(s) · <b>{count('check')}</b> anúncio(s) com checklist · <b>{count('note')}</b> apontamento(s)</span>
       </div>
       {!rows.length ? <Empty>Nada realizado {isToday ? 'ainda hoje' : 'neste dia'}{user ? ' por este colaborador' : ''}.</Empty> : (<>
-        <SummaryCard day={day} groups={groups} rows={rows} by={by} bizName={(id) => bizOf(id).name} />
-        <h4 className="detail-title">Detalhe</h4>
+        <SummaryCard label={label} userName={userName} groups={groups} rows={rows} by={by} bizName={(id) => bizOf(id).name} onPdf={printPdf} />
         <div className="done-groups">
           {groups.map((g) => (
             <div key={g.k} className="done-group" style={{ '--c': g.color || '#0073ea' }}>
               <h3>{g.color ? <i /> : <Avatar name={g.name} id={g.k} size={24} />}{g.name}<small>{g.subs.reduce((a, s) => a + s.rows.length, 0)} registro(s)</small></h3>
+              <ul className="group-summary">
+                {summarizeRows(g.subs.flatMap((x) => x.rows), { withPeople: by === 'client', withClients: by === 'user', bizName: (id) => bizOf(id).name }).map((l, k) => <li key={k}>{l}</li>)}
+              </ul>
               {g.subs.map((sub) => (
                 <div key={sub.k} className="done-sub">
                   <div className="done-sub-head">
@@ -211,7 +228,7 @@ function DayDone({ day, user, by, setBy, onReminder }) {
                     <small className="muted">{sub.rows.length}</small>
                   </div>
                   <ul className="done-list">
-                    {sub.rows.map((r) => <DoneRow key={r.key} r={r} me={me} openTask={openTask} onReminder={onReminder} />)}
+                    {sub.rows.map((r) => <DoneRow key={r.key} r={r} me={me} openTask={openTask} onReminder={onReminder} showDate={isWeek} />)}
                   </ul>
                 </div>
               ))}
@@ -223,12 +240,13 @@ function DayDone({ day, user, by, setBy, onReminder }) {
   );
 }
 
-function DoneRow({ r, me, openTask, onReminder }) {
+function DoneRow({ r, me, openTask, onReminder, showDate }) {
+  const dateTag = showDate && r.at ? <span className="row-date">{new Date(r.at).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' })}</span> : null;
   if (r.type === 'task') {
     const t = r.t;
     return (
       <li className="done-row" onClick={() => openTask(t.id)} title="Abrir tarefa">
-        <span className="done-ico ok">✓</span>
+        <span className="done-ico ok">✓</span>{dateTag}
         <span className="grow"><b>{t.title}</b> <span className="tag kind">{KIND_LABEL[t.kind] || ''}</span>
           {t.channel_name && <span className="chan" style={{ background: t.channel_color }}>{t.channel_name}</span>}</span>
         {fmtSecs(t.tracked_seconds) && <small className="muted">{fmtSecs(t.tracked_seconds)}</small>}
@@ -239,7 +257,7 @@ function DoneRow({ r, me, openTask, onReminder }) {
     const c = r.c;
     return (
       <li className="done-row">
-        <span className="done-ico sku">▦</span>
+        <span className="done-ico sku">▦</span>{dateTag}
         <span className="grow"><b className="sku">{c.sku || c.description || 'Item'}</b>
           {c.channel_name && <span className="chan" style={{ background: c.channel_color, marginLeft: 6 }}>{c.channel_name}</span>}
           {(c.code || c.link) && <span className="muted"> {c.link ? <a href={c.link} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>{c.code || 'anúncio'}</a> : c.code}</span>}
@@ -249,10 +267,10 @@ function DoneRow({ r, me, openTask, onReminder }) {
     );
   }
   const n = r.n;
-  return <NoteRow n={n} mine={n.user_id === me.id} onReminder={onReminder} />;
+  return <NoteRow n={n} mine={n.user_id === me.id} onReminder={onReminder} dateTag={dateTag} />;
 }
 
-function NoteRow({ n, mine, onReminder }) {
+function NoteRow({ n, mine, onReminder, dateTag }) {
   const [editing, setEditing] = useState(false);
   const [body, setBody] = useState(n.body);
   const save = async () => {
@@ -262,7 +280,7 @@ function NoteRow({ n, mine, onReminder }) {
   const del = async () => { if (confirm('Excluir este apontamento?')) { try { await api(`/notes/${n.id}`, { method: 'DELETE' }); emitLocal(); } catch (e) { toast(e.message, 'error'); } } };
   return (
     <li className="done-row note">
-      <span className="done-ico note">✎</span>
+      <span className="done-ico note">✎</span>{dateTag}
       <span className="grow">
         {editing ? (
           <span className="inline-form"><textarea rows={3} value={body} onChange={(e) => setBody(e.target.value)} autoFocus />

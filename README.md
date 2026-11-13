@@ -83,3 +83,4 @@ Build: `npm install && npm run build` · Start: `npm start` · Health check: `/h
 - Tempo real corrigido: o canal de atualizações (/api/stream) não passa mais pela compressão.
   - **Distribuir SKUs** (no lugar do "Fazendo isso"): escolha quem participa e o sistema divide os SKUs de forma equilibrada — curva A primeiro, sempre para quem tem menos trabalho pendente (fotos, vídeos, checklist dos anúncios). Cada SKU tem um responsável (dá para trocar); colaborador pode pegar SKU sem responsável. Aviso para o time com a divisão.
   - **Resumo do dia pré-moldado** (sem IA): parágrafo geral + tópicos por cliente/colaborador montados a partir das tarefas, checklist e apontamentos; botão Copiar resumo (formato WhatsApp).
+  - Resumo: texto de cada cliente/colaborador no topo do quadro; filtro **Dia/Semana**; botão **Baixar PDF** (layout de impressão limpo).

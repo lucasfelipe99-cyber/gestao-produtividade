@@ -689,3 +689,20 @@ table.lst-table tr.lst-pending td { background: #fff5f5; }
 .day-summary-groups ul { margin: 4px 0 0; padding-left: 18px; font-size: 13.5px; line-height: 1.45; }
 .day-summary-groups li { margin-bottom: 3px; }
 .detail-title { margin: 6px 0 8px; color: #676879; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+
+.group-summary { margin: 0 0 10px; padding: 8px 12px 8px 26px; background: #f6f9ff; border-radius: 8px; font-size: 13.5px; line-height: 1.5; }
+.group-summary li { margin-bottom: 2px; }
+.row-date { font-size: 11px; color: #676879; background: #f0f1f4; border-radius: 4px; padding: 1px 5px; white-space: nowrap; text-transform: capitalize; }
+.print-only { display: none; }
+@media print {
+  @page { margin: 14mm; }
+  body.printing-summary aside, body.printing-summary .sidebar, body.printing-summary .topbar, body.printing-summary .page-head,
+  body.printing-summary .composer, body.printing-summary .no-print, body.printing-summary .mini-seg, body.printing-summary .update-actions,
+  body.printing-summary .backdrop, body.printing-summary .toasts { display: none !important; }
+  body.printing-summary .print-only { display: block !important; }
+  body.printing-summary .print-head { font-size: 16px; margin-bottom: 6px; }
+  body.printing-summary, body.printing-summary main, body.printing-summary .content, body.printing-summary .layout { background: #fff !important; margin: 0 !important; padding: 0 !important; display: block !important; }
+  body.printing-summary .done-group, body.printing-summary .day-summary { box-shadow: none; border: 1px solid #ddd; break-inside: avoid; }
+  body.printing-summary a { color: #000; text-decoration: none; }
+  body.printing-summary .row.gap.wrap > span.muted.small { display: block; }
+}

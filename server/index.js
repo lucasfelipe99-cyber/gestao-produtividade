@@ -1974,9 +1974,13 @@ const SUMMARY_COLS = `to_char(day,'YYYY-MM-DD') AS day, summary, summary_at, sum
 app.get('/api/day-done', wrap(async (req, res) => {
   const u = req.user;
   const day = isDate(req.query.date) ? req.query.date : todayIn(u.timezone);
+  // período: um dia (date) ou intervalo (from/to, ex.: semana)
+  const from = isDate(req.query.from) ? req.query.from : day;
+  const to = isDate(req.query.to) && req.query.to >= from ? req.query.to : from;
+  if ((new Date(to) - new Date(from)) / 864e5 > 62) throw new HttpError(400, 'Período muito longo (máx. 2 meses)');
   const only = isAdmin(u) ? (req.query.user ? parseInt(req.query.user, 10) : null) : u.id;
   const tz = u.timezone;
-  const p = [u.company_id, day, tz];
+  const p = [u.company_id, from, tz, to];
   const uf = (col) => (only ? ` AND ${col}=${only}` : '');
   const base = await many(`SELECT i.id AS item_id, i.sku, i.description, g.id AS group_id, g.title AS group_title, g.business_id,
       'base' AS listing_id, NULL AS code, NULL AS link, NULL::int AS channel_id, 'Base do SKU' AS channel_name, '#676879' AS channel_color,
@@ -1984,13 +1988,13 @@ app.get('/api/day-done', wrap(async (req, res) => {
       max((c.value->>'at')::timestamptz) AS at, false AS item_done
     FROM group_items i JOIN group_tasks g ON g.id=i.group_id CROSS JOIN LATERAL jsonb_each(i.checks) c
     LEFT JOIN users u ON u.id=(c.value->>'by')::int
-    WHERE g.company_id=$1 AND c.key IN ('fotos','videos') AND ((c.value->>'at')::timestamptz AT TIME ZONE $3)::date=$2 ${uf("(c.value->>'by')::int")}
+    WHERE g.company_id=$1 AND c.key IN ('fotos','videos') AND ((c.value->>'at')::timestamptz AT TIME ZONE $3)::date BETWEEN $2::date AND $4::date ${uf("(c.value->>'by')::int")}
     GROUP BY i.id, g.id, c.value->>'by', u.name`, p);
   const [tasks, checks, notes] = await Promise.all([
     many(`SELECT t.id, t.title, t.kind, t.business_id, t.channel_id, ch.name AS channel_name, ch.color AS channel_color,
         t.assignee_id AS user_id, u.name AS user_name, t.completed_at, t.tracked_seconds
       FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN channels ch ON ch.id=t.channel_id
-      WHERE t.company_id=$1 AND t.status='done' AND (t.completed_at AT TIME ZONE $3)::date=$2 ${uf('t.assignee_id')}
+      WHERE t.company_id=$1 AND t.status='done' AND (t.completed_at AT TIME ZONE $3)::date BETWEEN $2::date AND $4::date ${uf('t.assignee_id')}
       ORDER BY t.completed_at`, p),
     many(`SELECT i.id AS item_id, i.sku, i.description, g.id AS group_id, g.title AS group_title, g.business_id,
         l->>'id' AS listing_id, l->>'code' AS code, l->>'link' AS link, (l->>'channel_id')::int AS channel_id, ch.name AS channel_name, ch.color AS channel_color,
@@ -2000,14 +2004,14 @@ app.get('/api/day-done', wrap(async (req, res) => {
       CROSS JOIN LATERAL jsonb_array_elements(i.listings) l
       CROSS JOIN LATERAL jsonb_each(COALESCE(l->'checks','{}'::jsonb)) c
       LEFT JOIN users u ON u.id=(c.value->>'by')::int LEFT JOIN channels ch ON ch.id=(l->>'channel_id')::int
-      WHERE g.company_id=$1 AND ((c.value->>'at')::timestamptz AT TIME ZONE $3)::date=$2 ${uf("(c.value->>'by')::int")}
+      WHERE g.company_id=$1 AND ((c.value->>'at')::timestamptz AT TIME ZONE $3)::date BETWEEN $2::date AND $4::date ${uf("(c.value->>'by')::int")}
       GROUP BY i.id, g.id, l->>'id', l->>'code', l->>'link', l->>'channel_id', ch.name, ch.color, c.value->>'by', u.name ORDER BY at`, p),
     many(`SELECT n.id, n.body, n.business_id, n.channel_id, ch.name AS channel_name, ch.color AS channel_color, n.user_id, u.name AS user_name, n.created_at
       FROM notes n LEFT JOIN users u ON u.id=n.user_id LEFT JOIN channels ch ON ch.id=n.channel_id
-      WHERE n.company_id=$1 AND n.kind='note' AND (n.created_at AT TIME ZONE $3)::date=$2 ${uf('n.user_id')}
+      WHERE n.company_id=$1 AND n.kind='note' AND (n.created_at AT TIME ZONE $3)::date BETWEEN $2::date AND $4::date ${uf('n.user_id')}
       ORDER BY n.created_at`, p),
   ]);
-  res.json({ day, today: todayIn(tz), tasks, checks: [...base, ...checks], notes });
+  res.json({ day, from, to, today: todayIn(tz), tasks, checks: [...base, ...checks], notes });
 }));
 
 app.get('/api/notepad', wrap(async (req, res) => {
