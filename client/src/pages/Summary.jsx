@@ -65,6 +65,90 @@ const CHECK_LABEL = { fotos: 'Fotos', videos: 'Vídeos', anuncio: 'Anúncio', ad
 const KIND_LABEL = { daily: 'Diária', weekly: 'Semanal', oneoff: 'Pontual' };
 const fmtSecs = (s) => { const m = Math.round((s || 0) / 60); return m ? (m >= 60 ? `${Math.floor(m / 60)}h${pad2(m % 60)}` : `${m} min`) : ''; };
 
+// ---------- resumo pré-moldado (texto montado a partir do que foi registrado, sem IA) ----------
+const listJoin = (arr, max = 4) => {
+  const a = [...new Set(arr.filter(Boolean))];
+  const shown = a.slice(0, max); const rest = a.length - shown.length;
+  if (!shown.length) return '';
+  const base = shown.length === 1 ? shown[0] : `${shown.slice(0, -1).join(', ')} e ${shown[shown.length - 1]}`;
+  return rest > 0 ? `${shown.join(', ')} e mais ${rest}` : base;
+};
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+function summarizeRows(rows, { withPeople, withClients, bizName }) {
+  const out = [];
+  const tasks = rows.filter((r) => r.type === 'task').map((r) => r.t);
+  const checks = rows.filter((r) => r.type === 'check').map((r) => r.c);
+  const notes = rows.filter((r) => r.type === 'note').map((r) => r.n);
+  const people = (list) => listJoin(list.map((x) => (x.user_name || '').split(' ')[0]), 5);
+  if (tasks.length) {
+    let t = `Concluiu ${plural(tasks.length, 'tarefa', 'tarefas')}: ${listJoin(tasks.map((x) => x.title))}`;
+    if (withPeople) t += ` (${people(tasks)})`;
+    if (withClients) { const c = listJoin(tasks.map((x) => bizName(x.business_id)).filter((x) => x !== 'Sem cliente'), 3); if (c) t += ` — clientes: ${c}`; }
+    out.push(t + '.');
+  }
+  const base = checks.filter((c) => c.listing_id === 'base');
+  if (base.length) {
+    const both = [...new Set(base.filter((c) => c.keys.includes('fotos') && c.keys.includes('videos')).map((c) => c.sku))];
+    const onlyF = [...new Set(base.filter((c) => c.keys.includes('fotos') && !c.keys.includes('videos')).map((c) => c.sku))];
+    const onlyV = [...new Set(base.filter((c) => c.keys.includes('videos') && !c.keys.includes('fotos')).map((c) => c.sku))];
+    const parts = [];
+    if (both.length) parts.push(`fotos e vídeos prontos em ${plural(both.length, 'SKU', 'SKUs')} (${listJoin(both, 5)})`);
+    if (onlyF.length) parts.push(`fotos prontas em ${plural(onlyF.length, 'SKU', 'SKUs')} (${listJoin(onlyF, 4)})`);
+    if (onlyV.length) parts.push(`vídeos prontos em ${plural(onlyV.length, 'SKU', 'SKUs')} (${listJoin(onlyV, 4)})`);
+    out.push(`Base de produto: ${parts.join('; ')}.`);
+  }
+  const lst = checks.filter((c) => c.listing_id !== 'base');
+  if (lst.length) {
+    const ads = new Set(lst.map((c) => c.listing_id)); const skus = new Set(lst.map((c) => c.sku));
+    const byCh = {}; for (const c of lst) byCh[c.channel_name || 'outro'] = (byCh[c.channel_name || 'outro'] || new Set()).add(c.listing_id);
+    const chTxt = Object.entries(byCh).map(([k, v]) => `${k} ${v.size}`).join(', ');
+    const cnt = {}; for (const c of lst) for (const k of c.keys) cnt[k] = (cnt[k] || 0) + 1;
+    const LBL = { fotos: 'fotos', videos: 'vídeos', anuncio: 'anúncio', ads: 'ADS', afiliados: 'afiliados' };
+    const steps = Object.entries(LBL).filter(([k]) => cnt[k]).map(([k, l]) => `${l} ${cnt[k]}`).join(', ');
+    out.push(`Anúncios: checklist avançou em ${plural(ads.size, 'anúncio', 'anúncios')} de ${plural(skus.size, 'SKU', 'SKUs')} (${chTxt}) — ${steps}.`);
+  }
+  const complete = [...new Set(checks.filter((c) => c.item_done).map((c) => c.sku))];
+  if (complete.length) out.push(`${complete.length === 1 ? 'SKU concluído' : 'SKUs concluídos'} por completo: ${listJoin(complete, 6)}.`);
+  if (notes.length) {
+    const first = notes[0].body.replace(/\s+/g, ' ').trim();
+    out.push(`${plural(notes.length, 'apontamento registrado', 'apontamentos registrados')}${withPeople ? ` (${people(notes)})` : ''}. Destaque: "${first.length > 140 ? first.slice(0, 140) + '…' : first}"`);
+  }
+  return out;
+}
+function SummaryCard({ day, groups, rows, by, bizName }) {
+  const [copied, setCopied] = useState(false);
+  const tasks = rows.filter((r) => r.type === 'task').length;
+  const lstAds = new Set(rows.filter((r) => r.type === 'check' && r.c.listing_id !== 'base').map((r) => r.c.listing_id)).size;
+  const baseSkus = new Set(rows.filter((r) => r.type === 'check' && r.c.listing_id === 'base').map((r) => r.c.sku)).size;
+  const notes = rows.filter((r) => r.type === 'note').length;
+  const clients = new Set(rows.map((r) => r.biz).filter(Boolean)).size;
+  const people = new Set(rows.map((r) => r.uid).filter(Boolean)).size;
+  const top = groups.map((g) => [g.name, g.subs.reduce((a, s) => a + s.rows.length, 0)]).sort((a, b) => b[1] - a[1])[0];
+  const parts = [];
+  if (tasks) parts.push(`concluiu ${plural(tasks, 'tarefa', 'tarefas')}`);
+  if (baseSkus) parts.push(`marcou fotos/vídeos da base em ${plural(baseSkus, 'SKU', 'SKUs')}`);
+  if (lstAds) parts.push(`avançou o checklist de ${plural(lstAds, 'anúncio', 'anúncios')}`);
+  if (notes) parts.push(`registrou ${plural(notes, 'apontamento', 'apontamentos')}`);
+  const who = people > 1 ? `a equipe (${people} pessoas)` : people === 1 ? (groups.length && by === 'user' ? groups[0].name.split(' ')[0] : 'o colaborador') : 'a equipe';
+  const intro = `Em ${fmtDate(day)}, ${who} ${listJoin(parts, 5)}${clients ? `, em ${plural(clients, 'cliente', 'clientes')}` : ''}.${top && groups.length > 1 ? ` ${by === 'client' ? 'Cliente' : 'Pessoa'} com mais registros: ${top[0]} (${top[1]}).` : ''}`;
+  const lines = groups.map((g) => [g.name, summarizeRows(g.subs.flatMap((s) => s.rows), { withPeople: by === 'client', withClients: by === 'user', bizName })]);
+  const text = `Resumo ${fmtDate(day)}\n${intro}\n\n` + lines.map(([n, ls]) => `*${n}*\n` + ls.map((l) => `• ${l}`).join('\n')).join('\n\n');
+  const copy = async () => { try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { toast('Não consegui copiar', 'error'); } };
+  return (
+    <div className="day-summary">
+      <div className="row gap" style={{ alignItems: 'flex-start' }}>
+        <div className="grow"><b>Resumo do dia</b><p>{intro}</p></div>
+        <button className="btn sm" onClick={copy}><Icon name={copied ? 'check' : 'copy'} size={14} /> {copied ? 'Copiado!' : 'Copiar resumo'}</button>
+      </div>
+      <div className="day-summary-groups">
+        {lines.map(([n, ls]) => (
+          <div key={n}><b>{n}</b><ul>{ls.map((l, k) => <li key={k}>{l}</li>)}</ul></div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DayDone({ day, user, by, setBy, onReminder }) {
   const { me, businesses, openTask } = useApp();
   const { data } = useData(`/day-done?date=${day}${user ? `&user=${user}` : ''}`);
@@ -112,7 +196,9 @@ function DayDone({ day, user, by, setBy, onReminder }) {
         </div>
         <span className="muted small"><b>{count('task')}</b> tarefa(s) concluída(s) · <b>{count('check')}</b> anúncio(s) com checklist · <b>{count('note')}</b> apontamento(s)</span>
       </div>
-      {!rows.length ? <Empty>Nada realizado {isToday ? 'ainda hoje' : 'neste dia'}{user ? ' por este colaborador' : ''}.</Empty> : (
+      {!rows.length ? <Empty>Nada realizado {isToday ? 'ainda hoje' : 'neste dia'}{user ? ' por este colaborador' : ''}.</Empty> : (<>
+        <SummaryCard day={day} groups={groups} rows={rows} by={by} bizName={(id) => bizOf(id).name} />
+        <h4 className="detail-title">Detalhe</h4>
         <div className="done-groups">
           {groups.map((g) => (
             <div key={g.k} className="done-group" style={{ '--c': g.color || '#0073ea' }}>
@@ -132,7 +218,7 @@ function DayDone({ day, user, by, setBy, onReminder }) {
             </div>
           ))}
         </div>
-      )}
+      </>)}
     </div>
   );
 }

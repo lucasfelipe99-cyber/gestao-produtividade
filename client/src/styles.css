@@ -682,3 +682,10 @@ table.lst-table tr.lst-pending td { background: #fff5f5; }
 .assignee-cell { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
 .assignee-cell select { width: 100%; font-size: 12px; }
 .col { display: flex; flex-direction: column; } .gap-s { gap: 6px; }
+
+.day-summary { background: #fff; border-radius: var(--radius); box-shadow: var(--shadow, 0 1px 3px rgba(0,0,0,.08)); padding: 14px 16px; margin-bottom: 14px; border-top: 4px solid #0073ea; }
+.day-summary p { margin: 4px 0 0; line-height: 1.5; }
+.day-summary-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px 18px; margin-top: 10px; }
+.day-summary-groups ul { margin: 4px 0 0; padding-left: 18px; font-size: 13.5px; line-height: 1.45; }
+.day-summary-groups li { margin-bottom: 3px; }
+.detail-title { margin: 6px 0 8px; color: #676879; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
