@@ -757,3 +757,24 @@ table.lst-table tr.lst-pending td { background: #fff5f5; }
 .board-table td .prio-select { display: block; margin-top: 6px; }
 .board-help { margin: 12px 0 0; line-height: 1.5; }
 @media print { body.printing-board .board-none { color: #999; } }
+
+.sku-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0 8px; }
+select.active-filter { border-color: #0073ea; background: #eef4fe; font-weight: 600; }
+.print-products { display: none; }
+@media print {
+  @page { size: A4 landscape; margin: 10mm; }
+  body.printing-products > *:not(.print-products) { display: none !important; }
+  body.printing-products .print-products { display: block !important; font-family: inherit; color: #111; }
+  .print-products h1 { font-size: 18px; margin: 0; }
+  .print-products .pp-sub { margin: 2px 0 10px; color: #555; font-size: 11px; }
+  .print-products table { width: 100%; border-collapse: collapse; font-size: 10px; }
+  .print-products th { background: #1f3a5f; color: #fff; text-align: left; padding: 5px 6px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .print-products td { padding: 4px 6px; border-bottom: 1px solid #ddd; vertical-align: top; }
+  .print-products tr { break-inside: avoid; }
+  .print-products .pp-sku { font-family: ui-monospace, Menlo, monospace; font-weight: 700; white-space: nowrap; }
+  .print-products .pp-ok { color: #0a8a4a; font-weight: 700; text-align: center; }
+  .print-products .pp-no { color: #c0263e; font-weight: 700; text-align: center; }
+  .print-products .pp-num { white-space: nowrap; }
+  .print-products .pp-link { word-break: break-all; max-width: 160px; color: #555; }
+}
+@media print { body.printing-products, html { background: #fff !important; } }

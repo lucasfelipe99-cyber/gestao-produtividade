@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api, toast, emitLocal, useData, fmtDate } from '../lib.js';
 import { Icon, Avatar, Loading, Empty, Modal, Field, Progress } from '../ui.jsx';
 import { useApp } from '../App.jsx';
@@ -103,6 +104,8 @@ function GroupBoard({ id, me, onDeleted }) {
   const [filter, setFilter] = useState('all');
   const [curvaF, setCurvaF] = useState('');
   const [sort, setSort] = useState('list');
+  const [mediaF, setMediaF] = useState('');
+  const [q, setQ] = useState('');
   const [editing, setEditing] = useState(false);
   const [distOpen, setDistOpen] = useState(false);
   if (!g) return <Loading />;
@@ -112,6 +115,8 @@ function GroupBoard({ id, me, onDeleted }) {
     .filter((i) => filter === 'all' || (filter === 'done' ? i.status === 'done' : filter === 'pending' ? i.status !== 'done'
       : filter === 'mine' ? i.assignee_id === me.id : filter === 'none' ? !i.assignee_id : filter.startsWith('u') ? i.assignee_id === Number(filter.slice(1)) : true))
     .filter((i) => !curvaF || (curvaF === 'none' ? !i.curva : i.curva === curvaF))
+    .filter((i) => mediaMatch(i, mediaF))
+    .filter((i) => !q.trim() || `${i.sku || ''} ${i.description || ''}`.toLowerCase().includes(q.trim().toLowerCase()))
     .sort(sort === 'fat' ? (a, b) => (b.faturamento || 0) - (a.faturamento || 0)
       : sort === 'curva' ? (a, b) => (a.curva || 'Z').localeCompare(b.curva || 'Z') || (b.faturamento || 0) - (a.faturamento || 0) : () => 0);
   const count = (s) => g.items.filter((i) => i.status === s).length;
@@ -170,6 +175,26 @@ function GroupBoard({ id, me, onDeleted }) {
 
       {!done && <AddItems groupId={g.id} />}
 
+      {g.items.length > 0 && (
+        <div className="sku-toolbar">
+          <input className="sm" placeholder="Buscar SKU ou descrição…" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 220 }} />
+          <select className={'sm' + (mediaF ? ' active-filter' : '')} value={mediaF} onChange={(e) => setMediaF(e.target.value)}>
+            {MEDIA_FILTERS.map(([k, l]) => <option key={k} value={k}>{l}{k ? ` (${g.items.filter((i) => mediaMatch(i, k)).length})` : ''}</option>)}
+          </select>
+          <span className="muted small grow">{items.length} de {g.items.length} SKU(s)</span>
+          <button className="btn sm primary" onClick={() => {
+            const t = document.title;
+            document.title = `Produtos ${g.business_name || g.title} ${new Date().toLocaleDateString('pt-BR').replace(/\//g, '-')}`;
+            document.body.classList.add('printing-products');
+            setTimeout(() => { window.print(); document.body.classList.remove('printing-products'); document.title = t; }, 50);
+          }}><Icon name="download" size={14} /> PDF dos produtos ({items.length})</button>
+        </div>
+      )}
+      {g.items.length > 0 && createPortal(<ProductsPrint g={g} items={items} filters={[
+        filter !== 'all' && { mine: 'meus', none: 'sem responsável', pending: 'pendentes', done: 'feitos' }[filter],
+        curvaF && (curvaF === 'none' ? 'sem venda' : `curva ${curvaF}`), mediaF && MEDIA_FILTERS.find((m) => m[0] === mediaF)[1].toLowerCase(), q.trim() && `busca "${q.trim()}"`,
+      ].filter(Boolean)} />, document.body)}
+
       {!g.items.length ? <Empty>Sem SKUs ainda. Suba a planilha (modelo ou curva ABC) ou adicione acima, e depois use "Distribuir SKUs" para dividir entre o time.</Empty> : (
         <div className="table-scroll">
           <table className="group-items">
@@ -190,6 +215,67 @@ function GroupBoard({ id, me, onDeleted }) {
 }
 
 const brl = (v) => (v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
+
+// filtro de fotos e vídeos: base do SKU (geral) ou checklist dos anúncios
+const MEDIA_FILTERS = [
+  ['', 'Fotos e vídeos: todos'],
+  ['nomedia', 'Sem fotos ou sem vídeos (base)'],
+  ['noboth', 'Sem fotos e sem vídeos (base)'],
+  ['nofoto', 'Sem fotos (base)'],
+  ['novideo', 'Sem vídeos (base)'],
+  ['ads', 'Anúncio sem foto ou vídeo marcado'],
+  ['ready', 'Base pronta (fotos e vídeos)'],
+];
+function mediaMatch(i, k) {
+  const f = !!i.checks?.fotos, v = !!i.checks?.videos;
+  switch (k) {
+    case 'nomedia': return !f || !v;
+    case 'noboth': return !f && !v;
+    case 'nofoto': return !f;
+    case 'novideo': return !v;
+    case 'ads': return (i.listings || []).some((l) => !l.checks?.fotos || !l.checks?.videos);
+    case 'ready': return f && v;
+    default: return true;
+  }
+}
+// versão para impressão/PDF da lista de produtos (o que está filtrado na tela)
+function ProductsPrint({ g, items, filters }) {
+  const { channels } = useApp();
+  const hasAbc = items.some((i) => i.abc);
+  const ok = (b) => (b ? '✓' : '✗');
+  return (
+    <div className="print-products">
+      <h1>Produtos — {g.business_name || g.title}</h1>
+      <p className="pp-sub">{g.title} · {new Date().toLocaleDateString('pt-BR')} · {items.length} SKU(s){filters.length ? ` · filtro: ${filters.join(', ')}` : ''}</p>
+      <table>
+        <thead><tr><th>SKU</th><th>Descrição</th>{hasAbc && <><th>Curva</th><th>Faturamento</th></>}<th>Fotos</th><th>Vídeos</th><th>Anúncios por canal</th><th>Responsável</th><th>Drive</th></tr></thead>
+        <tbody>
+          {items.map((i) => {
+            const list = i.listings || [];
+            const byCh = channels.map((c) => {
+              const l = list.filter((x) => x.channel_id === c.id); if (!l.length) return null;
+              const done = l.filter((x) => (x.link || x.code) && CHECKS.every(([k]) => x.checks?.[k])).length;
+              const noMedia = l.filter((x) => !x.checks?.fotos || !x.checks?.videos).length;
+              return `${c.name} ${l.length}${done ? ` (${done} ok)` : ''}${noMedia ? ` · ${noMedia} sem foto/vídeo` : ''}`;
+            }).filter(Boolean);
+            return (
+              <tr key={i.id}>
+                <td className="pp-sku">{i.sku || '—'}</td>
+                <td>{i.description || ''}</td>
+                {hasAbc && <><td>{i.curva || '—'}</td><td className="pp-num">{i.abc ? brl(i.faturamento) : '—'}</td></>}
+                <td className={i.checks?.fotos ? 'pp-ok' : 'pp-no'}>{ok(i.checks?.fotos)}</td>
+                <td className={i.checks?.videos ? 'pp-ok' : 'pp-no'}>{ok(i.checks?.videos)}</td>
+                <td>{byCh.length ? byCh.join(' | ') : 'sem anúncio'}</td>
+                <td>{i.assignee_name || '—'}</td>
+                <td className="pp-link">{i.drive_link || '—'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 function AbcCells({ i }) {
   const rows = i.abc?.rows || [];
   const tip = rows.length ? rows.map((r) => `${r.classe} · ${r.marketplace}${r.conta ? ` (${r.conta})` : ''} ${r.anuncio}: ${brl(r.faturamento)} · ${r.qtd} un.`).join('\n') : i.abc?.none ? 'Sem venda no período da planilha' : '';

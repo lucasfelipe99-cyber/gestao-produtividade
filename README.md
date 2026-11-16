@@ -85,3 +85,4 @@ Build: `npm install && npm run build` · Start: `npm start` · Health check: `/h
   - **Resumo do dia pré-moldado** (sem IA): parágrafo geral + tópicos por cliente/colaborador montados a partir das tarefas, checklist e apontamentos; botão Copiar resumo (formato WhatsApp).
   - Resumo: texto de cada cliente/colaborador no topo do quadro; filtro **Dia/Semana**; botão **Baixar PDF** (layout de impressão limpo).
 - **Aba Acompanhamento (quadro de clientes)**: montado automaticamente com os dados do sistema — situação (tarefas 7 dias, em aberto, não realizadas, Gestão de SKU, curva ABC), principais pontos (última reunião/comentário do mural, pendências) e próximo passo (próximas tarefas com prazo e lembretes). Prioridade e "Foco das próximas semanas" são editáveis. PDF.
+  - Filtro de **fotos e vídeos** (sem fotos, sem vídeos, sem ambos, anúncio sem foto/vídeo, base pronta), busca por SKU e **PDF dos produtos** (lista filtrada, A4 paisagem).
