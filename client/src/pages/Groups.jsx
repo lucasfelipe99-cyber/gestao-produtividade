@@ -11,7 +11,15 @@ const since = (iso) => {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h${pad2(m % 60)}`;
 };
 const shortLink = (url) => { try { const u = new URL(url); return (u.hostname.replace(/^www\./, '') + u.pathname).replace(/\/$/, '').slice(0, 60); } catch { return url.slice(0, 60); } };
-const CHECKS = [['fotos', 'Fotos'], ['videos', 'Vídeos'], ['anuncio', 'Anúncio'], ['ads', 'ADS'], ['afiliados', 'Afiliados']];
+// checklist de cada anúncio em 3 grupos
+const LGROUPS = [
+  ['anunciado', 'Anunciado', '#579bfc', [['anuncio', 'No ar', 'Anúncio publicado na plataforma']]],
+  ['performance', 'Alta performance', '#a25ddc', [['capa', 'Capa', 'Foto de capa'], ['ambientada', 'Ambient.', 'Foto ambientada'], ['beneficios', 'Benef.', 'Foto de benefícios'],
+    ['objecao', 'Objeção', 'Foto de quebra de objeção'], ['como_usar', 'Como usar', 'Foto de como usar'], ['extra', 'Extra', 'Foto extra explicativa'], ['video', 'Vídeo', 'Vídeo']]],
+  ['estrategico', 'Estratégico', '#ff7575', [['ads', 'ADS', 'ADS'], ['afiliados', 'Afiliad.', 'Afiliados'], ['promocao', 'Promo', 'Promoção'], ['cupom', 'Cupom', 'Cupom'], ['relampago', 'Relâmp.', 'Oferta relâmpago']]],
+];
+const CHECKS = LGROUPS.flatMap(([, , , items]) => items.map(([k, , full]) => [k, full]));
+const lgDone = (l, gk) => LGROUPS.find((x) => x[0] === gk)[3].every(([k]) => l.checks?.[k]);
 // cola de planilha: colunas separadas por tab (SKU, link, drive, descrição) ou "link - descrição"
 function parseLines(text) {
   return text.split('\n').map((l) => l.replace(/\r$/, '')).filter((l) => l.trim()).map((l) => {
@@ -200,7 +208,7 @@ function GroupBoard({ id, me, onDeleted }) {
           <table className="group-items">
             <thead><tr>
               <th style={{ width: 28 }}>#</th><th>SKU / descrição</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 158 }}>Anúncios por canal</th><th style={{ width: 118 }}>Drive</th><th style={{ width: 96 }} title="Fotos e vídeos prontos no geral (base para todos os anúncios)">Base do SKU</th>
-              {CHECKS.map(([k, l]) => <th key={k} className="ck-col">{l}</th>)}
+              {LGROUPS.map(([gk, gl]) => <th key={gk} className="grp-col" title={`Anúncios do SKU com ${gl.toLowerCase()} completo`}>{gl === 'Alta performance' ? 'Alta perf.' : gl}</th>)}
               <th style={{ width: 150 }}>Responsável</th><th style={{ width: 64 }} />
             </tr></thead>
             <tbody>
@@ -218,12 +226,14 @@ const brl = (v) => (v || 0).toLocaleString('pt-BR', { style: 'currency', currenc
 
 // filtro de fotos e vídeos: base do SKU (geral) ou checklist dos anúncios
 const MEDIA_FILTERS = [
-  ['', 'Fotos e vídeos: todos'],
+  ['', 'Fotos, vídeos e anúncios: todos'],
   ['nomedia', 'Sem fotos ou sem vídeos (base)'],
   ['noboth', 'Sem fotos e sem vídeos (base)'],
   ['nofoto', 'Sem fotos (base)'],
   ['novideo', 'Sem vídeos (base)'],
-  ['ads', 'Anúncio sem foto ou vídeo marcado'],
+  ['notlive', 'Anúncio não anunciado (fora do ar)'],
+  ['perf', 'Anúncio sem alta performance completa'],
+  ['estr', 'Anúncio sem estratégico completo'],
   ['ready', 'Base pronta (fotos e vídeos)'],
 ];
 function mediaMatch(i, k) {
@@ -233,7 +243,9 @@ function mediaMatch(i, k) {
     case 'noboth': return !f && !v;
     case 'nofoto': return !f;
     case 'novideo': return !v;
-    case 'ads': return (i.listings || []).some((l) => !l.checks?.fotos || !l.checks?.videos);
+    case 'notlive': return (i.listings || []).some((l) => !lgDone(l, 'anunciado'));
+    case 'perf': return (i.listings || []).some((l) => !lgDone(l, 'performance'));
+    case 'estr': return (i.listings || []).some((l) => !lgDone(l, 'estrategico'));
     case 'ready': return f && v;
     default: return true;
   }
@@ -254,9 +266,10 @@ function ProductsPrint({ g, items, filters }) {
             const list = i.listings || [];
             const byCh = channels.map((c) => {
               const l = list.filter((x) => x.channel_id === c.id); if (!l.length) return null;
-              const done = l.filter((x) => (x.link || x.code) && CHECKS.every(([k]) => x.checks?.[k])).length;
-              const noMedia = l.filter((x) => !x.checks?.fotos || !x.checks?.videos).length;
-              return `${c.name} ${l.length}${done ? ` (${done} ok)` : ''}${noMedia ? ` · ${noMedia} sem foto/vídeo` : ''}`;
+              const live = l.filter((x) => lgDone(x, 'anunciado')).length;
+              const perf = l.filter((x) => lgDone(x, 'performance')).length;
+              const estr = l.filter((x) => lgDone(x, 'estrategico')).length;
+              return `${c.name} ${l.length}: no ar ${live} · alta perf. ${perf} · estratégico ${estr}`;
             }).filter(Boolean);
             return (
               <tr key={i.id}>
@@ -366,8 +379,15 @@ function ListingsPanel({ i, call, colSpan, disabled }) {
           </div>
           {list.length > 0 && (
             <table className="lst-table">
-              <thead><tr><th style={{ width: 130 }}>Canal</th><th>Anúncio</th><th style={{ width: 150 }}>Conta</th>
-                {CHECKS.map(([k, l]) => <th key={k} className="ck-col">{l}</th>)}<th style={{ width: 90 }}>Situação</th><th style={{ width: 34 }} /></tr></thead>
+              <colgroup><col style={{ width: 118 }} /><col style={{ width: 150 }} /><col style={{ width: 84 }} />
+                {CHECKS.map(([k]) => <col key={k} style={{ width: 46 }} />)}<col style={{ width: 112 }} /><col style={{ width: 30 }} /></colgroup>
+              <thead>
+                <tr className="lst-grp-head"><th colSpan={3} />
+                  {LGROUPS.map(([gk, gl, gc, items]) => <th key={gk} colSpan={items.length} style={{ '--gc': gc }}>{gl}</th>)}<th colSpan={2} /></tr>
+                <tr><th>Canal</th><th>Anúncio</th><th>Conta</th>
+                  {LGROUPS.flatMap(([gk, , gc, items]) => items.map(([k, l, full], n) => <th key={k} className={'ck-col sm-ck' + (n === 0 ? ' grp-start' : '')} title={full}>{l}</th>))}
+                  <th>Situação</th><th /></tr>
+              </thead>
               <tbody>
                 {sorted.map((l) => {
                   const c = chanOf(l.channel_id); const ok = listingDone(l);
@@ -376,17 +396,17 @@ function ListingsPanel({ i, call, colSpan, disabled }) {
                       <td><span className="chan" style={{ background: c.color }}>{c.name}</span></td>
                       <td>{l.link ? <a href={l.link} target="_blank" rel="noreferrer" className="item-link" title={l.link}>{l.code || shortLink(l.link)}</a>
                         : l.code ? <span className="sku">{l.code}</span> : <PendingLink i={i} l={l} call={call} disabled={disabled} />}</td>
-                      <td className="muted small">{l.conta || '—'}</td>
-                      {CHECKS.map(([k, lb]) => {
+                      <td className="muted small lst-conta" title={l.conta || ''}>{l.conta || '—'}</td>
+                      {LGROUPS.flatMap(([gk, , gc, items]) => items.map(([k, , lb], n) => {
                         const v = l.checks?.[k];
                         return (
-                          <td key={k} className="ck-col">
-                            <button className={'ck' + (v ? ' on' : '')} disabled={disabled} title={v ? `${lb}: feito por ${v.name} às ${hm(v.at)}` : `Marcar ${lb} neste anúncio`}
+                          <td key={k} className={'ck-col' + (n === 0 ? ' grp-start' : '')}>
+                            <button className={'ck ck-' + gk + (v ? ' on' : '')} disabled={disabled} title={v ? `${lb}: feito por ${v.name} às ${hm(v.at)}` : `Marcar ${lb} neste anúncio`}
                               onClick={() => call(`/group-items/${i.id}`, 'PATCH', { action: 'check_listing', listing_id: l.id, key: k, value: !v })}>{v ? '✓' : ''}</button>
                           </td>
                         );
-                      })}
-                      <td>{ok ? <span className="tag ok">Completo</span> : !hasLink(l) ? <span className="small danger-text">pendente</span> : <span className="muted small">{CHECKS.filter(([k]) => l.checks?.[k]).length}/{CHECKS.length}</span>}</td>
+                      }))}
+                      <td>{ok ? <span className="tag ok">Completo</span> : !hasLink(l) ? <span className="small danger-text">pendente (sem link)</span> : <LstStatus l={l} />}</td>
                       <td>{!disabled && <button className="icon-btn sm" title="Remover anúncio" onClick={() => confirm('Remover este anúncio e o checklist dele?') && call(`/group-items/${i.id}`, 'PATCH', { action: 'remove_listing', listing_id: l.id })}><Icon name="trash" size={13} /></button>}</td>
                     </tr>
                   );
@@ -401,14 +421,26 @@ function ListingsPanel({ i, call, colSpan, disabled }) {
               <button className="btn primary sm" onClick={add}><Icon name="plus" size={13} /> {val.trim() ? 'Adicionar anúncio' : 'Adicionar sem link'}</button>
             </div>
           )}
-          {!list.length && <p className="muted small" style={{ margin: '6px 0 0' }}>Nenhum anúncio ainda. Adicione um anúncio por canal; cada anúncio terá o seu checklist (fotos, vídeos, anúncio, ADS e afiliados).</p>}
+          {!list.length && <p className="muted small" style={{ margin: '6px 0 0' }}>Nenhum anúncio ainda. Adicione um anúncio por canal; cada anúncio terá o seu checklist: anunciado, alta performance (fotos de capa, ambientada, benefícios, quebra de objeção, como usar, extra explicativa e vídeo) e estratégico (ADS, afiliados, promoção, cupom e oferta relâmpago).</p>}
         </div>
       </td>
     </tr>
   );
 }
 
-// placar por anúncio: checklist geral e por canal
+function LstStatus({ l }) {
+  return (
+    <span className="lst-status">
+      {LGROUPS.map(([gk, gl, gc, items]) => {
+        const n = items.filter(([k]) => l.checks?.[k]).length;
+        const full = n === items.length;
+        return <span key={gk} className={'lst-st' + (full ? ' on' : '')} style={{ '--gc': gc }} title={`${gl}: ${n}/${items.length}`}>{gk === 'anunciado' ? 'No ar' : gk === 'performance' ? `Alta perf. ${n}/${items.length}` : `Estrat. ${n}/${items.length}`}</span>;
+      })}
+    </span>
+  );
+}
+
+// placar por anúncio: anunciado, alta performance e estratégico — geral, por item e por canal
 function ListingSummary({ g }) {
   const { channels } = useApp();
   const all = g.items.flatMap((i) => (i.listings || []).map((l) => ({ ...l, sku: i.sku })));
@@ -416,7 +448,8 @@ function ListingSummary({ g }) {
   const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
   const rows = channels.map((c) => {
     const l = all.filter((x) => x.channel_id === c.id);
-    return { c, total: l.length, skus: new Set(g.items.filter((i) => (i.listings || []).some((x) => x.channel_id === c.id)).map((i) => i.id)).size, by: CHECKS.map(([k]) => l.filter((x) => x.checks?.[k]).length), done: l.filter(listingDone).length };
+    return { c, total: l.length, skus: new Set(g.items.filter((i) => (i.listings || []).some((x) => x.channel_id === c.id)).map((i) => i.id)).size,
+      by: LGROUPS.map(([gk]) => l.filter((x) => lgDone(x, gk)).length), done: l.filter(listingDone).length };
   });
   return (
     <div className="lst-summary">
@@ -427,12 +460,13 @@ function ListingSummary({ g }) {
         </div>
         <div><small>Anúncios</small><b>{all.length}</b><small className="muted">{all.filter(listingDone).length} completo(s){skuNoListing ? ` · ${skuNoListing} SKU(s) sem anúncio` : ''}</small>
           {all.some((l) => !hasLink(l)) && <small className="danger-text">⚠ {all.filter((l) => !hasLink(l)).length} anúncio(s) sem link</small>}</div>
-        {CHECKS.map(([k, l]) => {
-          const n = all.filter((x) => x.checks?.[k]).length;
+        {LGROUPS.map(([gk, gl, gc, items]) => {
+          const n = all.filter((x) => lgDone(x, gk)).length;
           return (
-            <div key={k} className={all.length && n === all.length ? 'full' : ''}>
-              <small>{l}</small><b>{n}/{all.length}</b>
-              <span className="mini-progress"><span style={{ width: `${pct(n, all.length)}%` }} /></span>
+            <div key={gk} className={'grp-card' + (all.length && n === all.length ? ' full' : '')} style={{ '--gc': gc }}>
+              <small>{gl}</small><b>{n}/{all.length}</b>
+              <span className="mini-progress"><span style={{ width: `${pct(n, all.length)}%`, background: gc }} /></span>
+              {items.length > 1 && <small className="muted grp-items">{items.map(([k, l]) => `${l} ${all.filter((x) => x.checks?.[k]).length}`).join(' · ')}</small>}
             </div>
           );
         })}
@@ -440,7 +474,7 @@ function ListingSummary({ g }) {
       <details className="chan-table" open={all.length > 0}>
         <summary>Por canal</summary>
         <table>
-          <thead><tr><th>Canal</th><th>Anúncios</th><th>SKUs com anúncio</th>{CHECKS.map(([k, l]) => <th key={k}>{l}</th>)}<th>Completos</th></tr></thead>
+          <thead><tr><th>Canal</th><th>Anúncios</th><th>SKUs com anúncio</th>{LGROUPS.map(([gk, gl]) => <th key={gk}>{gl}</th>)}<th>Completos</th></tr></thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.c.id} className={r.total ? '' : 'muted'}>
@@ -626,7 +660,7 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
   const [f, setF] = useState({ sku: i.sku || '', drive_link: i.drive_link || '', description: i.description || '' });
   const mine = i.assignee_id === me.id;
   const list = i.listings || [];
-  const cols = 5 + (hasAbc ? 2 : 0) + CHECKS.length + 2;
+  const cols = 5 + (hasAbc ? 2 : 0) + LGROUPS.length + 2;
   if (edit) {
     return (
       <tr className="editing">
@@ -637,7 +671,7 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
         <td><ChannelChips list={list} channels={channels} /></td>
         <td><input className="sm" value={f.drive_link} onChange={(e) => setF({ ...f, drive_link: e.target.value })} placeholder="Link do Drive" /></td>
         <td><BaseToggles i={i} call={call} disabled /></td>
-        <td colSpan={CHECKS.length + 2}>
+        <td colSpan={LGROUPS.length + 2}>
           <div className="row gap-s">
             <button className="btn sm" onClick={() => setEdit(false)}>Cancelar</button>
             <button className="btn primary sm" onClick={async () => (await call(`/group-items/${i.id}`, 'PATCH', f)) && setEdit(false)}>Salvar</button>
@@ -657,13 +691,13 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
         {list.some((l) => !hasLink(l)) && <small className="pend-badge">⚠ {list.filter((l) => !hasLink(l)).length} sem link</small>}</button></td>
       <td><DriveCell key={i.drive_link || ''} i={i} call={call} disabled={groupDone} /></td>
       <td><BaseToggles i={i} call={call} disabled={groupDone} /></td>
-      {CHECKS.map(([k, l]) => {
-        const nOk = list.filter((x) => x.checks?.[k]).length;
+      {LGROUPS.map(([gk, gl]) => {
+        const nOk = list.filter((x) => lgDone(x, gk)).length;
         const full = list.length > 0 && nOk === list.length;
         return (
-          <td key={k} className="ck-col">
+          <td key={gk} className="grp-col">
             {list.length ? (
-              <button className={'ck-count' + (full ? ' full' : nOk ? ' part' : '')} onClick={() => setOpen(true)} title={`${l}: ${nOk} de ${list.length} anúncio(s)`}>{full ? '✓' : `${nOk}/${list.length}`}</button>
+              <button className={'ck-count' + (full ? ' full' : nOk ? ' part' : '')} onClick={() => setOpen(true)} title={`${gl}: ${nOk} de ${list.length} anúncio(s) completos`}>{full ? '✓' : `${nOk}/${list.length}`}</button>
             ) : <span className="muted">—</span>}
           </td>
         );

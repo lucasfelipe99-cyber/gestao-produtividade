@@ -1179,7 +1179,14 @@ app.post('/api/groups/:id/items', requireTab('tarefas'), wrap(async (req, res) =
   broadcast(req.user.company_id, { type: 'groups' });
   res.json({ added: n });
 }));
-const CHECK_KEYS = ['fotos', 'videos', 'anuncio', 'ads', 'afiliados'];
+// checklist de cada anúncio, em 3 grupos:
+//  anunciado = está na plataforma; alta performance = conteúdo completo; estratégico = ações de venda
+const LISTING_GROUPS = {
+  anunciado: ['anuncio'],
+  performance: ['capa', 'ambientada', 'beneficios', 'objecao', 'como_usar', 'extra', 'video'],
+  estrategico: ['ads', 'afiliados', 'promocao', 'cupom', 'relampago'],
+};
+const CHECK_KEYS = [...LISTING_GROUPS.anunciado, ...LISTING_GROUPS.performance, ...LISTING_GROUPS.estrategico];
 // anúncio: link ou código (MLB123... vira link do Mercado Livre)
 function listingFrom(value) {
   const t = String(value || '').trim().slice(0, 2000);
@@ -1615,7 +1622,7 @@ app.get('/api/client-board', requireTab('acompanhamento'), wrap(async (req, res)
     FROM group_tasks g JOIN group_items i ON i.group_id=g.id WHERE g.company_id=$1 AND g.status='open' GROUP BY g.business_id`, [c]);
   const ckDone = await many(`SELECT i_g.business_id, count(*)::int AS n FROM (
       SELECT g.business_id, (l->'checks') AS ch FROM group_tasks g JOIN group_items i ON i.group_id=g.id CROSS JOIN LATERAL jsonb_array_elements(i.listings) l
-      WHERE g.company_id=$1) i_g WHERE (SELECT bool_and(i_g.ch ? k) FROM unnest(ARRAY['fotos','videos','anuncio','ads','afiliados']) k) GROUP BY i_g.business_id`, [c]);
+      WHERE g.company_id=$1) i_g WHERE (SELECT bool_and(i_g.ch ? k) FROM unnest(ARRAY['anuncio','capa','ambientada','beneficios','objecao','como_usar','extra','video','ads','afiliados','promocao','cupom','relampago']) k) GROUP BY i_g.business_id`, [c]);
   const posts = await many(`SELECT DISTINCT ON (p.business_id) p.business_id, p.kind, p.body, to_char(p.meeting_date,'YYYY-MM-DD') AS meeting_date, p.created_at, u.name AS author
     FROM client_posts p LEFT JOIN users u ON u.id=p.author_id WHERE p.company_id=$1 AND p.parent_id IS NULL AND p.business_id IS NOT NULL
     ORDER BY p.business_id, p.pinned DESC, COALESCE(p.meeting_date, p.created_at::date) DESC, p.created_at DESC`, [c]);
@@ -2340,6 +2347,23 @@ for (const day of ['2026-11-04', '2026-11-05', '2026-11-06']) {
   }
 }
 
+// uma vez (17/11): checklist do anúncio passa a ter alta performance (capa, ambientada…) e estratégico; "Vídeos" vira "Vídeo"
+if (!(await one("SELECT 1 AS x FROM app_meta WHERE key='v27_alta_performance'"))) {
+  try {
+    const rows = await many(`SELECT id, listings FROM group_items WHERE jsonb_array_length(listings) > 0`);
+    for (const r of rows) {
+      const list = r.listings.map((l) => {
+        const ch = { ...(l.checks || {}) };
+        if (ch.videos && !ch.video) ch.video = ch.videos;
+        delete ch.videos; delete ch.fotos;
+        return { ...l, checks: ch };
+      });
+      await q('UPDATE group_items SET listings=$2 WHERE id=$1', [r.id, JSON.stringify(list)]);
+    }
+    await q("UPDATE group_items SET status='todo', done_at=NULL WHERE status='done' AND jsonb_array_length(listings) > 0");
+    await q("INSERT INTO app_meta (key) VALUES ('v27_alta_performance')");
+  } catch (e) { console.error('Migração alta performance', e.message); }
+}
 // uma vez (13/11): remove os clientes que o quadro criou e os textos manuais (o quadro agora vem dos dados do sistema)
 if (!(await one("SELECT 1 AS x FROM app_meta WHERE key='v26_quadro_dados'"))) {
   try {

@@ -778,3 +778,29 @@ select.active-filter { border-color: #0073ea; background: #eef4fe; font-weight: 
   .print-products .pp-link { word-break: break-all; max-width: 160px; color: #555; }
 }
 @media print { body.printing-products, html { background: #fff !important; } }
+
+/* checklist do anúncio: anunciado / alta performance / estratégico */
+table.lst-table tr.lst-grp-head th { text-align: center; font-size: 11px; color: #fff; padding: 3px 4px; border-bottom: 0; }
+table.lst-table tr.lst-grp-head th[colspan]:not(:empty) { background: var(--gc, transparent); border-radius: 6px 6px 0 0; }
+table.lst-table th.sm-ck { font-size: 10.5px; width: 52px; text-align: center; padding: 4px 2px; }
+table.lst-table td.ck-col { width: 52px; padding: 4px 2px; }
+table.lst-table .grp-start { border-left: 2px solid #e6e9ef; }
+.ck.ck-anunciado.on { background: #579bfc; border-color: #579bfc; }
+.ck.ck-performance.on { background: #a25ddc; border-color: #a25ddc; }
+.ck.ck-estrategico.on { background: #ff7575; border-color: #ff7575; }
+.lst-status { display: flex; flex-wrap: wrap; gap: 3px; }
+.lst-st { font-size: 10.5px; border-radius: 4px; padding: 1px 5px; border: 1px dashed #c3c6d4; color: #676879; white-space: nowrap; }
+.lst-st.on { background: var(--gc); border: 1px solid var(--gc); color: #fff; font-weight: 600; }
+table.group-items th.grp-col, table.group-items td.grp-col { width: 74px; text-align: center; }
+.grp-card { border-top: 3px solid var(--gc) !important; }
+.grp-items { display: block; font-size: 10.5px; line-height: 1.35; margin-top: 3px; }
+.lst-summary .check-summary { grid-template-columns: 1fr 1fr 1fr 1.6fr 1.4fr; }
+@media (max-width: 1300px) { .lst-summary .check-summary { grid-template-columns: repeat(3, 1fr); } }
+
+.lst-panel { overflow-x: auto; }
+table.lst-table { table-layout: fixed; width: 1092px; min-width: 1092px; }
+table.lst-table td.lst-conta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+table.lst-table td .item-link { display: block; max-width: 128px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+table.lst-table th.sm-ck, table.lst-table td.ck-col { width: 46px !important; }
+table.lst-table td .pending-link { flex-wrap: wrap; } table.lst-table td .pending-link input.sm { width: 120px !important; }
+table.lst-table td .item-link { max-width: 140px; } table.lst-table td .chan { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }

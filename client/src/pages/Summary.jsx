@@ -68,7 +68,9 @@ export default function Summary() {
 
 // ---------- realizado no dia: tarefas concluídas, checklist de SKU e apontamentos, por cliente e colaborador ----------
 function hm(iso) { const d = new Date(iso); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; }
-const CHECK_LABEL = { fotos: 'Fotos', videos: 'Vídeos', anuncio: 'Anúncio', ads: 'ADS', afiliados: 'Afiliados' };
+const CHECK_LABEL = { fotos: 'Fotos', videos: 'Vídeos', anuncio: 'Anunciado', capa: 'Foto de capa', ambientada: 'Foto ambientada', beneficios: 'Foto de benefícios',
+  objecao: 'Foto de quebra de objeção', como_usar: 'Foto de como usar', extra: 'Foto extra explicativa', video: 'Vídeo', ads: 'ADS', afiliados: 'Afiliados',
+  promocao: 'Promoção', cupom: 'Cupom', relampago: 'Oferta relâmpago' };
 const KIND_LABEL = { daily: 'Diária', weekly: 'Semanal', oneoff: 'Pontual' };
 const fmtSecs = (s) => { const m = Math.round((s || 0) / 60); return m ? (m >= 60 ? `${Math.floor(m / 60)}h${pad2(m % 60)}` : `${m} min`) : ''; };
 
@@ -110,7 +112,8 @@ function summarizeRows(rows, { withPeople, withClients, bizName }) {
     const byCh = {}; for (const c of lst) byCh[c.channel_name || 'outro'] = (byCh[c.channel_name || 'outro'] || new Set()).add(c.listing_id);
     const chTxt = Object.entries(byCh).map(([k, v]) => `${k} ${v.size}`).join(', ');
     const cnt = {}; for (const c of lst) for (const k of c.keys) cnt[k] = (cnt[k] || 0) + 1;
-    const LBL = { fotos: 'fotos', videos: 'vídeos', anuncio: 'anúncio', ads: 'ADS', afiliados: 'afiliados' };
+    const LBL = { anuncio: 'anunciado', capa: 'capa', ambientada: 'ambientada', beneficios: 'benefícios', objecao: 'quebra de objeção', como_usar: 'como usar',
+      extra: 'extra explicativa', video: 'vídeo', ads: 'ADS', afiliados: 'afiliados', promocao: 'promoção', cupom: 'cupom', relampago: 'oferta relâmpago' };
     const steps = Object.entries(LBL).filter(([k]) => cnt[k]).map(([k, l]) => `${l} ${cnt[k]}`).join(', ');
     out.push(`Anúncios: checklist avançou em ${plural(ads.size, 'anúncio', 'anúncios')} de ${plural(skus.size, 'SKU', 'SKUs')} (${chTxt}) — ${steps}.`);
   }
