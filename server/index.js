@@ -1005,9 +1005,10 @@ const GROUP_SELECT = `SELECT g.id, g.fixed, g.title, g.abc_period, g.abc_updated
     (SELECT count(*)::int FROM group_items i WHERE i.group_id=g.id) AS items_total,
     (SELECT count(*)::int FROM group_items i WHERE i.group_id=g.id AND i.status='done') AS items_done,
     (SELECT count(*)::int FROM group_items i WHERE i.group_id=g.id AND i.status='doing') AS items_doing,
-    (SELECT count(*)::int FROM group_items i WHERE i.group_id=g.id AND i.status<>'done' AND i.assignee_id IS NULL) AS items_unassigned,
-    COALESCE((SELECT json_agg(x ORDER BY x.name) FROM (SELECT u.id, u.name, count(*)::int AS total, count(*) FILTER (WHERE i.status='done')::int AS done
-      FROM group_items i JOIN users u ON u.id=i.assignee_id WHERE i.group_id=g.id GROUP BY u.id, u.name) x), '[]') AS assignees,
+    (SELECT count(*)::int FROM group_items i WHERE i.group_id=g.id AND i.status<>'done' AND NOT (i.roles ?& array['anunciado','performance','estrategico'])) AS items_unassigned,
+    COALESCE((SELECT json_agg(x ORDER BY x.name) FROM (SELECT u.id, u.name, count(DISTINCT i.id)::int AS total, count(DISTINCT i.id) FILTER (WHERE i.status='done')::int AS done,
+        count(*) FILTER (WHERE r.key='anunciado')::int AS anunciado, count(*) FILTER (WHERE r.key='performance')::int AS performance, count(*) FILTER (WHERE r.key='estrategico')::int AS estrategico
+      FROM group_items i CROSS JOIN LATERAL jsonb_each_text(i.roles) r JOIN users u ON u.id=r.value::int WHERE i.group_id=g.id GROUP BY u.id, u.name) x), '[]') AS assignees,
     COALESCE((SELECT json_agg(json_build_object('id', u.id, 'name', u.name, 'doing_since', m.doing_since,
         'item_id', (SELECT i.id FROM group_items i WHERE i.group_id=g.id AND i.user_id=u.id AND i.status='doing' LIMIT 1),
         'done', (SELECT count(*) FROM group_items i WHERE i.group_id=g.id AND i.user_id=u.id AND i.status='done'))
@@ -1029,7 +1030,8 @@ app.get('/api/groups', requireTab('tarefas'), wrap(async (req, res) => {
 app.get('/api/groups/:id', requireTab('tarefas'), wrap(async (req, res) => {
   const g0 = await tx((db) => loadGroup(db, req));
   const g = await one(`${GROUP_SELECT} WHERE g.id=$1`, [g0.id]);
-  g.items = await many(`SELECT i.id, i.assignee_id, au.name AS assignee_name, i.sku, i.link, i.drive_link, i.checks, i.listings, i.curva, i.faturamento::float AS faturamento, i.abc, i.description, i.status, i.user_id, u.name AS user_name, i.started_at, i.done_at, i.created_at, i.created_by
+  g.items = await many(`SELECT i.id, i.roles,
+      (SELECT jsonb_object_agg(r.key, ru.name) FROM jsonb_each_text(i.roles) r JOIN users ru ON ru.id=r.value::int) AS role_names, i.assignee_id, au.name AS assignee_name, i.sku, i.link, i.drive_link, i.checks, i.listings, i.curva, i.faturamento::float AS faturamento, i.abc, i.description, i.status, i.user_id, u.name AS user_name, i.started_at, i.done_at, i.created_at, i.created_by
     FROM group_items i LEFT JOIN users u ON u.id=i.user_id LEFT JOIN users au ON au.id=i.assignee_id WHERE i.group_id=$1 ORDER BY i.position, i.id`, [g0.id]);
   res.json(g);
 }));
@@ -1110,51 +1112,77 @@ app.delete('/api/groups/:id', requireTab('tarefas'), wrap(async (req, res) => {
   broadcast(req.user.company_id, { type: 'groups' });
   res.json({ ok: true });
 }));
-// trabalho pendente de um SKU (para dividir de forma equilibrada)
-export function skuWork(i) {
+// ---------- funções por SKU: quem anuncia, quem faz a alta performance e quem faz o estratégico ----------
+const ROLES = ['anunciado', 'performance', 'estrategico'];
+const ROLE_LABEL = { anunciado: 'Anúncio', performance: 'Alta performance', estrategico: 'Estratégico' };
+// trabalho pendente de um SKU numa função (para dividir de forma equilibrada)
+export function roleWork(i, role) {
   const list = Array.isArray(i.listings) ? i.listings : [];
-  let w = (i.checks?.fotos ? 0 : 1) + (i.checks?.videos ? 0 : 1);
-  for (const l of list) w += (l.link || l.code ? 0 : 1) + CHECK_KEYS.filter((k) => !l.checks?.[k]).length;
-  return Math.max(1, w);
+  const keys = LISTING_GROUPS[role];
+  let w = 0;
+  if (role === 'anunciado' && !list.length) w += 1;                       // ainda precisa criar o anúncio
+  if (role === 'performance') w += (i.checks?.fotos ? 0 : 1) + (i.checks?.videos ? 0 : 1);
+  for (const l of list) {
+    if (role === 'anunciado' && !(l.link || l.code)) w += 1;
+    w += keys.filter((k) => !l.checks?.[k]).length;
+  }
+  return w;
 }
-// divide os SKUs entre as pessoas: curva A primeiro (maior faturamento), sempre para quem está com menos trabalho
-export function planDistribution(items, userIds, mode) {
+export const skuWork = (i) => Math.max(1, ROLES.reduce((a, r) => a + roleWork(i, r), 0));
+// divide os SKUs de uma função entre as pessoas: curva A primeiro (maior faturamento), sempre para quem está com menos trabalho
+export function planDistribution(items, userIds, mode, role) {
   const load = new Map(userIds.map((id) => [id, { work: 0, skus: 0 }]));
-  const pending = items.filter((i) => i.status !== 'done');
-  const keep = mode === 'unassigned' ? pending.filter((i) => i.assignee_id && load.has(i.assignee_id)) : [];
-  for (const i of keep) { const l = load.get(i.assignee_id); l.work += skuWork(i); l.skus++; }
-  const todo = mode === 'unassigned' ? pending.filter((i) => !i.assignee_id) : pending;
   if (!load.size) return { plan: [], load: {} };
+  const who = (i) => i.roles?.[role] || null;
+  const pending = items.filter((i) => i.status !== 'done' && roleWork(i, role) > 0);
+  if (mode === 'unassigned') for (const i of pending) if (who(i) && load.has(who(i))) { const l = load.get(who(i)); l.work += Math.max(1, roleWork(i, role)); l.skus++; }
+  const todo = mode === 'unassigned' ? pending.filter((i) => !who(i)) : pending;
   const rank = (c) => ({ A: 0, B: 1, C: 2 }[c] ?? 3);
-  todo.sort((a, b) => rank(a.curva) - rank(b.curva) || (Number(b.faturamento) || 0) - (Number(a.faturamento) || 0) || skuWork(b) - skuWork(a));
+  todo.sort((a, b) => rank(a.curva) - rank(b.curva) || (Number(b.faturamento) || 0) - (Number(a.faturamento) || 0) || roleWork(b, role) - roleWork(a, role));
   const plan = [];
   for (const i of todo) {
     let best = null;
     for (const [id, l] of load) if (!best || l.work < best[1].work || (l.work === best[1].work && l.skus < best[1].skus)) best = [id, l];
-    best[1].work += skuWork(i); best[1].skus++;
+    best[1].work += Math.max(1, roleWork(i, role)); best[1].skus++;
     plan.push([i.id, best[0]]);
   }
   return { plan, load: Object.fromEntries([...load].map(([id, l]) => [id, l])) };
 }
 app.post('/api/groups/:id/distribute', requireTab('tarefas'), wrap(async (req, res) => {
   const u = req.user;
-  const ids = [...new Set((req.body?.user_ids || []).map((x) => parseInt(x, 10)).filter(Boolean))];
   const mode = req.body?.mode === 'all' ? 'all' : 'unassigned';
-  if (!ids.length) throw new HttpError(400, 'Escolha pelo menos um colaborador');
+  // { roles: { anunciado: [ids], performance: [ids], estrategico: [ids] } } (ou user_ids para todas as funções)
+  const clean = (arr) => [...new Set((arr || []).map((x) => parseInt(x, 10)).filter(Boolean))];
+  const byRole = {};
+  for (const r of ROLES) byRole[r] = clean(req.body?.roles ? req.body.roles[r] : req.body?.user_ids);
+  if (!ROLES.some((r) => byRole[r].length)) throw new HttpError(400, 'Escolha pelo menos um colaborador em alguma função');
   const r = await tx(async (db) => {
     const g = await loadGroup(db, req, { manage: true });
-    const valid = (await db.query('SELECT id, name FROM users WHERE company_id=$1 AND active AND id = ANY($2::int[])', [u.company_id, ids])).rows;
-    if (!valid.length) throw new HttpError(400, 'Colaboradores inválidos');
-    const items = (await db.query('SELECT id, status, assignee_id, curva, faturamento, checks, listings FROM group_items WHERE group_id=$1', [g.id])).rows;
-    const { plan, load } = planDistribution(items, valid.map((v) => v.id), mode);
-    for (const [itemId, userId] of plan) await db.query('UPDATE group_items SET assignee_id=$2 WHERE id=$1', [itemId, userId]);
-    for (const v of valid) await db.query('INSERT INTO group_task_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [g.id, v.id]);
-    const summary = valid.map((v) => `${v.name.split(' ')[0]} ${load[v.id]?.skus || 0}`).join(', ');
-    if (plan.length) {
-      await db.query(`INSERT INTO team_notices (company_id, kind, title, body, group_id, created_by) VALUES ($1,'sku_distributed',$2,$3,$4,$5)`,
-        [g.company_id, `🧩 SKUs distribuídos: ${g.title}`, `${plan.length} SKU(s) divididos por ${u.name}: ${summary}`, g.id, u.id]);
+    const allIds = [...new Set(ROLES.flatMap((x) => byRole[x]))];
+    const valid = (await db.query('SELECT id, name FROM users WHERE company_id=$1 AND active AND id = ANY($2::int[])', [u.company_id, allIds])).rows;
+    const ok = new Set(valid.map((v) => v.id));
+    const items = (await db.query('SELECT id, status, assignee_id, roles, curva, faturamento, checks, listings FROM group_items WHERE group_id=$1', [g.id])).rows;
+    const result = {}; let total = 0;
+    const lines = [];
+    for (const role of ROLES) {
+      const ids = byRole[role].filter((x) => ok.has(x));
+      if (!ids.length) continue;
+      const { plan, load } = planDistribution(items, ids, mode, role);
+      for (const [itemId, userId] of plan) {
+        const it = items.find((x) => x.id === itemId);
+        it.roles = { ...(it.roles || {}), [role]: userId };
+        await db.query(`UPDATE group_items SET roles = roles || jsonb_build_object($2::text, $3::int) WHERE id=$1`, [itemId, role, userId]);
+      }
+      total += plan.length;
+      result[role] = ids.map((id) => ({ id, name: valid.find((v) => v.id === id)?.name, skus: load[id]?.skus || 0 }));
+      if (plan.length) lines.push(`${ROLE_LABEL[role]}: ${result[role].map((x) => `${(x.name || '').split(' ')[0]} ${x.skus}`).join(', ')}`);
     }
-    return { distributed: plan.length, per_user: valid.map((v) => ({ id: v.id, name: v.name, skus: load[v.id]?.skus || 0, work: load[v.id]?.work || 0 })) };
+    for (const v of valid) await db.query('INSERT INTO group_task_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [g.id, v.id]);
+    if (total) {
+      await db.query(`INSERT INTO team_notices (company_id, kind, title, body, group_id, created_by) VALUES ($1,'sku_distributed',$2,$3,$4,$5)`,
+        [g.company_id, `🧩 Funções dos SKUs distribuídas: ${g.title}`, `por ${u.name} — ${lines.join(' · ')}`, g.id, u.id]);
+    }
+    return { distributed: total, roles: result };
   });
   broadcast(u.company_id, { type: 'groups' });
   res.json(r);
@@ -1521,6 +1549,17 @@ app.patch('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) =
         list.splice(k, 1);
       }
       await saveListings(db, i, list, u.id);
+    } else if (b.action === 'assign_role') {
+      // define quem faz uma função no SKU (anúncio, alta performance, estratégico)
+      if (!ROLES.includes(b.role)) throw new HttpError(400, 'Função inválida');
+      const to = b.user_id ? parseInt(b.user_id, 10) : null;
+      const cur = i.roles?.[b.role] || null;
+      const self = to === u.id && !cur;
+      if (!canManage && !self) throw new HttpError(403, 'Só quem criou a tarefa (ou um administrador) pode trocar quem faz esta função');
+      if (to && !(await db.query('SELECT 1 FROM users WHERE id=$1 AND company_id=$2 AND active', [to, u.company_id])).rowCount) throw new HttpError(400, 'Colaborador inválido');
+      if (to) await db.query(`UPDATE group_items SET roles = roles || jsonb_build_object($2::text, $3::int) WHERE id=$1`, [i.id, b.role, to]);
+      else await db.query(`UPDATE group_items SET roles = roles - $2::text WHERE id=$1`, [i.id, b.role]);
+      if (to) await db.query('INSERT INTO group_task_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [g.id, to]);
     } else if (b.action === 'assign') {
       // trocar responsável: quem criou/admin; colaborador pode pegar um SKU sem responsável para si
       const to = b.user_id ? parseInt(b.user_id, 10) : null;
@@ -1616,7 +1655,7 @@ app.get('/api/client-board', requireTab('acompanhamento'), wrap(async (req, res)
       count(i.id) FILTER (WHERE i.status='done')::int AS sku_done,
       sum(jsonb_array_length(i.listings))::int AS ads,
       sum((SELECT count(*) FROM jsonb_array_elements(i.listings) l WHERE COALESCE(l->>'link', l->>'code') IS NULL))::int AS ads_nolink,
-      count(i.id) FILTER (WHERE i.status<>'done' AND i.assignee_id IS NULL)::int AS unassigned,
+      count(i.id) FILTER (WHERE i.status<>'done' AND NOT (i.roles ?& array['anunciado','performance','estrategico']))::int AS unassigned,
       sum(i.faturamento)::float AS fat, max(g.abc_period) AS abc_period,
       count(i.id) FILTER (WHERE i.curva='A')::int AS curva_a
     FROM group_tasks g JOIN group_items i ON i.group_id=g.id WHERE g.company_id=$1 AND g.status='open' GROUP BY g.business_id`, [c]);

@@ -804,3 +804,24 @@ table.lst-table td .item-link { display: block; max-width: 128px; overflow: hidd
 table.lst-table th.sm-ck, table.lst-table td.ck-col { width: 46px !important; }
 table.lst-table td .pending-link { flex-wrap: wrap; } table.lst-table td .pending-link input.sm { width: 120px !important; }
 table.lst-table td .item-link { max-width: 140px; } table.lst-table td .chan { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
+
+/* funções por SKU */
+.roles-cell { display: flex; flex-direction: column; gap: 3px; }
+.role-line { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 4px; font-size: 11.5px; }
+.role-line i { font-style: normal; font-size: 10.5px; font-weight: 600; color: var(--rc); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.role-line select { font-size: 11.5px; padding: 1px 4px; height: 24px; }
+.role-line.mine b, .role-line.mine select { color: var(--rc); font-weight: 700; }
+.role-counts { display: flex; gap: 4px; flex-wrap: wrap; }
+.role-counts i { font-style: normal; font-size: 10.5px; color: var(--rc); font-weight: 600; }
+.role-pick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 10px; }
+.role-pick { border: 1px solid #e6e9ef; border-top: 4px solid var(--rc); border-radius: 8px; padding: 8px 10px; }
+.role-pick-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; margin-bottom: 4px; }
+.role-pick-head b { color: var(--rc); }
+.member-pick.col { flex-direction: column; flex-wrap: nowrap; gap: 3px; }
+table.role-prev { width: 100%; font-size: 12px; margin-top: 6px; border-top: 1px solid #f0f1f4; }
+table.role-prev td { padding: 2px 4px; }
+@media (max-width: 900px) { .role-pick-grid { grid-template-columns: 1fr; } }
+.dist-chip .role-counts { gap: 6px; }
+.dist-chip .role-counts i + i::before { content: '·'; color: #c3c6d4; margin-right: 6px; }
+.role-pick-head .link { white-space: nowrap; font-size: 11px; }
+table.role-prev td { white-space: nowrap; }

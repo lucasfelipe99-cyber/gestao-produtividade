@@ -432,3 +432,13 @@ DO $$ BEGIN
     INSERT INTO app_meta (key) VALUES ('v25_aba_acompanhamento');
   END IF;
 END $$;
+
+-- v28: funções por SKU (quem anuncia, quem faz alta performance, quem faz o estratégico)
+ALTER TABLE group_items ADD COLUMN IF NOT EXISTS roles JSONB NOT NULL DEFAULT '{}'::jsonb;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v28_funcoes_sku') THEN
+    UPDATE group_items SET roles = jsonb_build_object('anunciado', assignee_id, 'performance', assignee_id, 'estrategico', assignee_id)
+      WHERE assignee_id IS NOT NULL AND roles = '{}'::jsonb;
+    INSERT INTO app_meta (key) VALUES ('v28_funcoes_sku');
+  END IF;
+END $$;

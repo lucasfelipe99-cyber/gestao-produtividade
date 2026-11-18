@@ -121,7 +121,7 @@ function GroupBoard({ id, me, onDeleted }) {
   const hasAbc = g.items.some((i) => i.abc);
   const items = g.items
     .filter((i) => filter === 'all' || (filter === 'done' ? i.status === 'done' : filter === 'pending' ? i.status !== 'done'
-      : filter === 'mine' ? i.assignee_id === me.id : filter === 'none' ? !i.assignee_id : filter.startsWith('u') ? i.assignee_id === Number(filter.slice(1)) : true))
+      : filter === 'mine' ? hasRole(i, me.id) : filter === 'none' ? missingRole(i) : filter.startsWith('u') ? hasRole(i, Number(filter.slice(1))) : true))
     .filter((i) => !curvaF || (curvaF === 'none' ? !i.curva : i.curva === curvaF))
     .filter((i) => mediaMatch(i, mediaF))
     .filter((i) => !q.trim() || `${i.sku || ''} ${i.description || ''}`.toLowerCase().includes(q.trim().toLowerCase()))
@@ -171,7 +171,7 @@ function GroupBoard({ id, me, onDeleted }) {
           <Progress value={g.items.length ? (count('done') / g.items.length) * 100 : 0} color="#00c875" label={`${count('done')}/${g.items.length} SKUs feitos`} />
         </div>
         <div className="mini-seg">
-          {[['all', `Todos ${g.items.length}`], ['mine', `Meus ${g.items.filter((i) => i.assignee_id === me.id).length}`], ['none', `Sem responsável ${g.items.filter((i) => !i.assignee_id && i.status !== 'done').length}`], ['pending', `Pendentes ${g.items.length - count('done')}`], ['done', `Feitos ${count('done')}`]].map(([k, l]) => (
+          {[['all', `Todos ${g.items.length}`], ['mine', `Meus ${g.items.filter((i) => hasRole(i, me.id)).length}`], ['none', `Função sem dono ${g.items.filter(missingRole).length}`], ['pending', `Pendentes ${g.items.length - count('done')}`], ['done', `Feitos ${count('done')}`]].map(([k, l]) => (
             <button key={k} className={filter === k ? 'on' : ''} onClick={() => setFilter(k)}>{l}</button>
           ))}
         </div>
@@ -209,7 +209,7 @@ function GroupBoard({ id, me, onDeleted }) {
             <thead><tr>
               <th style={{ width: 28 }}>#</th><th>SKU / descrição</th>{hasAbc && <><th style={{ width: 48 }}>Curva</th><th style={{ width: 92 }}>Faturam.</th></>}<th style={{ width: 158 }}>Anúncios por canal</th><th style={{ width: 118 }}>Drive</th><th style={{ width: 96 }} title="Fotos e vídeos prontos no geral (base para todos os anúncios)">Base do SKU</th>
               {LGROUPS.map(([gk, gl]) => <th key={gk} className="grp-col" title={`Anúncios do SKU com ${gl.toLowerCase()} completo`}>{gl === 'Alta performance' ? 'Alta perf.' : gl}</th>)}
-              <th style={{ width: 150 }}>Responsável</th><th style={{ width: 64 }} />
+              <th style={{ width: 196 }}>Quem faz</th><th style={{ width: 64 }} />
             </tr></thead>
             <tbody>
               {items.map((i) => <ItemRow key={i.id} hasAbc={hasAbc} i={i} n={g.items.indexOf(i) + 1} me={me} canManage={canManage} groupDone={done} call={call} />)}
@@ -260,7 +260,7 @@ function ProductsPrint({ g, items, filters }) {
       <h1>Produtos — {g.business_name || g.title}</h1>
       <p className="pp-sub">{g.title} · {new Date().toLocaleDateString('pt-BR')} · {items.length} SKU(s){filters.length ? ` · filtro: ${filters.join(', ')}` : ''}</p>
       <table>
-        <thead><tr><th>SKU</th><th>Descrição</th>{hasAbc && <><th>Curva</th><th>Faturamento</th></>}<th>Fotos</th><th>Vídeos</th><th>Anúncios por canal</th><th>Responsável</th><th>Drive</th></tr></thead>
+        <thead><tr><th>SKU</th><th>Descrição</th>{hasAbc && <><th>Curva</th><th>Faturamento</th></>}<th>Fotos</th><th>Vídeos</th><th>Anúncios por canal</th><th>Quem faz</th><th>Drive</th></tr></thead>
         <tbody>
           {items.map((i) => {
             const list = i.listings || [];
@@ -279,7 +279,7 @@ function ProductsPrint({ g, items, filters }) {
                 <td className={i.checks?.fotos ? 'pp-ok' : 'pp-no'}>{ok(i.checks?.fotos)}</td>
                 <td className={i.checks?.videos ? 'pp-ok' : 'pp-no'}>{ok(i.checks?.videos)}</td>
                 <td>{byCh.length ? byCh.join(' | ') : 'sem anúncio'}</td>
-                <td>{i.assignee_name || '—'}</td>
+                <td>{ROLES.map(([r, l]) => roleOf(i, r) && `${l === 'Alta performance' ? 'Alta perf.' : l}: ${(i.role_names?.[r] || '').split(' ')[0] || '#' + roleOf(i, r)}`).filter(Boolean).join(' · ') || '—'}</td>
                 <td className="pp-link">{i.drive_link || '—'}</td>
               </tr>
             );
@@ -383,7 +383,7 @@ function ListingsPanel({ i, call, colSpan, disabled }) {
                 {CHECKS.map(([k]) => <col key={k} style={{ width: 46 }} />)}<col style={{ width: 112 }} /><col style={{ width: 30 }} /></colgroup>
               <thead>
                 <tr className="lst-grp-head"><th colSpan={3} />
-                  {LGROUPS.map(([gk, gl, gc, items]) => <th key={gk} colSpan={items.length} style={{ '--gc': gc }}>{gl}</th>)}<th colSpan={2} /></tr>
+                  {LGROUPS.map(([gk, gl, gc, items]) => <th key={gk} colSpan={items.length} style={{ '--gc': gc }}>{gl}{i.role_names?.[gk] ? ` · ${i.role_names[gk].split(' ')[0]}` : ''}</th>)}<th colSpan={2} /></tr>
                 <tr><th>Canal</th><th>Anúncio</th><th>Conta</th>
                   {LGROUPS.flatMap(([gk, , gc, items]) => items.map(([k, l, full], n) => <th key={k} className={'ck-col sm-ck' + (n === 0 ? ' grp-start' : '')} title={full}>{l}</th>))}
                   <th>Situação</th><th /></tr>
@@ -538,48 +538,60 @@ function BaseToggles({ i, call, disabled }) {
 }
 
 // ---------- distribuição dos SKUs entre colaboradores ----------
-function skuWork(i) {
+// funções por SKU: quem anuncia, quem faz a alta performance e quem faz o estratégico
+const ROLES = [['anunciado', 'Anúncio', '#579bfc'], ['performance', 'Alta performance', '#a25ddc'], ['estrategico', 'Estratégico', '#ff7575']];
+const roleOf = (i, r) => i.roles?.[r] || null;
+const hasRole = (i, uid) => ROLES.some(([r]) => roleOf(i, r) === uid);
+const missingRole = (i) => i.status !== 'done' && ROLES.some(([r]) => !roleOf(i, r));
+function roleWork(i, role) {
   const list = i.listings || [];
-  let w = (i.checks?.fotos ? 0 : 1) + (i.checks?.videos ? 0 : 1);
-  for (const l of list) w += (l.link || l.code ? 0 : 1) + CHECKS.filter(([k]) => !l.checks?.[k]).length;
-  return Math.max(1, w);
+  const keys = LGROUPS.find((x) => x[0] === role)[3].map(([k]) => k);
+  let w = 0;
+  if (role === 'anunciado' && !list.length) w += 1;
+  if (role === 'performance') w += (i.checks?.fotos ? 0 : 1) + (i.checks?.videos ? 0 : 1);
+  for (const l of list) { if (role === 'anunciado' && !(l.link || l.code)) w += 1; w += keys.filter((k) => !l.checks?.[k]).length; }
+  return w;
 }
-function planDistribution(items, userIds, mode) {
+function planDistribution(items, userIds, mode, role) {
   const load = new Map(userIds.map((id) => [id, { work: 0, skus: 0, a: 0 }]));
-  const pending = items.filter((i) => i.status !== 'done');
-  if (mode === 'unassigned') for (const i of pending) if (i.assignee_id && load.has(i.assignee_id)) { const l = load.get(i.assignee_id); l.work += skuWork(i); l.skus++; if (i.curva === 'A') l.a++; }
-  const todo = mode === 'unassigned' ? pending.filter((i) => !i.assignee_id) : pending;
   if (!load.size) return { load, moved: 0 }; // ninguém escolhido ainda
+  const pending = items.filter((i) => i.status !== 'done' && roleWork(i, role) > 0);
+  if (mode === 'unassigned') for (const i of pending) { const w = roleOf(i, role); if (w && load.has(w)) { const l = load.get(w); l.work += Math.max(1, roleWork(i, role)); l.skus++; if (i.curva === 'A') l.a++; } }
+  const todo = mode === 'unassigned' ? pending.filter((i) => !roleOf(i, role)) : pending;
   const rank = (c) => ({ A: 0, B: 1, C: 2 }[c] ?? 3);
-  todo.sort((a, b) => rank(a.curva) - rank(b.curva) || (b.faturamento || 0) - (a.faturamento || 0) || skuWork(b) - skuWork(a));
+  todo.sort((a, b) => rank(a.curva) - rank(b.curva) || (b.faturamento || 0) - (a.faturamento || 0) || roleWork(b, role) - roleWork(a, role));
   let moved = 0;
   for (const i of todo) {
     let best = null;
     for (const [id, l] of load) if (!best || l.work < best[1].work || (l.work === best[1].work && l.skus < best[1].skus)) best = [id, l];
-    best[1].work += skuWork(i); best[1].skus++; if (i.curva === 'A') best[1].a++; moved++;
+    best[1].work += Math.max(1, roleWork(i, role)); best[1].skus++; if (i.curva === 'A') best[1].a++; moved++;
   }
   return { load, moved };
 }
 function Distribution({ g, canManage, done, onOpen, filter, setFilter, me }) {
   const per = g.assignees || [];
-  const none = g.items.filter((i) => !i.assignee_id && i.status !== 'done').length;
+  const none = g.items.filter(missingRole).length;
   return (
     <div className="dist-box">
       <div className="grow">
-        <small className="muted">Divisão dos SKUs</small>
+        <small className="muted">Divisão das funções (anúncio · alta performance · estratégico)</small>
         <div className="presence-list">
-          {!per.length && <span className="muted small">Ninguém com SKU ainda{canManage ? ' — use "Distribuir SKUs"' : ''}.</span>}
+          {!per.length && <span className="muted small">Ninguém com função ainda{canManage ? ' — use "Distribuir funções"' : ''}.</span>}
           {per.map((p) => (
             <button key={p.id} className={'presence-chip dist-chip' + (filter === 'u' + p.id ? ' on' : '')} onClick={() => setFilter(filter === 'u' + p.id ? 'all' : 'u' + p.id)} title="Ver só os SKUs desta pessoa">
               <Avatar name={p.name} id={p.id} size={24} />
-              <span><b>{p.id === me.id ? 'Você' : p.name.split(' ')[0]}</b><small>{p.done}/{p.total} feitos</small></span>
-              <span className="mini-progress dist-prog"><span style={{ width: `${p.total ? (p.done / p.total) * 100 : 0}%` }} /></span>
+              <span><b>{p.id === me.id ? 'Você' : p.name.split(' ')[0]}</b>
+                <small className="role-counts">
+                  {p.anunciado > 0 && <i style={{ '--rc': '#579bfc' }}>Anúncio {p.anunciado}</i>}
+                  {p.performance > 0 && <i style={{ '--rc': '#a25ddc' }}>Alta perf. {p.performance}</i>}
+                  {p.estrategico > 0 && <i style={{ '--rc': '#ff7575' }}>Estrat. {p.estrategico}</i>}
+                </small></span>
             </button>
           ))}
-          {none > 0 && <button className={'presence-chip dist-chip none' + (filter === 'none' ? ' on' : '')} onClick={() => setFilter(filter === 'none' ? 'all' : 'none')}><span><b>{none}</b><small>sem responsável</small></span></button>}
+          {none > 0 && <button className={'presence-chip dist-chip none' + (filter === 'none' ? ' on' : '')} onClick={() => setFilter(filter === 'none' ? 'all' : 'none')}><span><b>{none}</b><small>SKU(s) com função sem dono</small></span></button>}
         </div>
       </div>
-      {canManage && !done && <button className="btn primary" onClick={onOpen}><Icon name="users" size={15} /> Distribuir SKUs</button>}
+      {canManage && !done && <button className="btn primary" onClick={onOpen}><Icon name="users" size={15} /> Distribuir funções</button>}
     </div>
   );
 }
@@ -587,68 +599,76 @@ function DistributeModal({ g, onClose }) {
   const { isAdmin, activeUsers } = useApp();
   const dir = useData(isAdmin ? null : '/users/directory');
   const people = isAdmin ? activeUsers : dir.data || [];
-  const [sel, setSel] = useState(() => (g.assignees || []).map((a) => a.id));
+  const initial = (r) => [...new Set(g.items.map((i) => roleOf(i, r)).filter(Boolean))];
+  const [sel, setSel] = useState(() => Object.fromEntries(ROLES.map(([r]) => [r, initial(r)])));
   const [mode, setMode] = useState('unassigned');
   const [busy, setBusy] = useState(false);
-  const toggle = (id) => setSel(sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
-  const { load, moved } = planDistribution(g.items, sel, mode);
+  const toggle = (r, id) => setSel({ ...sel, [r]: sel[r].includes(id) ? sel[r].filter((x) => x !== id) : [...sel[r], id] });
+  const copyToAll = (r) => setSel(Object.fromEntries(ROLES.map(([x]) => [x, [...sel[r]]])));
+  const plans = Object.fromEntries(ROLES.map(([r]) => [r, planDistribution(g.items, sel[r], mode, r)]));
+  const moved = ROLES.reduce((a, [r]) => a + plans[r].moved, 0);
   const run = async () => {
     setBusy(true);
     try {
-      const r = await api(`/groups/${g.id}/distribute`, { method: 'POST', body: { user_ids: sel, mode } });
-      emitLocal(); toast(`${r.distributed} SKU(s) distribuídos`, 'success'); onClose();
+      const res = await api(`/groups/${g.id}/distribute`, { method: 'POST', body: { roles: sel, mode } });
+      emitLocal(); toast(`${res.distributed} função(ões) distribuída(s)`, 'success'); onClose();
     } catch (e) { toast(e.message, 'error'); } finally { setBusy(false); }
   };
-  const pending = g.items.filter((i) => i.status !== 'done').length;
-  const unassigned = g.items.filter((i) => i.status !== 'done' && !i.assignee_id).length;
   return (
-    <Modal title="Distribuir SKUs entre o time" onClose={onClose} wide
-      footer={<><button className="btn" onClick={onClose}>Cancelar</button><button className="btn primary" disabled={busy || !sel.length || !moved} onClick={run}>Distribuir {moved} SKU(s)</button></>}>
-      <p className="muted small" style={{ marginTop: 0 }}>O sistema divide de forma equilibrada: começa pelos SKUs <b>curva A</b> (maior faturamento) e sempre entrega o próximo para quem está com <b>menos trabalho pendente</b> (fotos, vídeos e checklist dos anúncios que faltam). Assim cada um fica com parte dos SKUs mais importantes.</p>
-      <Field label="Quem vai participar">
-        <div className="member-pick">
-          {people.map((u) => <label key={u.id} className="check"><input type="checkbox" checked={sel.includes(u.id)} onChange={() => toggle(u.id)} /> {u.name}</label>)}
-        </div>
-      </Field>
+    <Modal title="Distribuir funções dos SKUs" onClose={onClose} wide
+      footer={<><button className="btn" onClick={onClose}>Cancelar</button><button className="btn primary" disabled={busy || !moved} onClick={run}>Distribuir {moved} função(ões)</button></>}>
+      <p className="muted small" style={{ marginTop: 0 }}>Cada SKU tem 3 funções, que podem ficar com pessoas diferentes: <b>quem anuncia</b>, <b>quem faz a alta performance</b> (fotos e vídeo) e <b>quem faz o estratégico</b> (ADS, afiliados, promoção, cupom, oferta relâmpago).
+        Em cada função o sistema divide de forma equilibrada: <b>curva A</b> primeiro e sempre para quem está com <b>menos trabalho pendente</b> naquela função.</p>
+      <div className="role-pick-grid">
+        {ROLES.map(([r, label, color]) => (
+          <div key={r} className="role-pick" style={{ '--rc': color }}>
+            <div className="role-pick-head"><b>{label}</b>{sel[r].length > 0 && <button className="link small" onClick={() => copyToAll(r)}>copiar p/ todas</button>}</div>
+            <div className="member-pick col">
+              {people.map((u) => <label key={u.id} className="check"><input type="checkbox" checked={sel[r].includes(u.id)} onChange={() => toggle(r, u.id)} /> {u.name}</label>)}
+            </div>
+            {sel[r].length > 0 && (
+              <table className="role-prev"><tbody>{sel[r].map((id) => { const l = plans[r].load.get(id); return (
+                <tr key={id}><td>{people.find((p) => p.id === id)?.name.split(' ')[0] || id}</td><td><b>{l?.skus || 0}</b> SKU(s)</td><td className="muted">{l?.a || 0} A · {l?.work || 0} etapa(s)</td></tr>
+              ); })}</tbody></table>
+            )}
+          </div>
+        ))}
+      </div>
       <Field label="O que dividir">
         <div className="col gap-s">
-          <label className="check"><input type="radio" checked={mode === 'unassigned'} onChange={() => setMode('unassigned')} /> Só os SKUs sem responsável ({unassigned}) — quem já tem SKU continua com eles</label>
-          <label className="check"><input type="radio" checked={mode === 'all'} onChange={() => setMode('all')} /> Redividir todos os pendentes ({pending}) — refaz a divisão do zero</label>
+          <label className="check"><input type="radio" checked={mode === 'unassigned'} onChange={() => setMode('unassigned')} /> Só as funções sem dono — quem já tem continua com as suas</label>
+          <label className="check"><input type="radio" checked={mode === 'all'} onChange={() => setMode('all')} /> Redividir todas as funções pendentes — refaz do zero</label>
         </div>
       </Field>
-      {sel.length > 0 && (
-        <div className="dist-preview">
-          <small className="muted">Prévia</small>
-          <table><thead><tr><th>Colaborador</th><th>SKUs</th><th>Curva A</th><th>Trabalho pendente</th></tr></thead>
-            <tbody>{sel.map((id) => { const u = people.find((p) => p.id === id); const l = load.get(id); return (
-              <tr key={id}><td>{u?.name || id}</td><td><b>{l?.skus || 0}</b></td><td>{l?.a || 0}</td><td>{l?.work || 0} etapa(s)</td></tr>
-            ); })}</tbody></table>
-        </div>
-      )}
     </Modal>
   );
 }
-function AssigneeCell({ i, me, canManage, call, disabled }) {
+// quem faz cada função do SKU
+function RolesCell({ i, me, canManage, call, disabled }) {
   const { isAdmin, activeUsers } = useApp();
-  const dir = useData(canManage && !isAdmin ? '/users/directory' : null);
+  const dir = useData(!isAdmin ? '/users/directory' : null);
   const people = isAdmin ? activeUsers : dir.data || [];
   const done = i.status === 'done';
-  if (canManage && !disabled) {
-    return (
-      <span className="assignee-cell">
-        {done && <span className="pill sm" style={{ background: '#00c875' }}>Feito</span>}
-        <select className="sm" value={i.assignee_id || ''} onChange={(e) => call(`/group-items/${i.id}`, 'PATCH', { action: 'assign', user_id: e.target.value || null })}>
-          <option value="">— sem responsável —</option>
-          {people.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-        </select>
-      </span>
-    );
-  }
+  const nameOf = (id) => people.find((p) => p.id === id)?.name || Object.entries(i.role_names || {}).find(([r]) => roleOf(i, r) === id)?.[1] || '?';
   return (
-    <span className="assignee-cell">
+    <span className="roles-cell">
       {done && <span className="pill sm" style={{ background: '#00c875' }}>Feito</span>}
-      {i.assignee_name ? <span className="row gap-s"><Avatar name={i.assignee_name} id={i.assignee_id} size={22} /><span className="small">{i.assignee_id === me.id ? 'Você' : i.assignee_name.split(' ')[0]}</span></span>
-        : !disabled && !done ? <button className="btn xs" onClick={() => call(`/group-items/${i.id}`, 'PATCH', { action: 'assign', user_id: me.id })}>Pegar para mim</button> : <span className="muted">—</span>}
+      {ROLES.map(([r, label, color]) => {
+        const who = roleOf(i, r);
+        const finished = (i.listings || []).length > 0 && roleWork(i, r) === 0;
+        return (
+          <span key={r} className={'role-line' + (who === me.id ? ' mine' : '')} style={{ '--rc': color }} title={label}>
+            <i>{label === 'Alta performance' ? 'Alta perf.' : label}{finished ? ' ✓' : ''}</i>
+            {canManage && !disabled ? (
+              <select className="sm" value={who || ''} onChange={(e) => call(`/group-items/${i.id}`, 'PATCH', { action: 'assign_role', role: r, user_id: e.target.value || null })}>
+                <option value="">— ninguém —</option>
+                {people.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            ) : who ? <b>{who === me.id ? 'Você' : nameOf(who).split(' ')[0]}</b>
+              : !disabled && !done ? <button className="btn xs" onClick={() => call(`/group-items/${i.id}`, 'PATCH', { action: 'assign_role', role: r, user_id: me.id })}>Pegar</button> : <span className="muted">—</span>}
+          </span>
+        );
+      })}
     </span>
   );
 }
@@ -658,7 +678,7 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
   const [edit, setEdit] = useState(false);
   const [open, setOpen] = useState(false);
   const [f, setF] = useState({ sku: i.sku || '', drive_link: i.drive_link || '', description: i.description || '' });
-  const mine = i.assignee_id === me.id;
+  const mine = hasRole(i, me.id);
   const list = i.listings || [];
   const cols = 5 + (hasAbc ? 2 : 0) + LGROUPS.length + 2;
   if (edit) {
@@ -702,7 +722,7 @@ function ItemRow({ i, n, me, canManage, groupDone, call, hasAbc }) {
           </td>
         );
       })}
-      <td><AssigneeCell i={i} me={me} canManage={canManage} call={call} disabled={groupDone} /></td>
+      <td><RolesCell i={i} me={me} canManage={canManage} call={call} disabled={groupDone} /></td>
       <td>
         <span className="row gap-s">
           {(i.created_by === me.id || canManage) && (<>
