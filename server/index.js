@@ -1055,8 +1055,8 @@ async function insertItems(db, groupId, userId, items) {
     return JSON.stringify([{ id: newId(), channel_id: ch.id, ...listingFrom(link), by: userId, at: new Date().toISOString() }]);
   };
   const start = (await db.query('SELECT COALESCE(max(position),0) AS p FROM group_items WHERE group_id=$1', [groupId])).rows[0].p;
-  await db.query(`INSERT INTO group_items (group_id, sku, link, drive_link, description, created_by, position, listings)
-    SELECT $1, x.sku, x.link, x.drive, x.descr, $2, $3 + x.n, x.lst::jsonb FROM unnest($4::text[], $5::text[], $6::text[], $7::text[], $8::text[]) WITH ORDINALITY AS x(sku, link, drive, descr, lst, n)`,
+  await db.query(`INSERT INTO group_items (group_id, sku, link, drive_link, description, created_by, position, listings, drive_by, drive_at)
+    SELECT $1, x.sku, x.link, x.drive, x.descr, $2, $3 + x.n, x.lst::jsonb, CASE WHEN x.drive IS NOT NULL THEN $2 END, CASE WHEN x.drive IS NOT NULL THEN now() END FROM unnest($4::text[], $5::text[], $6::text[], $7::text[], $8::text[]) WITH ORDINALITY AS x(sku, link, drive, descr, lst, n)`,
     [groupId, userId, start, list.map((i) => i.sku), list.map((i) => i.link), list.map((i) => i.drive_link), list.map((i) => i.description), list.map((i) => listingsFor(i.link))]);
   return list.length;
 }
@@ -1448,12 +1448,13 @@ async function importSkus(db, g, u, parsed) {
     if (e.videos && !checks.videos) checks.videos = { by: u.id, name: u.name, at: now };
     if (!before && checks.fotos && checks.videos) readyNow.push(e.sku);
     if (ex) {
+      if (!ex.drive_link && cleanLink(e.drive)) await db.query('UPDATE group_items SET drive_by=$2, drive_at=now() WHERE id=$1', [ex.id, u.id]);
       await db.query(`UPDATE group_items SET description=COALESCE(description, $2), drive_link=COALESCE(drive_link, $3), listings=$4, checks=$5 WHERE id=$1`,
         [ex.id, cleanText(e.description, 2000), cleanLink(e.drive), JSON.stringify(list), JSON.stringify(checks)]);
       updated++;
     } else {
-      await db.query(`INSERT INTO group_items (group_id, sku, description, drive_link, listings, checks, created_by, position) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [g.id, cleanText(e.sku, 120), cleanText(e.description, 2000), cleanLink(e.drive), JSON.stringify(list), JSON.stringify(checks), u.id, ++pos]);
+      await db.query(`INSERT INTO group_items (group_id, sku, description, drive_link, listings, checks, created_by, position, drive_by, drive_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [g.id, cleanText(e.sku, 120), cleanText(e.description, 2000), cleanLink(e.drive), JSON.stringify(list), JSON.stringify(checks), u.id, ++pos, cleanLink(e.drive) ? u.id : null, cleanLink(e.drive) ? new Date() : null]);
       added++;
     }
   }
@@ -1570,7 +1571,9 @@ app.patch('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) =
       if (to) await db.query('INSERT INTO group_task_members (group_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [g.id, to]);
     } else if (b.action === 'set_drive') {
       // link do Drive do SKU: qualquer participante pode colar/alterar direto na lista
-      await db.query('UPDATE group_items SET drive_link=$2 WHERE id=$1', [i.id, cleanLink(b.value)]);
+      const dl = cleanLink(b.value);
+      if (dl && dl !== i.drive_link) await db.query('UPDATE group_items SET drive_link=$2, drive_by=$3, drive_at=now() WHERE id=$1', [i.id, dl, u.id]);
+      else if (!dl) await db.query('UPDATE group_items SET drive_link=NULL, drive_by=NULL, drive_at=NULL WHERE id=$1', [i.id]);
     } else if (b.action === 'set_listing_link') {
       const list = Array.isArray(i.listings) ? i.listings.map((x) => ({ ...x })) : [];
       const l = list.find((x) => x.id === b.listing_id);
@@ -1614,6 +1617,7 @@ app.patch('/api/group-items/:id', requireTab('tarefas'), wrap(async (req, res) =
       const sku = 'sku' in b ? cleanText(b.sku, 120) : i.sku, drive = 'drive_link' in b ? cleanLink(b.drive_link) : i.drive_link;
       if (!link && !description && !sku) throw new HttpError(400, 'Informe o SKU, o link ou a descrição');
       await db.query('UPDATE group_items SET link=$2, description=$3, sku=$4, drive_link=$5 WHERE id=$1', [i.id, link, description, sku, drive]);
+      if (drive && drive !== i.drive_link) await db.query('UPDATE group_items SET drive_by=$2, drive_at=now() WHERE id=$1', [i.id, u.id]);
     }
     await db.query('UPDATE group_tasks SET updated_at=now() WHERE id=$1', [g.id]);
   });
@@ -2155,7 +2159,26 @@ app.get('/api/day-done', wrap(async (req, res) => {
       WHERE n.company_id=$1 AND n.kind='note' AND (n.created_at AT TIME ZONE $3)::date BETWEEN $2::date AND $4::date ${uf('n.user_id')}
       ORDER BY n.created_at`, p),
   ]);
-  res.json({ day, from, to, today: todayIn(tz), tasks, checks: [...base, ...checks], notes });
+  // o que cada pessoa fez nas tarefas em grupo além do checklist: SKUs cadastrados, anúncios criados, links colados e Drive
+  const inRange = (col) => `(${col} AT TIME ZONE $3)::date BETWEEN $2::date AND $4::date`;
+  const work = await many(`
+    SELECT 'sku' AS kind, i.id AS item_id, i.sku, g.business_id, g.title AS group_title, i.created_by AS user_id, i.created_at AS at, NULL::int AS channel_id
+      FROM group_items i JOIN group_tasks g ON g.id=i.group_id WHERE g.company_id=$1 AND i.created_by IS NOT NULL AND ${inRange('i.created_at')} ${uf('i.created_by')}
+    UNION ALL
+    SELECT 'drive', i.id, i.sku, g.business_id, g.title, i.drive_by, i.drive_at, NULL
+      FROM group_items i JOIN group_tasks g ON g.id=i.group_id WHERE g.company_id=$1 AND i.drive_by IS NOT NULL AND ${inRange('i.drive_at')} ${uf('i.drive_by')}
+    UNION ALL
+    SELECT 'listing', i.id, i.sku, g.business_id, g.title, (l->>'by')::int, (l->>'at')::timestamptz, (l->>'channel_id')::int
+      FROM group_items i JOIN group_tasks g ON g.id=i.group_id CROSS JOIN LATERAL jsonb_array_elements(i.listings) l
+      WHERE g.company_id=$1 AND l->>'by' IS NOT NULL AND l->>'at' IS NOT NULL AND ${inRange("(l->>'at')::timestamptz")} ${uf("(l->>'by')::int")}
+    UNION ALL
+    SELECT 'link', i.id, i.sku, g.business_id, g.title, COALESCE((l->>'link_by')::int, (l->>'by')::int), COALESCE(l->>'link_at', l->>'at')::timestamptz, (l->>'channel_id')::int
+      FROM group_items i JOIN group_tasks g ON g.id=i.group_id CROSS JOIN LATERAL jsonb_array_elements(i.listings) l
+      WHERE g.company_id=$1 AND (l->>'link' IS NOT NULL OR l->>'code' IS NOT NULL) AND COALESCE(l->>'link_by', l->>'by') IS NOT NULL AND COALESCE(l->>'link_at', l->>'at') IS NOT NULL
+        AND ${inRange("COALESCE(l->>'link_at', l->>'at')::timestamptz")} ${uf("COALESCE((l->>'link_by')::int, (l->>'by')::int)")}`, p);
+  const names = new Map((await many('SELECT id, name FROM users WHERE company_id=$1', [u.company_id])).map((x) => [x.id, x.name]));
+  for (const w of work) w.user_name = names.get(w.user_id) || null;
+  res.json({ day, from, to, today: todayIn(tz), tasks, checks: [...base, ...checks], notes, work });
 }));
 
 app.get('/api/notepad', wrap(async (req, res) => {
@@ -2375,6 +2398,15 @@ if (fs.existsSync(dist)) {
 }
 
 await migrate();
+// conferência de dados no início (só leitura): atual x cópia de segurança v29
+try {
+  const cnt = (t) => `SELECT count(*)::int AS itens, COALESCE(sum(jsonb_array_length(listings)),0)::int AS anuncios,
+    (SELECT count(*)::int FROM ${t} i, jsonb_array_elements(i.listings) l, jsonb_each(COALESCE(l->'checks','{}'::jsonb)) c) AS marcacoes_anuncio,
+    (SELECT count(*)::int FROM ${t} i, jsonb_each(i.checks) c) AS marcacoes_base, count(drive_link)::int AS drives FROM ${t}`;
+  const now = await one(cnt('group_items'));
+  const bak = await one(cnt('backup_group_items_v29')).catch(() => null);
+  console.log('Conferência de dados — atual:', JSON.stringify(now), '| cópia v29:', JSON.stringify(bak));
+} catch (e) { console.error('Conferência de dados', e.message); }
 // uma vez: calcula o tempo pela conclusão (sem teto) para os dias desde o início do uso
 for (const day of ['2026-11-04', '2026-11-05', '2026-11-06']) {
   const key = `v12_backfill_${day}`;

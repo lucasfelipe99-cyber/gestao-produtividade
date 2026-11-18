@@ -442,3 +442,15 @@ DO $$ BEGIN
     INSERT INTO app_meta (key) VALUES ('v28_funcoes_sku');
   END IF;
 END $$;
+
+-- v29: quem colou o link do Drive (para o volume de trabalho por pessoa no Resumo)
+-- antes de mexer em qualquer coisa, guarda uma cópia de segurança dos SKUs como estão hoje
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v29_backup_group_items') THEN
+    CREATE TABLE IF NOT EXISTS backup_group_items_v29 AS SELECT * FROM group_items;
+    CREATE TABLE IF NOT EXISTS backup_group_tasks_v29 AS SELECT * FROM group_tasks;
+    INSERT INTO app_meta (key) VALUES ('v29_backup_group_items');
+  END IF;
+END $$;
+ALTER TABLE group_items ADD COLUMN IF NOT EXISTS drive_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE group_items ADD COLUMN IF NOT EXISTS drive_at TIMESTAMPTZ;

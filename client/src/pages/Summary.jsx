@@ -83,6 +83,74 @@ const listJoin = (arr, max = 4) => {
   return rest > 0 ? `${shown.join(', ')} e mais ${rest}` : base;
 };
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+// ---------- volume de trabalho por pessoa (quem clicou / preencheu, não quem era o responsável) ----------
+const FOTO_KEYS = ['fotos', 'capa', 'ambientada', 'beneficios', 'objecao', 'como_usar', 'extra'];
+const VIDEO_KEYS = ['videos', 'video'];
+const ESTR_KEYS = ['ads', 'afiliados', 'promocao', 'cupom', 'relampago'];
+const WCOLS = [
+  ['sku', 'SKUs cadastrados', 'SKUs que a pessoa cadastrou ou subiu por planilha'],
+  ['drive', 'Drive', 'Links do Drive colados'],
+  ['listing', 'Anúncios criados', 'Anúncios adicionados dentro dos SKUs'],
+  ['link', 'Links de anúncio', 'Links/códigos de anúncio preenchidos'],
+  ['anuncio', 'No ar', 'Anúncios marcados como publicados'],
+  ['fotos', 'Fotos', 'Fotos marcadas (capa, ambientada, benefícios, objeção, como usar, extra e fotos da base)'],
+  ['videos', 'Vídeos', 'Vídeos marcados (do anúncio e da base)'],
+  ['estr', 'Estratégico', 'ADS, afiliados, promoção, cupom e oferta relâmpago'],
+  ['task', 'Tarefas', 'Tarefas concluídas'],
+  ['note', 'Apontamentos', 'Apontamentos registrados'],
+];
+function workload(rows) {
+  const per = new Map();
+  const get = (r) => { const id = r.uid || 0; if (!per.has(id)) per.set(id, { id, name: r.uname || 'Sem identificação', total: 0 }); return per.get(id); };
+  const add = (p, k, n = 1) => { p[k] = (p[k] || 0) + n; p.total += n; };
+  for (const r of rows) {
+    const p = get(r);
+    if (r.type === 'task') add(p, 'task');
+    else if (r.type === 'note') add(p, 'note');
+    else if (r.type === 'work') add(p, r.w.kind);
+    else if (r.type === 'check') for (const k of r.c.keys) {
+      if (k === 'anuncio') add(p, 'anuncio'); else if (FOTO_KEYS.includes(k)) add(p, 'fotos'); else if (VIDEO_KEYS.includes(k)) add(p, 'videos'); else if (ESTR_KEYS.includes(k)) add(p, 'estr');
+    }
+  }
+  return [...per.values()].filter((p) => p.total).sort((a, b) => b.total - a.total);
+}
+function Workload({ rows, me }) {
+  const list = workload(rows);
+  if (!list.length) return null;
+  const cols = WCOLS.filter(([k]) => list.some((p) => p[k]));
+  const sum = (k) => list.reduce((a, p) => a + (p[k] || 0), 0);
+  return (
+    <div className="workload">
+      <b>Volume de trabalho por pessoa</b> <small className="muted">— conta quem clicou/preencheu cada etapa, não o responsável pelo SKU</small>
+      <div className="table-wrap"><table className="workload-table">
+        <thead><tr><th>Pessoa</th>{cols.map(([k, l, t]) => <th key={k} title={t}>{l}</th>)}<th>Total</th></tr></thead>
+        <tbody>
+          {list.map((p) => (
+            <tr key={p.id}><td><span className="row gap-s"><Avatar name={p.name} id={p.id} size={20} />{p.id === me.id ? 'Você' : p.name}</span></td>
+              {cols.map(([k]) => <td key={k}>{p[k] || <span className="muted">—</span>}</td>)}<td><b>{p.total}</b></td></tr>
+          ))}
+          {list.length > 1 && <tr className="tot"><td>Equipe</td>{cols.map(([k]) => <td key={k}>{sum(k) || '—'}</td>)}<td>{sum('total')}</td></tr>}
+        </tbody>
+      </table></div>
+    </div>
+  );
+}
+function workLine(ws, withPeople) {
+  if (!ws.length) return null;
+  const n = (k) => ws.filter((w) => w.w.kind === k).length;
+  const parts = [];
+  if (n('sku')) parts.push(`${plural(n('sku'), 'SKU cadastrado', 'SKUs cadastrados')}`);
+  if (n('listing')) parts.push(`${plural(n('listing'), 'anúncio criado', 'anúncios criados')}`);
+  if (n('link')) parts.push(`${plural(n('link'), 'link de anúncio preenchido', 'links de anúncio preenchidos')}`);
+  if (n('drive')) parts.push(`${plural(n('drive'), 'link do Drive colado', 'links do Drive colados')}`);
+  let t = `Cadastro: ${parts.join(', ')}`;
+  if (withPeople) { const c = {}; for (const w of ws) c[(w.uname || '?').split(' ')[0]] = (c[(w.uname || '?').split(' ')[0]] || 0) + 1; t += ` (${Object.entries(c).map(([k, v]) => `${k} ${v}`).join(', ')})`; }
+  return t + '.';
+}
+function byPerson(list) {
+  const c = {}; for (const x of list) { const k = (x.user_name || '?').split(' ')[0]; c[k] = (c[k] || 0) + x.keys.length; }
+  return Object.entries(c).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(', ');
+}
 function summarizeRows(rows, { withPeople, withClients, bizName }) {
   const out = [];
   const tasks = rows.filter((r) => r.type === 'task').map((r) => r.t);
@@ -104,7 +172,7 @@ function summarizeRows(rows, { withPeople, withClients, bizName }) {
     if (both.length) parts.push(`fotos e vídeos prontos em ${plural(both.length, 'SKU', 'SKUs')} (${listJoin(both, 5)})`);
     if (onlyF.length) parts.push(`fotos prontas em ${plural(onlyF.length, 'SKU', 'SKUs')} (${listJoin(onlyF, 4)})`);
     if (onlyV.length) parts.push(`vídeos prontos em ${plural(onlyV.length, 'SKU', 'SKUs')} (${listJoin(onlyV, 4)})`);
-    out.push(`Base de produto: ${parts.join('; ')}.`);
+    out.push(`Base de produto: ${parts.join('; ')}${withPeople ? ` — por: ${byPerson(base)}` : ''}.`);
   }
   const lst = checks.filter((c) => c.listing_id !== 'base');
   if (lst.length) {
@@ -115,8 +183,10 @@ function summarizeRows(rows, { withPeople, withClients, bizName }) {
     const LBL = { anuncio: 'anunciado', capa: 'capa', ambientada: 'ambientada', beneficios: 'benefícios', objecao: 'quebra de objeção', como_usar: 'como usar',
       extra: 'extra explicativa', video: 'vídeo', ads: 'ADS', afiliados: 'afiliados', promocao: 'promoção', cupom: 'cupom', relampago: 'oferta relâmpago' };
     const steps = Object.entries(LBL).filter(([k]) => cnt[k]).map(([k, l]) => `${l} ${cnt[k]}`).join(', ');
-    out.push(`Anúncios: checklist avançou em ${plural(ads.size, 'anúncio', 'anúncios')} de ${plural(skus.size, 'SKU', 'SKUs')} (${chTxt}) — ${steps}.`);
+    out.push(`Anúncios: checklist avançou em ${plural(ads.size, 'anúncio', 'anúncios')} de ${plural(skus.size, 'SKU', 'SKUs')} (${chTxt}) — ${steps}${withPeople ? `. Etapas por pessoa: ${byPerson(lst)}` : ''}.`);
   }
+  const wl = workLine(rows.filter((r) => r.type === 'work'), withPeople);
+  if (wl) out.push(wl);
   const complete = [...new Set(checks.filter((c) => c.item_done).map((c) => c.sku))];
   if (complete.length) out.push(`${complete.length === 1 ? 'SKU concluído' : 'SKUs concluídos'} por completo: ${listJoin(complete, 6)}.`);
   if (notes.length) {
@@ -139,10 +209,13 @@ function SummaryCard({ label, userName, groups, rows, by, bizName, onPdf }) {
   if (baseSkus) parts.push(`marcou fotos/vídeos da base em ${plural(baseSkus, 'SKU', 'SKUs')}`);
   if (lstAds) parts.push(`avançou o checklist de ${plural(lstAds, 'anúncio', 'anúncios')}`);
   if (notes) parts.push(`registrou ${plural(notes, 'apontamento', 'apontamentos')}`);
+  const wk = rows.filter((r) => r.type === 'work').length;
+  if (wk) parts.push(`fez ${plural(wk, 'cadastro', 'cadastros')} de SKU/anúncio/link`);
   const who = userName ? userName.split(' ')[0] : people > 1 ? `a equipe (${people} pessoas)` : 'a equipe';
   const intro = `${label.startsWith('semana') ? 'Na' : 'Em'} ${label}, ${who} ${listJoin(parts, 5)}${clients ? `, em ${plural(clients, 'cliente', 'clientes')}` : ''}.${top && groups.length > 1 ? ` ${by === 'client' ? 'Cliente' : 'Pessoa'} com mais registros: ${top[0]} (${top[1]}).` : ''}`;
   const lines = groups.map((g) => [g.name, summarizeRows(g.subs.flatMap((s) => s.rows), { withPeople: by === 'client', withClients: by === 'user', bizName })]);
-  const text = `Resumo ${label}\n${intro}\n\n` + lines.map(([n, ls]) => `*${n}*\n` + ls.map((l) => `• ${l}`).join('\n')).join('\n\n');
+  const wlTxt = workload(rows).map((p) => `${p.name.split(' ')[0]}: ${WCOLS.filter(([k]) => p[k]).map(([k, l]) => `${l.toLowerCase()} ${p[k]}`).join(', ')}`).join('\n');
+  const text = `Resumo ${label}\n${intro}\n\n${wlTxt ? `*Volume por pessoa*\n${wlTxt}\n\n` : ''}` + lines.map(([n, ls]) => `*${n}*\n` + ls.map((l) => `• ${l}`).join('\n')).join('\n\n');
   const copy = async () => { try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { toast('Não consegui copiar', 'error'); } };
   return (
     <div className="day-summary">
@@ -186,6 +259,7 @@ function DayDone({ day, from, to, user, by, setBy, onReminder }) {
   const rows = [
     ...data.tasks.map((t) => ({ type: 'task', key: 't' + t.id, at: t.completed_at, biz: t.business_id, uid: t.user_id, uname: t.user_name, t })),
     ...data.checks.map((c) => ({ type: 'check', key: `c${c.item_id}-${c.listing_id}-${c.user_id}`, at: c.at, biz: c.business_id, uid: c.user_id, uname: c.user_name, c })),
+    ...(data.work || []).map((w, k) => ({ type: 'work', key: `w${w.kind}${w.item_id}-${k}`, at: w.at, biz: w.business_id, uid: w.user_id, uname: w.user_name, w })),
     ...data.notes.map((n) => ({ type: 'note', key: 'n' + n.id, at: n.created_at, biz: n.business_id, uid: n.user_id, uname: n.user_name, n })),
   ].sort((a, b) => new Date(a.at) - new Date(b.at));
   const bizOf = (id) => businesses.find((b) => b.id === id) || { id: 0, name: 'Sem cliente', color: '#c4c4c4' };
@@ -194,7 +268,7 @@ function DayDone({ day, from, to, user, by, setBy, onReminder }) {
     : (r) => [r.uid || 0, r.uname || 'Sem responsável', null];
   // por cliente: o que foi feito nas tarefas em grupo fica direto no cliente, sem separar por colaborador
   const inner = by === 'client'
-    ? (r) => (r.type === 'check' ? ['group', 'Tarefas em grupo', 'group'] : [r.uid || 0, r.uname || 'Sem responsável'])
+    ? (r) => (r.type === 'check' || r.type === 'work' ? ['group', 'Tarefas em grupo', 'group'] : [r.uid || 0, r.uname || 'Sem responsável'])
     : (r) => { const b = bizOf(r.biz); return [b.id, b.name, b.color]; };
   const groups = [];
   for (const r of rows) {
@@ -223,6 +297,7 @@ function DayDone({ day, from, to, user, by, setBy, onReminder }) {
         <span className="muted small"><b>{count('task')}</b> tarefa(s) concluída(s) · <b>{count('check')}</b> anúncio(s) com checklist · <b>{count('note')}</b> apontamento(s)</span>
       </div>
       {!rows.length ? <Empty>Nada realizado {isToday ? 'ainda hoje' : 'neste dia'}{user ? ' por este colaborador' : ''}.</Empty> : (<>
+        <Workload rows={rows} me={me} />
         <SummaryCard label={label} userName={userName} groups={groups} rows={rows} by={by} bizName={(id) => bizOf(id).name} onPdf={printPdf} />
         <div className="done-groups">
           {groups.map((g) => (
@@ -233,15 +308,15 @@ function DayDone({ day, from, to, user, by, setBy, onReminder }) {
               <ul className="group-summary">
                 {summarizeRows(g.subs.flatMap((x) => x.rows), { withPeople: by === 'client', withClients: by === 'user', bizName: (id) => bizOf(id).name }).map((l, k) => <li key={k}>{l}</li>)}
               </ul>
-              {g.subs.map((sub) => (
+              {g.subs.filter((sub) => sub.rows.some((r) => r.type !== 'work')).map((sub) => (
                 <div key={sub.k} className="done-sub">
                   <div className="done-sub-head">
                     {sub.color === 'group' ? <b className="grp-sub">▦ {sub.name}</b>
                       : sub.color ? <span className="cat small"><i style={{ background: sub.color }} />{sub.name}</span> : <><Avatar name={sub.name} id={sub.k} size={22} /><b>{sub.name}</b></>}
-                    <small className="muted">{sub.rows.length}</small>
+                    <small className="muted">{sub.rows.filter((r) => r.type !== 'work').length}</small>
                   </div>
                   <ul className="done-list">
-                    {sub.rows.map((r) => <DoneRow key={r.key} r={r} me={me} openTask={openTask} onReminder={onReminder} showDate={isWeek} />)}
+                    {sub.rows.filter((r) => r.type !== 'work').map((r) => <DoneRow key={r.key} r={r} me={me} openTask={openTask} onReminder={onReminder} showDate={isWeek} showWho={by === 'client'} />)}
                   </ul>
                 </div>
               ))}
@@ -253,7 +328,7 @@ function DayDone({ day, from, to, user, by, setBy, onReminder }) {
   );
 }
 
-function DoneRow({ r, me, openTask, onReminder, showDate }) {
+function DoneRow({ r, me, openTask, onReminder, showDate, showWho }) {
   const dateTag = showDate && r.at ? <span className="row-date">{new Date(r.at).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' })}</span> : null;
   if (r.type === 'task') {
     const t = r.t;
@@ -276,6 +351,7 @@ function DoneRow({ r, me, openTask, onReminder, showDate }) {
           {(c.code || c.link) && <span className="muted"> {c.link ? <a href={c.link} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>{c.code || 'anúncio'}</a> : c.code}</span>}
           {' '}— {c.keys.map((k) => CHECK_LABEL[k] || k).join(', ')}{c.item_done && <span className="tag ok" style={{ marginLeft: 6 }}>SKU completo</span>}
           <small className="muted"> · {c.group_title}</small></span>
+        {showWho && c.user_name && <span className="done-who" title="Quem marcou"><Avatar name={c.user_name} id={c.user_id} size={18} />{c.user_id === me.id ? 'Você' : c.user_name.split(' ')[0]}</span>}
       </li>
     );
   }
