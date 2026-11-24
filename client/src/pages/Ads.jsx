@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api, useData, toast, emitLocal, fmtDateTime } from '../lib.js';
 import { Icon, Avatar, Modal, Field, Loading, Empty } from '../ui.jsx';
 import { useApp } from '../App.jsx';
+import { isNew } from './Skus.jsx';
 
 // ---------------- definições ----------------
 export const PILLARS = {
@@ -335,6 +336,7 @@ const Row = React.memo(function Row({ r, cols, stick, lastSticky, ctx, people, m
             ? <select className="cell-sel" value={r.account_id} onChange={(e) => patch(r, { account_id: Number(e.target.value) })}>{accs.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
             : <span className="ellip muted">{ctx.acc.get(r.account_id)?.name}</span>);
           case 'sku': return cell(k, w, <span className="sku-cell"><TextCell value={r.sku} onSave={(v) => patch(r, { sku: v })} mono placeholder="SKU" />
+            {isNew(r.sku_info?.created_at) && <span className="novo-tag" title="SKU adicionado nos últimos 7 dias">NOVO</span>}
             {r.sku_info?.drive_link && <a className="drive-ic" href={r.sku_info.drive_link} target="_blank" rel="noreferrer" title="Pasta do Drive (fotos e vídeos)">📁</a>}</span>);
           case 'ad': return cell(k, w, <AdCell r={r} patch={patch} />, !r.ad_code ? 'miss' : '');
           case 'cls': return cell(k, w, <select className="cls-sel" style={{ '--cc': CLASS[r.classification][1] }} value={r.classification} onChange={(e) => patch(r, { classification: e.target.value })}>
@@ -509,6 +511,7 @@ export function AccountsPanel({ biz, data, people }) {
             <div key={x.id} className="client-ch" style={{ '--c': x.color }}>
               <div className="client-ch-head"><i /><b>{x.name}</b><small className="muted">{on.length} canal(is) · {data.ads.filter((a) => a.business_id === x.id).length} anúncio(s)</small>
                 <span className="grow" />
+                {isAdmin && <button className="link small danger-link" onClick={async () => { if (confirm(`Tirar o cliente ${x.name}? Ele some das telas, mas tudo dele (anúncios, SKUs, tarefas) continua guardado e pode ser restaurado aqui embaixo.`)) { try { await api(`/businesses/${x.id}`, { method: 'DELETE' }); toast(`${x.name} removido`, 'success'); emitLocal(); } catch (e) { toast(e.message, 'error'); } } }}>Remover cliente</button>}
                 {isAdmin && off.length > 0 && (
                   <select className="sm" value="" onChange={(e) => e.target.value && enable(x.id, Number(e.target.value))}>
                     <option value="">+ Adicionar canal…</option>{off.map((c) => <option key={c.id} value={c.id}>{c.name}{accs(x.id, c.id).length ? ' (reativar)' : ''}</option>)}
@@ -556,6 +559,17 @@ export function AccountsPanel({ biz, data, people }) {
           );
         })}
       </div>
+      {isAdmin && <Removed />}
+    </div>
+  );
+}
+function Removed() {
+  const { data } = useData('/businesses?archived=1');
+  if (!data?.length) return null;
+  return (
+    <div className="removed-box">
+      <small className="muted">Clientes removidos (dados guardados):</small>
+      {data.map((x) => <span key={x.id} className="acc-pill">{x.name} <button className="link small" onClick={async () => { try { await api(`/businesses/${x.id}`, { method: 'PATCH', body: { restore: true } }); toast(`${x.name} restaurado`, 'success'); emitLocal(); } catch (e) { toast(e.message, 'error'); } }}>Restaurar</button></span>)}
     </div>
   );
 }

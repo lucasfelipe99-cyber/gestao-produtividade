@@ -286,7 +286,8 @@ app.patch('/api/users/:id', adminOnly, wrap(async (req, res) => {
 const COLORED = ['categories', 'businesses', 'channels'];
 for (const [route, table] of [['teams', 'teams'], ['categories', 'categories'], ['businesses', 'businesses'], ['channels', 'channels']]) {
   app.get(`/api/${route}`, wrap(async (req, res) => {
-    res.json(await many(`SELECT * FROM ${table} WHERE company_id=$1 ORDER BY name`, [req.user.company_id]));
+    const arch = table === 'businesses' || table === 'channels';
+    res.json(await many(`SELECT * FROM ${table} WHERE company_id=$1${arch ? (req.query.archived ? ' AND archived' : ' AND NOT archived') : ''} ORDER BY name`, [req.user.company_id]));
   }));
   app.post(`/api/${route}`, adminOnly, wrap(async (req, res) => {
     const name = String(req.body?.name || '').trim();
@@ -300,7 +301,11 @@ for (const [route, table] of [['teams', 'teams'], ['categories', 'categories'], 
   }));
   app.patch(`/api/${route}/:id`, adminOnly, wrap(async (req, res) => {
     const name = String(req.body?.name || '').trim();
-    if (!name) throw new HttpError(400, 'Informe o nome');
+    if (!name && !req.body?.restore) throw new HttpError(400, 'Informe o nome');
+    if ((table === 'businesses' || table === 'channels') && req.body?.restore) {
+      await q(`UPDATE ${table} SET archived=FALSE WHERE id=$1 AND company_id=$2`, [req.params.id, req.user.company_id]);
+      changed(req); return res.json({ ok: true });
+    }
     if (COLORED.includes(table)) await q(`UPDATE ${table} SET name=$1, color=COALESCE($2,color) WHERE id=$3 AND company_id=$4`, [name, req.body.color || null, req.params.id, req.user.company_id]);
     else await q('UPDATE teams SET name=$1 WHERE id=$2 AND company_id=$3', [name, req.params.id, req.user.company_id]);
     if (table === 'businesses') await ensureFixedSkuGroups(req.user.company_id);
@@ -308,7 +313,12 @@ for (const [route, table] of [['teams', 'teams'], ['categories', 'categories'], 
     res.json({ ok: true });
   }));
   app.delete(`/api/${route}/:id`, adminOnly, wrap(async (req, res) => {
-    if (table === 'businesses') await q('DELETE FROM group_tasks WHERE business_id=$1 AND fixed AND company_id=$2', [req.params.id, req.user.company_id]);
+    // cliente e canal nunca são apagados com os dados: saem das telas (arquivados) e podem ser restaurados
+    if (table === 'businesses' || table === 'channels') {
+      await q(`UPDATE ${table} SET archived=TRUE WHERE id=$1 AND company_id=$2`, [req.params.id, req.user.company_id]);
+      changed(req);
+      return res.json({ ok: true, archived: true });
+    }
     await q(`DELETE FROM ${table} WHERE id=$1 AND company_id=$2`, [req.params.id, req.user.company_id]);
     changed(req);
     res.json({ ok: true });

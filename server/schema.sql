@@ -576,3 +576,8 @@ DO $$ BEGIN
     INSERT INTO app_meta (key) VALUES ('v31_resp_anuncio_canal');
   END IF;
 END $$;
+
+-- v32: clientes/canais removidos ficam guardados (arquivados), nunca apagados com os dados; catálogo de SKUs por cliente
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sku_info ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE;

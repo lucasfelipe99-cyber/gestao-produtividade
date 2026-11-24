@@ -147,7 +147,8 @@ export function registerAds(app, { requireTab }) {
     return a;
   };
   const mainAccount = async (db, u, businessId, channelId) => {
-    let a = (await db.query('SELECT * FROM mkt_accounts WHERE business_id=$1 AND channel_id=$2 AND active ORDER BY position, id LIMIT 1', [businessId, channelId])).rows[0];
+    let a = (await db.query('SELECT * FROM mkt_accounts WHERE business_id=$1 AND channel_id=$2 ORDER BY active DESC, position, id LIMIT 1', [businessId, channelId])).rows[0];
+    if (a && !a.active) { await db.query('UPDATE mkt_accounts SET active=TRUE WHERE id=$1', [a.id]); a.active = true; }
     if (!a) a = (await db.query(`INSERT INTO mkt_accounts (company_id, business_id, channel_id, name) VALUES ($1,$2,$3,'Conta principal') RETURNING *`, [u.company_id, businessId, channelId])).rows[0];
     return a;
   };
@@ -161,11 +162,12 @@ export function registerAds(app, { requireTab }) {
     const p = [u.company_id]; let w = '';
     if (biz) { p.push(biz); w = ` AND a.business_id=$2`; }
     const [ads, accounts, owners, config, skus] = await Promise.all([
-      many(`SELECT ${AD_COLS} FROM ads a WHERE a.company_id=$1 AND NOT a.archived${w} ORDER BY a.business_id, a.channel_id, a.sku NULLS LAST, a.id`, p),
+      many(`SELECT ${AD_COLS} FROM ads a JOIN businesses bz ON bz.id=a.business_id AND NOT bz.archived JOIN channels cz ON cz.id=a.channel_id AND NOT cz.archived
+        WHERE a.company_id=$1 AND NOT a.archived${w} ORDER BY a.business_id, a.channel_id, a.sku NULLS LAST, a.id`, p),
       many(`SELECT id, business_id, channel_id, name, active, position FROM mkt_accounts WHERE company_id=$1 ORDER BY business_id, channel_id, position, id`, [u.company_id]),
       many(`SELECT business_id, channel_id, user_id, ad_user_id FROM client_channel_owners WHERE company_id=$1`, [u.company_id]),
       many(`SELECT channel_id, classification, weights FROM score_config WHERE company_id=$1`, [u.company_id]),
-      many(`SELECT business_id, sku, drive_link, checks FROM sku_info WHERE company_id=$1${biz ? ' AND business_id=$2' : ''}`, p),
+      many(`SELECT id, business_id, sku, description, drive_link, checks, created_at FROM sku_info WHERE company_id=$1 AND NOT archived${biz ? ' AND business_id=$2' : ''} ORDER BY lower(sku)`, p),
     ]);
     res.json({ ready: await ready(), ads, accounts, owners, config, skus, default_weights: DEFAULT_WEIGHTS, keys: CHECK_KEYS });
   }));
@@ -476,6 +478,86 @@ export function registerAds(app, { requireTab }) {
     res.json(await many(`SELECT i.id, i.kind, i.filename, i.counts, i.created_at, b.name AS business, c.name AS channel, a.name AS account, u.name AS user_name
       FROM ad_imports i LEFT JOIN businesses b ON b.id=i.business_id LEFT JOIN channels c ON c.id=i.channel_id LEFT JOIN mkt_accounts a ON a.id=i.account_id
       LEFT JOIN users u ON u.id=i.user_id WHERE i.company_id=$1 ORDER BY i.created_at DESC LIMIT 100`, [req.user.company_id]));
+  }));
+
+  // ---------------- catálogo de SKUs por cliente (SKU + descrição) ----------------
+  const upsertSku = async (db, u, businessId, sku, description) => {
+    const ex = (await db.query('SELECT id, description, archived FROM sku_info WHERE business_id=$1 AND lower(sku)=lower($2)', [businessId, sku])).rows[0];
+    if (!ex) {
+      await db.query('INSERT INTO sku_info (company_id, business_id, sku, description, created_by) VALUES ($1,$2,$3,$4,$5)', [u.company_id, businessId, sku, description, u.id]);
+      return 'novo';
+    }
+    if (ex.archived || (description && description !== ex.description)) {
+      await db.query('UPDATE sku_info SET description=COALESCE($2, description), archived=FALSE WHERE id=$1', [ex.id, description]);
+      return 'atualizado';
+    }
+    return 'igual';
+  };
+  app.post('/api/skus', T, wrap(async (req, res) => {
+    const u = req.user, b = req.body || {};
+    const sku = txt(b.sku, 120); if (!sku) throw new HttpError(400, 'Informe o SKU');
+    const r = await tx(async (db) => { await assertBiz(db, u, int(b.business_id)); return upsertSku(db, u, int(b.business_id), sku, txt(b.description, 1000)); });
+    broadcast(u.company_id, { type: 'ads' });
+    res.json({ result: r });
+  }));
+  app.patch('/api/skus/:id', T, wrap(async (req, res) => {
+    const u = req.user, b = req.body || {};
+    const s0 = await one('SELECT * FROM sku_info WHERE id=$1 AND company_id=$2', [req.params.id, u.company_id]);
+    if (!s0) throw new HttpError(404, 'SKU não encontrado');
+    if ('archived' in b && !isAdmin(u)) throw new HttpError(403, 'Só administradores removem SKUs');
+    await q(`UPDATE sku_info SET description=$2, drive_link=$3, archived=$4,
+        drive_by=CASE WHEN $3 IS DISTINCT FROM drive_link AND $3 IS NOT NULL THEN $5 ELSE drive_by END,
+        drive_at=CASE WHEN $3 IS DISTINCT FROM drive_link AND $3 IS NOT NULL THEN now() ELSE drive_at END WHERE id=$1`,
+      [s0.id, 'description' in b ? txt(b.description, 1000) : s0.description, 'drive_link' in b ? (isUrl(b.drive_link) ? String(b.drive_link).trim() : null) : s0.drive_link,
+        'archived' in b ? !!b.archived : s0.archived, u.id]);
+    broadcast(u.company_id, { type: 'ads' });
+    res.json({ ok: true });
+  }));
+  app.post('/api/skus/import', T, wrap(async (req, res) => {
+    const u = req.user, b = req.body || {};
+    const { rows } = await readFile(b.filename, b.data);
+    const hi = rows.findIndex((r) => r.some((c) => /^(sku|cod|codigo|referencia|ref)\b/.test(norm(c.v))));
+    if (hi < 0) throw new HttpError(400, 'Não encontrei a coluna "SKU". A planilha precisa ter as colunas SKU e Descrição.');
+    const h = rows[hi].map((c) => norm(c.v));
+    const cs = h.findIndex((c) => /^(sku|cod|codigo|referencia|ref)\b/.test(c));
+    const cd = h.findIndex((c, k) => k !== cs && /descri|nome|produto|titulo/.test(c));
+    const out = { novos: 0, atualizados: 0, iguais: 0 };
+    await tx(async (db) => {
+      await assertBiz(db, u, int(b.business_id));
+      const seen = new Set();
+      for (const r of rows.slice(hi + 1)) {
+        const sku = txt(r[cs]?.v, 120); if (!sku || seen.has(sku.toLowerCase())) continue;
+        seen.add(sku.toLowerCase());
+        const k = await upsertSku(db, u, int(b.business_id), sku, cd >= 0 ? txt(r[cd]?.v, 1000) : null);
+        out[k === 'novo' ? 'novos' : k === 'atualizado' ? 'atualizados' : 'iguais']++;
+      }
+    });
+    broadcast(u.company_id, { type: 'ads' });
+    res.json(out);
+  }));
+  // cria anúncios pendentes (sem link do anúncio e sem Drive) para os SKUs que faltam em cada canal
+  app.post('/api/skus/create-ads', T, wrap(async (req, res) => {
+    const u = req.user, b = req.body || {};
+    const businessId = int(b.business_id);
+    const items = (Array.isArray(b.items) ? b.items : []).slice(0, 5000);
+    const n = await tx(async (db) => {
+      await assertBiz(db, u, businessId);
+      let created = 0;
+      for (const it of items) {
+        const chId = int(it.channel_id); const sku = txt(it.sku, 120);
+        if (!chId || !sku) continue;
+        await assertChannel(db, u, chId);
+        if ((await db.query('SELECT 1 FROM ads WHERE business_id=$1 AND channel_id=$2 AND lower(sku)=lower($3) AND NOT archived', [businessId, chId, sku])).rowCount) continue;
+        const a = await mainAccount(db, u, businessId, chId);
+        const desc = (await db.query('SELECT description FROM sku_info WHERE business_id=$1 AND lower(sku)=lower($2)', [businessId, sku])).rows[0]?.description || null;
+        await db.query(`INSERT INTO ads (company_id, business_id, channel_id, account_id, sku, title, created_by, updated_by, responsible_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$7,(SELECT ad_user_id FROM client_channel_owners WHERE business_id=$2 AND channel_id=$3))`, [u.company_id, businessId, chId, a.id, sku, desc, u.id]);
+        created++;
+      }
+      return created;
+    });
+    broadcast(u.company_id, { type: 'ads' });
+    res.json({ created: n });
   }));
 
   // ---------------- volume de trabalho por pessoa (quem clicou / preencheu) ----------------
