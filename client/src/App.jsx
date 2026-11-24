@@ -15,6 +15,7 @@ import Timeline from './pages/Timeline.jsx';
 import Summary from './pages/Summary.jsx';
 import Ads from './pages/Ads.jsx';
 import Volume from './pages/Volume.jsx';
+import Settings from './pages/Settings.jsx';
 import TaskDrawer from './components/TaskDrawer.jsx';
 
 const Ctx = createContext(null);
@@ -60,13 +61,14 @@ function Shell({ me, onLogout }) {
     ['/tarefas', 'today', 'Tarefas', 'tarefas', <AllTasks />],
     ['/volume', 'chart', 'Volume', 'volume', <Volume />],
     ['/clientes', 'chat', 'Clientes', 'clientes', <Clients />],
-    ...(isAdmin ? [['/equipe', 'users', 'Equipe e cadastros', null, <Team />]] : []),
+    ...(isAdmin ? [['/configuracoes', 'filter', 'Configurações', null, <Settings />]] : []),
   ];
   // telas antigas: saíram do menu, mas os dados e os endereços continuam (nada foi apagado)
   const HIDDEN = [
     ['/painel', 'dashboard', <Dashboard />], ['/resumo', null, <Summary />], ['/nao-realizadas', 'tarefas', <NotDone />],
     ['/acompanhamento', 'acompanhamento', <Acompanhamento />], ['/linha-do-tempo', 'linha-do-tempo', <Timeline />], ['/metas', 'metas', <Goals />],
     ['/relatorios', 'relatorios', <Reports />], ['/historico', 'historico', <History />],
+    ...(isAdmin ? [['/equipe', null, <Team />]] : []),
   ].filter(([, tab]) => !tab || canTab(me, tab));
   const nav = ALL.filter(([, , , tab]) => !tab || canTab(me, tab));
   const home = nav[0]?.[0] || '/';

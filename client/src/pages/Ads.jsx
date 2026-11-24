@@ -289,7 +289,7 @@ function MoreMenu({ isAdmin, onPick }) {
       <button className="btn" onClick={() => setOpen(!open)}><Icon name="menu" size={15} /> Mais</button>
       {open && (
         <div className="pop-menu" onMouseLeave={() => setOpen(false)}>
-          <button onClick={() => { onPick('accounts'); setOpen(false); }}>Contas e responsáveis estratégicos</button>
+          <button onClick={() => { onPick('accounts'); setOpen(false); }}>Canais, contas e responsáveis estratégicos</button>
           <button onClick={() => { onPick('weights'); setOpen(false); }}>Pesos da pontuação</button>
           <button onClick={() => { onPick('imports'); setOpen(false); }}>Histórico de importações</button>
           {isAdmin && <a href="/api/admin/backup" onClick={() => setOpen(false)}>Baixar cópia completa dos dados</a>}
@@ -457,22 +457,39 @@ function NewAd({ onClose, biz, accounts, people }) {
 }
 
 function Accounts({ onClose, biz, data, people }) {
+  return <Modal title="Canais, contas e responsáveis estratégicos" onClose={onClose} wide><AccountsPanel biz={biz} data={data} people={people} /></Modal>;
+}
+export function AccountsPanel({ biz, data, people }) {
   const { businesses, channels, isAdmin } = useApp();
-  const [b, setB] = useState(biz !== 'all' ? String(biz) : String(businesses[0]?.id || ''));
+  const [b, setB] = useState(biz && biz !== 'all' ? String(biz) : String(businesses[0]?.id || ''));
   const [adding, setAdding] = useState({});
   const call = async (path, method, body) => { try { await api(path, { method, body }); emitLocal(); } catch (e) { toast(e.message, 'error'); } };
   const accs = (chId) => data.accounts.filter((a) => a.business_id === Number(b) && a.channel_id === chId);
   const owner = (chId) => data.owners.find((o) => o.business_id === Number(b) && o.channel_id === chId)?.user_id || '';
   const count = (accId) => data.ads.filter((a) => a.account_id === accId).length;
+  const active = (chId) => accs(chId).some((a) => a.active);
+  const toggle = async (chId) => {
+    const list = accs(chId);
+    if (active(chId)) {
+      const n = list.reduce((x, a) => x + count(a.id), 0);
+      if (!confirm(n ? `Desativar este canal para o cliente? Os ${n} anúncio(s) continuam guardados na planilha; só a conta deixa de aparecer para novos cadastros.` : 'Desativar este canal para o cliente?')) return;
+      for (const a of list.filter((x) => x.active)) await call(`/mkt-accounts/${a.id}`, 'PATCH', { active: false });
+    } else if (list.length) { for (const a of list) await call(`/mkt-accounts/${a.id}`, 'PATCH', { active: true }); }
+    else await call('/mkt-accounts', 'POST', { business_id: b, channel_id: chId, name: 'Conta principal' });
+  };
+  const sortedCh = [...channels].sort((x, y) => active(y.id) - active(x.id));
   return (
-    <Modal title="Contas e responsáveis estratégicos" onClose={onClose} wide>
-      <Field label="Cliente"><select value={b} onChange={(e) => setB(e.target.value)}>{businesses.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></Field>
-      <p className="muted small">Cada cliente pode ter várias contas em cada marketplace. O <b>responsável estratégico</b> cuida de ADS, afiliados, promoção, cupom e oferta relâmpago de todos os anúncios daquele cliente naquele marketplace. Novos marketplaces são cadastrados em <b>Equipe e cadastros → Canais</b>.</p>
+    <div>
+      <div className="biz-chips" style={{ marginBottom: 10 }}>
+        {businesses.map((x) => <button key={x.id} className={String(b) === String(x.id) ? 'on' : ''} style={{ '--c': x.color }} onClick={() => setB(String(x.id))}><i />{x.name} <small>{channels.filter((c) => data.accounts.some((a) => a.business_id === x.id && a.channel_id === c.id && a.active)).length} canal(is)</small></button>)}
+      </div>
+      <p className="muted small">Marque em quais canais o cliente vende. Cada canal pode ter várias contas (ex.: conta principal e secundária), e cada conta tem sua própria base de anúncios. O <b>responsável estratégico</b> cuida de ADS, afiliados, promoção, cupom e oferta relâmpago de todos os anúncios do cliente naquele canal.</p>
       <table className="acc-table">
-        <thead><tr><th>Marketplace</th><th>Contas</th><th>Responsável estratégico</th></tr></thead>
+        <thead><tr><th style={{ width: 70 }}>Atende</th><th>Canal</th><th>Contas</th><th>Responsável estratégico</th></tr></thead>
         <tbody>
-          {channels.map((c) => (
-            <tr key={c.id}>
+          {sortedCh.map((c) => (
+            <tr key={c.id} className={active(c.id) ? '' : 'ch-off'}>
+              <td><label className="switch"><input type="checkbox" checked={active(c.id)} disabled={!isAdmin} onChange={() => toggle(c.id)} /><span /></label></td>
               <td><span className="chan" style={{ background: c.color }}>{c.name}</span></td>
               <td>
                 <div className="acc-list">
@@ -487,10 +504,10 @@ function Accounts({ onClose, biz, data, people }) {
                     ? <input className="sm" autoFocus placeholder="Nome da conta" value={adding[c.id]} onChange={(e) => setAdding({ ...adding, [c.id]: e.target.value })}
                       onKeyDown={async (e) => { if (e.key === 'Enter' && adding[c.id].trim()) { await call('/mkt-accounts', 'POST', { business_id: b, channel_id: c.id, name: adding[c.id] }); setAdding({ ...adding, [c.id]: undefined }); } if (e.key === 'Escape') setAdding({ ...adding, [c.id]: undefined }); }}
                       onBlur={() => setAdding({ ...adding, [c.id]: undefined })} />
-                    : <button className="link small" onClick={() => setAdding({ ...adding, [c.id]: accs(c.id).length ? '' : 'Conta principal' })}>+ conta</button>)}
+                    : active(c.id) && <button className="link small" onClick={() => setAdding({ ...adding, [c.id]: '' })}>+ conta</button>)}
                 </div>
               </td>
-              <td>{isAdmin
+              <td>{!active(c.id) ? <span className="muted small">—</span> : isAdmin
                 ? <select value={owner(c.id)} onChange={(e) => call('/client-channel-owner', 'PUT', { business_id: b, channel_id: c.id, user_id: e.target.value || null })}>
                     <option value="">— ninguém —</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
                 : <span>{people.find((p) => p.id === owner(c.id))?.name || '—'}</span>}</td>
@@ -498,11 +515,14 @@ function Accounts({ onClose, biz, data, people }) {
           ))}
         </tbody>
       </table>
-    </Modal>
+    </div>
   );
 }
 
 function Weights({ onClose, data }) {
+  return <Modal title="Pesos da pontuação" onClose={onClose} wide footer={<button className="btn" onClick={onClose}>Fechar</button>}><WeightsPanel data={data} /></Modal>;
+}
+export function WeightsPanel({ data }) {
   const { channels, isAdmin } = useApp();
   const [scope, setScope] = useState({ channel_id: '', classification: '' });
   const own = (data.config || []).find((x) => String(x.channel_id || '') === scope.channel_id && (x.classification || '') === scope.classification);
@@ -516,8 +536,7 @@ function Weights({ onClose, data }) {
     catch (e) { toast(e.message, 'error'); }
   };
   return (
-    <Modal title="Pesos da pontuação" onClose={onClose} wide
-      footer={isAdmin ? <>{own && (scope.channel_id || scope.classification) && <button className="btn" onClick={() => save(true)}>Remover este ajuste</button>}<span className="grow" /><button className="btn" onClick={onClose}>Fechar</button><button className="btn primary" onClick={() => save(false)}>Salvar pesos</button></> : <button className="btn" onClick={onClose}>Fechar</button>}>
+    <div>
       <p className="muted small" style={{ marginTop: 0 }}>A pontuação vai de 0 a 100: soma os pesos dos itens feitos e divide pelo total dos itens que se aplicam. Itens marcados como <b>N/A</b> (ou com peso 0) não prejudicam a nota. O sistema usa o ajuste mais específico que existir: marketplace + classificação → marketplace → classificação → padrão.</p>
       <div className="grid2">
         <Field label="Marketplace"><select value={scope.channel_id} onChange={(e) => setScope({ ...scope, channel_id: e.target.value })}><option value="">Todos (padrão)</option>{channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
@@ -536,7 +555,8 @@ function Weights({ onClose, data }) {
       </div>
       <p className="small">Total: <b>{sum}</b> pontos {sum !== 100 && <span className="muted">(não precisa somar 100 — a nota é sempre convertida para 0–100)</span>}</p>
       <p className="muted small">Níveis: {[...LEVELS].reverse().map(([m, l, c]) => <span key={l} className="lvl" style={{ '--lc': c }}>{l} {m}+</span>)}</p>
-    </Modal>
+      {isAdmin && <div className="row gap-s">{own && (scope.channel_id || scope.classification) && <button className="btn" onClick={() => save(true)}>Remover este ajuste</button>}<span className="grow" /><button className="btn primary" onClick={() => save(false)}>Salvar pesos</button></div>}
+    </div>
   );
 }
 
