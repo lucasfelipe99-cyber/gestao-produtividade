@@ -493,12 +493,31 @@ export function registerAds(app, { requireTab }) {
     }
     return 'igual';
   };
+  // cria anúncio pendente (sem link e sem Drive) em cada canal ativo do cliente onde o SKU ainda não tem anúncio
+  const fillMissing = async (db, u, businessId, skus) => {
+    if (!skus.length) return 0;
+    const r = await db.query(`
+      WITH ch AS (SELECT DISTINCT ON (channel_id) channel_id, id AS account_id FROM mkt_accounts
+                  WHERE business_id=$1 AND active ORDER BY channel_id, position, id),
+           s AS (SELECT si.sku, si.description FROM sku_info si WHERE si.business_id=$1 AND NOT si.archived AND lower(si.sku) = ANY($3::text[]))
+      INSERT INTO ads (company_id, business_id, channel_id, account_id, sku, title, created_by, updated_by, responsible_id)
+      SELECT $2, $1, ch.channel_id, ch.account_id, s.sku, s.description, $4, $4,
+             (SELECT ad_user_id FROM client_channel_owners o WHERE o.business_id=$1 AND o.channel_id=ch.channel_id)
+      FROM s CROSS JOIN ch JOIN channels c ON c.id=ch.channel_id AND NOT c.archived
+      WHERE NOT EXISTS (SELECT 1 FROM ads a WHERE a.business_id=$1 AND a.channel_id=ch.channel_id AND lower(a.sku)=lower(s.sku) AND NOT a.archived)`,
+      [businessId, u.company_id, skus.map((x) => x.toLowerCase()), u.id]);
+    return r.rowCount;
+  };
   app.post('/api/skus', T, wrap(async (req, res) => {
     const u = req.user, b = req.body || {};
     const sku = txt(b.sku, 120); if (!sku) throw new HttpError(400, 'Informe o SKU');
-    const r = await tx(async (db) => { await assertBiz(db, u, int(b.business_id)); return upsertSku(db, u, int(b.business_id), sku, txt(b.description, 1000)); });
+    const r = await tx(async (db) => {
+      await assertBiz(db, u, int(b.business_id));
+      const result = await upsertSku(db, u, int(b.business_id), sku, txt(b.description, 1000));
+      return { result, anuncios_criados: await fillMissing(db, u, int(b.business_id), [sku]) };
+    });
     broadcast(u.company_id, { type: 'ads' });
-    res.json({ result: r });
+    res.json(r);
   }));
   app.patch('/api/skus/:id', T, wrap(async (req, res) => {
     const u = req.user, b = req.body || {};
@@ -531,6 +550,7 @@ export function registerAds(app, { requireTab }) {
         const k = await upsertSku(db, u, int(b.business_id), sku, cd >= 0 ? txt(r[cd]?.v, 1000) : null);
         out[k === 'novo' ? 'novos' : k === 'atualizado' ? 'atualizados' : 'iguais']++;
       }
+      out.anuncios_criados = await fillMissing(db, u, int(b.business_id), [...seen]);
     });
     broadcast(u.company_id, { type: 'ads' });
     res.json(out);

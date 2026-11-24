@@ -34,7 +34,7 @@ export default function SkuCatalog({ data }) {
   const upload = async (e) => {
     const f = e.target.files[0]; e.target.value = '';
     if (!f) return;
-    await call('/skus/import', { business_id: bid, filename: f.name, data: await fileToData(f) }, (r) => `Planilha lida: ${r.novos} SKU(s) novo(s), ${r.atualizados} atualizado(s), ${r.iguais} sem mudança`);
+    await call('/skus/import', { business_id: bid, filename: f.name, data: await fileToData(f) }, (r) => `Planilha lida: ${r.novos} SKU(s) novo(s), ${r.atualizados} atualizado(s), ${r.iguais} sem mudança · ${r.anuncios_criados} anúncio(s) vazio(s) criado(s) nos canais que faltavam`);
   };
   const createAds = (items) => {
     if (!items.length) return;
@@ -50,7 +50,7 @@ export default function SkuCatalog({ data }) {
       </div>
       <div className="row gap wrap" style={{ marginBottom: 10 }}>
         <label className="btn primary"><Icon name="download" size={15} /> Subir planilha (SKU e Descrição)<input type="file" accept=".xlsx,.csv,.txt" hidden onChange={upload} disabled={busy || !bid} /></label>
-        <span className="muted small grow">A planilha precisa das colunas <b>SKU</b> e <b>Descrição</b>. Pode subir de novo quando quiser: SKUs novos entram, os que já existem só atualizam a descrição.</span>
+        <span className="muted small grow">A planilha precisa das colunas <b>SKU</b> e <b>Descrição</b>. Ao subir, cada SKU ganha um anúncio vazio (sem link e sem Drive) em todo canal ativo do cliente onde ainda não tem. Pode subir de novo: SKUs novos entram, os que já existem só atualizam a descrição.</span>
       </div>
       <div className="ads-kpis" style={{ marginBottom: 10 }}>
         <div className="kp"><small>SKUs</small><b>{skus.length}</b></div>
@@ -76,7 +76,7 @@ export default function SkuCatalog({ data }) {
             <tr className="add-row">
               <td><input className="cell-in mono" placeholder="+ novo SKU" value={add.sku} onChange={(e) => setAdd({ ...add, sku: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && document.getElementById('sku-add-desc')?.focus()} /></td>
               <td><input id="sku-add-desc" className="cell-in" placeholder="Descrição (Enter para salvar)" value={add.description} onChange={(e) => setAdd({ ...add, description: e.target.value })}
-                onKeyDown={async (e) => { if (e.key === 'Enter' && add.sku.trim()) { await call('/skus', { business_id: bid, ...add }); setAdd({ sku: '', description: '' }); } }} /></td>
+                onKeyDown={async (e) => { if (e.key === 'Enter' && add.sku.trim()) { await call('/skus', { business_id: bid, ...add }, (r) => `SKU adicionado · ${r.anuncios_criados} anúncio(s) vazio(s) criado(s)`); setAdd({ sku: '', description: '' }); } }} /></td>
               <td colSpan={chans.length + 1 + (isAdmin ? 1 : 0)} className="muted small">{add.sku.trim() && 'Enter para adicionar'}</td>
             </tr>
             {list.map((s) => (
