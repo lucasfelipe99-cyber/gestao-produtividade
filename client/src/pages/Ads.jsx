@@ -37,7 +37,7 @@ const GROUPS = {
   gestao: ['Gestão', '#676879'],
 };
 const groupOf = (k) => (['score', 'prio'].includes(k) ? 'ind' : ['resp', 'estr', 'notes', 'upd'].includes(k) ? 'gestao' : CHECKS.find((c) => c[0] === k)?.[3] || null);
-const PRIO = { 1: ['Urgente', '#e2445c'], 2: ['Alta', '#ff7a45'], 3: ['Média', '#fdab3d'], 4: ['Baixa', '#579bfc'], 5: ['Manutenção', '#00c875'] };
+const PRIO = { 1: ['Urgente', '#e2445c'], 2: ['Alta', '#ff7a45'], 3: ['Média', '#fdab3d'], 5: ['Manutenção', '#00c875'] };
 
 export function weightsFor(data, channelId, cls) {
   const cfg = data.config || [];
@@ -55,7 +55,8 @@ export function scoreOf(ad, w) {
   }
   return { score: max ? Math.round((got / max) * 100) : null, pending, pillars: pil };
 }
-const prioOf = (cls, score) => (score == null || score >= 80 ? 5 : cls === 'alta' ? 1 : cls === 'estrategico' ? 2 : score < 40 ? 3 : 4);
+// prioridade (por enquanto só pela pontuação; depois entra a curva de vendas): nada feito = urgente
+const prioOf = (cls, score) => (score == null || score >= 80 ? 5 : score === 0 ? 1 : score < 40 ? 2 : 3);
 const ago = (iso) => { if (!iso) return '—'; const m = (Date.now() - new Date(iso)) / 6e4; return m < 1 ? 'agora' : m < 60 ? `${Math.round(m)} min` : m < 1440 ? `${Math.round(m / 60)} h` : fmtDateTime(iso); };
 const LS = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const saveLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* sem armazenamento */ } };
@@ -223,14 +224,11 @@ export default function Ads() {
       <div className="ads-kpis">
         <Kp l="Anúncios" v={ind.total} />
         <Kp l="No ar" v={ind.noar} s={`${pct(ind.noar)}%`} />
-        <Kp l="Alta performance" v={ind.alta} c={CLASS.alta[1]} onClick={() => setFilter('cls', f.cls === 'alta' ? '' : 'alta')} on={f.cls === 'alta'} />
-        <Kp l="Estratégicos" v={ind.estr} c={CLASS.estrategico[1]} onClick={() => setFilter('cls', f.cls === 'estrategico' ? '' : 'estrategico')} on={f.cls === 'estrategico'} />
-        <Kp l="Gerais" v={ind.geral} c={CLASS.geral[1]} onClick={() => setFilter('cls', f.cls === 'geral' ? '' : 'geral')} on={f.cls === 'geral'} />
         <Kp l="Pontuação média" v={ind.media ?? '—'} c={levelOf(ind.media)?.[2]} s={levelOf(ind.media)?.[1]} />
         <Kp l="Críticos" v={ind.criticos} c="#e2445c" onClick={() => setFilter('level', f.level === 'Crítico' ? '' : 'Crítico')} on={f.level === 'Crítico'} />
         <Kp l="Completos" v={`${pct(ind.completos)}%`} s={`${ind.completos} anúncio(s)`} />
         <Kp l="Pendências" v={ind.pend} c="#fdab3d" onClick={() => setFilter('pending', !f.pending)} on={f.pending} />
-        <Kp l="Prioridade urgente/alta" v={ind.urgentes} c="#e2445c" onClick={() => setFilter('prio', f.prio ? '' : '1')} on={f.prio === '1'} />
+        <Kp l="Urgentes (nada feito)" v={filtered.filter((r) => r.prio === 1).length} c="#e2445c" onClick={() => setFilter('prio', f.prio === '1' ? '' : '1')} on={f.prio === '1'} />
       </div>
 
       {chansHere.length > 0 && (
@@ -250,9 +248,6 @@ export default function Ads() {
         <select value={f.resp} onChange={(e) => setFilter('resp', e.target.value)}>
           <option value="">Todos os responsáveis</option><option value="me">Meus anúncios</option><option value="none">Sem responsável</option>
           {people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <select value={f.cls} onChange={(e) => setFilter('cls', e.target.value)}>
-          <option value="">Todas as classificações</option>{Object.entries(CLASS).map(([k, [l]]) => <option key={k} value={k}>{l}</option>)}
         </select>
         <select value={f.level} onChange={(e) => setFilter('level', e.target.value)}>
           <option value="">Todas as pontuações</option>{[...LEVELS].reverse().map(([min, l]) => <option key={l} value={l}>{l} ({min}+)</option>)}
@@ -443,9 +438,6 @@ function BulkBar({ n, total, people, isAdmin, onAll, onClear, bulk }) {
       <b>{n} selecionado(s)</b>
       {n < total && <button className="link small" onClick={onAll}>Selecionar todos os {total} filtrados</button>}
       <span className="sep" />
-      <select value="" onChange={(e) => e.target.value && bulk({ classification: e.target.value }, 'reclassificados')}>
-        <option value="">Classificar como…</option>{Object.entries(CLASS).map(([k, [l]]) => <option key={k} value={k}>{l}</option>)}
-      </select>
       <select value="" onChange={(e) => e.target.value && bulk({ responsible_id: e.target.value === 'none' ? null : Number(e.target.value) }, 'atualizados')}>
         <option value="">Responsável…</option><option value="none">— ninguém —</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
       </select>
