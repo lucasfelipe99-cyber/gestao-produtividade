@@ -13,6 +13,8 @@ import Team from './pages/Team.jsx';
 import History from './pages/History.jsx';
 import Timeline from './pages/Timeline.jsx';
 import Summary from './pages/Summary.jsx';
+import Ads from './pages/Ads.jsx';
+import Volume from './pages/Volume.jsx';
 import TaskDrawer from './components/TaskDrawer.jsx';
 
 const Ctx = createContext(null);
@@ -52,19 +54,20 @@ function Shell({ me, onLogout }) {
     openTask: (id) => setOpenTask(id),
   };
   const logout = async () => { await api('/auth/logout', { method: 'POST' }); onLogout(); };
+  // menu enxuto: a planilha de anúncios é o ambiente principal
   const ALL = [
-    ['/', 'dashboard', isAdmin ? 'Dashboard' : 'Meu painel', 'dashboard', <Dashboard />],
-    ['/resumo', 'note', 'Resumo', null, <Summary />],
+    ['/anuncios', 'list', 'Anúncios', 'anuncios', <Ads />],
     ['/tarefas', 'today', 'Tarefas', 'tarefas', <AllTasks />],
-    ['/nao-realizadas', 'alert', 'Não realizadas', 'tarefas', <NotDone />],
-    ['/acompanhamento', 'target', 'Acompanhamento', 'acompanhamento', <Acompanhamento />],
+    ['/volume', 'chart', 'Volume', 'volume', <Volume />],
     ['/clientes', 'chat', 'Clientes', 'clientes', <Clients />],
-    ['/linha-do-tempo', 'timeline', 'Linha do tempo', 'linha-do-tempo', <Timeline />],
-    ['/metas', 'target', 'Metas e atingimento', 'metas', <Goals />],
-    ['/relatorios', 'chart', 'Relatórios', 'relatorios', <Reports />],
-    ['/historico', 'history', 'Histórico', 'historico', <History />],
     ...(isAdmin ? [['/equipe', 'users', 'Equipe e cadastros', null, <Team />]] : []),
   ];
+  // telas antigas: saíram do menu, mas os dados e os endereços continuam (nada foi apagado)
+  const HIDDEN = [
+    ['/painel', 'dashboard', <Dashboard />], ['/resumo', null, <Summary />], ['/nao-realizadas', 'tarefas', <NotDone />],
+    ['/acompanhamento', 'acompanhamento', <Acompanhamento />], ['/linha-do-tempo', 'linha-do-tempo', <Timeline />], ['/metas', 'metas', <Goals />],
+    ['/relatorios', 'relatorios', <Reports />], ['/historico', 'historico', <History />],
+  ].filter(([, tab]) => !tab || canTab(me, tab));
   const nav = ALL.filter(([, , , tab]) => !tab || canTab(me, tab));
   const home = nav[0]?.[0] || '/';
   return (
@@ -98,6 +101,7 @@ function Shell({ me, onLogout }) {
             <ErrorBoundary key={loc.pathname + loc.search}>
             <Routes>
               {nav.map(([to, , , , el]) => <Route key={to} path={to} element={el} />)}
+              {HIDDEN.map(([to, , el]) => <Route key={to} path={to} element={el} />)}
               <Route path="/grupo" element={<Navigate to="/tarefas?tipo=group" replace />} />
               <Route path="/diarias" element={<Navigate to="/tarefas?tipo=daily" replace />} />
               <Route path="/semanais" element={<Navigate to="/tarefas?tipo=weekly" replace />} />

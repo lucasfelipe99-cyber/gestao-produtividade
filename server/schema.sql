@@ -454,3 +454,110 @@ DO $$ BEGIN
 END $$;
 ALTER TABLE group_items ADD COLUMN IF NOT EXISTS drive_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE group_items ADD COLUMN IF NOT EXISTS drive_at TIMESTAMPTZ;
+
+-- ===================== v30: central de anúncios (cliente → marketplace → conta → anúncio) =====================
+-- tabelas novas; nada das tabelas antigas é apagado ou alterado
+CREATE TABLE IF NOT EXISTS mkt_accounts (
+  id SERIAL PRIMARY KEY,
+  company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  business_id INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  channel_id INT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  position INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS mkt_accounts_uniq ON mkt_accounts (business_id, channel_id, lower(name));
+-- responsável pela parte estratégica de cada cliente em cada marketplace
+CREATE TABLE IF NOT EXISTS client_channel_owners (
+  business_id INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  channel_id INT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  user_id INT REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (business_id, channel_id)
+);
+CREATE TABLE IF NOT EXISTS ads (
+  id SERIAL PRIMARY KEY,
+  company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  business_id INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  channel_id INT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  account_id INT NOT NULL REFERENCES mkt_accounts(id) ON DELETE RESTRICT,
+  ad_code TEXT,
+  link TEXT,
+  sku TEXT,
+  title TEXT,
+  classification TEXT NOT NULL DEFAULT 'geral' CHECK (classification IN ('alta','estrategico','geral')),
+  checks JSONB NOT NULL DEFAULT '{}'::jsonb,        -- { capa: { s: 'ok'|'na', by, name, at } } ; ausente = pendente
+  responsible_id INT REFERENCES users(id) ON DELETE SET NULL,
+  notes TEXT,
+  extra JSONB NOT NULL DEFAULT '{}'::jsonb,         -- dados vindos da importação (status, preço, estoque…)
+  legacy JSONB,                                     -- de onde veio na estrutura antiga (tarefa em grupo / SKU / anúncio)
+  archived BOOLEAN NOT NULL DEFAULT FALSE,
+  created_by INT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  link_by INT REFERENCES users(id) ON DELETE SET NULL,
+  link_at TIMESTAMPTZ,
+  updated_by INT REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ads_company_biz ON ads (company_id, business_id);
+CREATE INDEX IF NOT EXISTS ads_account_code ON ads (account_id, upper(ad_code));
+-- informações do SKU (Drive, fotos/vídeos prontos da base) por cliente
+CREATE TABLE IF NOT EXISTS sku_info (
+  id SERIAL PRIMARY KEY,
+  company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  business_id INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  sku TEXT NOT NULL,
+  description TEXT,
+  drive_link TEXT,
+  drive_by INT REFERENCES users(id) ON DELETE SET NULL,
+  drive_at TIMESTAMPTZ,
+  checks JSONB NOT NULL DEFAULT '{}'::jsonb,
+  legacy JSONB,
+  created_by INT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS sku_info_uniq ON sku_info (business_id, lower(sku));
+-- pesos da pontuação: padrão (sem marketplace/classificação) e ajustes por marketplace e/ou classificação
+CREATE TABLE IF NOT EXISTS score_config (
+  id SERIAL PRIMARY KEY,
+  company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  channel_id INT REFERENCES channels(id) ON DELETE CASCADE,
+  classification TEXT,
+  weights JSONB NOT NULL,
+  updated_by INT REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS score_config_uniq ON score_config (company_id, COALESCE(channel_id, 0), COALESCE(classification, ''));
+-- importações (anúncios agora; vendas e forecast depois) e o mapeamento de colunas salvo por marketplace
+CREATE TABLE IF NOT EXISTS ad_imports (
+  id SERIAL PRIMARY KEY,
+  company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'anuncios',
+  business_id INT REFERENCES businesses(id) ON DELETE SET NULL,
+  channel_id INT REFERENCES channels(id) ON DELETE SET NULL,
+  account_id INT REFERENCES mkt_accounts(id) ON DELETE SET NULL,
+  filename TEXT,
+  mapping JSONB,
+  counts JSONB,
+  user_id INT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS import_mappings (
+  company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  channel_id INT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'anuncios',
+  header_row INT NOT NULL DEFAULT 0,
+  mapping JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (company_id, channel_id, kind)
+);
+-- quem já tinha a aba Tarefas passa a ter também Anúncios e Volume
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v30_abas_anuncios') THEN
+    UPDATE users SET allowed_tabs = allowed_tabs || ARRAY['anuncios','volume']
+      WHERE allowed_tabs IS NOT NULL AND 'tarefas' = ANY(allowed_tabs) AND NOT 'anuncios' = ANY(allowed_tabs);
+    INSERT INTO app_meta (key) VALUES ('v30_abas_anuncios');
+  END IF;
+END $$;

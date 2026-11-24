@@ -15,6 +15,7 @@ import { aiEnabled, summarizeNotes } from './ai.js';
 import { dashboard, report, attainment, perUser, weeklySeries } from './metrics.js';
 import { todayIn, addDays, weekStart, isDate, isBusinessDay, addMonths } from './dates.js';
 import { buildWorkbook } from './export.js';
+import { registerAds, migrateToAds } from './ads.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -29,6 +30,7 @@ app.set('trust proxy', 1);
 // SSE (/api/stream) não pode ser comprimido: a compressão segura as mensagens e o tempo real atrasa
 app.use(compression({ filter: (req, res) => (req.path === '/api/stream' ? false : compression.filter(req, res)) }));
 app.use('/api/groups/:id/import', express.json({ limit: '15mb' }));
+app.use('/api/ads/import', express.json({ limit: '30mb' }));
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
@@ -60,7 +62,7 @@ async function auth(req, _res, next) {
 }
 const adminOnly = (req, _res, next) => (isAdmin(req.user) ? next() : next(new HttpError(403, 'Apenas administradores')));
 // Abas do sistema que o administrador pode liberar/bloquear por colaborador
-export const TABS = ['dashboard', 'tarefas', 'acompanhamento', 'clientes', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
+export const TABS = ['anuncios', 'volume', 'dashboard', 'tarefas', 'acompanhamento', 'clientes', 'linha-do-tempo', 'metas', 'relatorios', 'historico'];
 const canTab = (u, tab) => isAdmin(u) || !u.allowed_tabs || u.allowed_tabs.includes(tab);
 const requireTab = (tab) => (req, _res, next) => (canTab(req.user, tab) ? next() : next(new HttpError(403, 'Você não tem acesso a esta área')));
 
@@ -1023,6 +1025,8 @@ const groupVis = (req, params) => {
 app.get('/api/groups', requireTab('tarefas'), wrap(async (req, res) => {
   const params = [req.user.company_id];
   let where = 'g.company_id=$1' + groupVis(req, params);
+  // a "Gestão de SKU" virou a aba Anúncios: as tarefas fixas antigas ficam guardadas, mas fora da lista
+  if (await one("SELECT 1 AS x FROM app_meta WHERE key='v30_migracao_anuncios'")) where += ' AND NOT g.fixed';
   if (req.query.status === 'open' || req.query.status === 'done') { params.push(req.query.status); where += ` AND g.status=$${params.length}`; }
   if (req.query.business) { params.push(parseInt(req.query.business, 10)); where += ` AND g.business_id=$${params.length}`; }
   res.json(await many(`${GROUP_SELECT} WHERE ${where} ORDER BY g.status, g.fixed DESC, g.due_date NULLS LAST, g.created_at DESC LIMIT 300`, params));
@@ -2380,6 +2384,7 @@ app.post('/api/automation/run', adminOnly, wrap(async (req, res) => {
 }));
 
 // ---------- erros e frontend ----------
+registerAds(app, { requireTab });
 app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Rota não encontrada')));
 app.use((err, _req, res, _next) => {
   if (err.code === '23505' && /one_active_timer/.test(err.constraint || '')) {
@@ -2398,6 +2403,8 @@ if (fs.existsSync(dist)) {
 }
 
 await migrate();
+// migração para a central de anúncios (uma vez, com cópia de segurança e conferência; se algo não bater, nada é gravado)
+try { await migrateToAds(); } catch (e) { console.error('[v30] Migração NÃO aplicada (nada foi alterado):', e.message); }
 // conferência de dados no início (só leitura): atual x cópia de segurança v29
 try {
   const cnt = (t) => `SELECT count(*)::int AS itens, COALESCE(sum(jsonb_array_length(listings)),0)::int AS anuncios,
