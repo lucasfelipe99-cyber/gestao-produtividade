@@ -983,3 +983,17 @@ table.sample tr.skip td { color: #b3b7c5; }
 label.btn { display: inline-flex; align-items: center; gap: 6px; }
 .danger-link { color: #d83a52 !important; }
 .removed-box { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* grupos de colunas recolhíveis */
+table.sheet tr.band-row th { top: 0; height: 24px; padding: 2px 4px; background: #fbfbfd; border-bottom: 0; cursor: default; }
+table.sheet tr.band-row + tr th { top: 24px; }
+table.sheet th.band { border-top: 3px solid var(--gc); text-align: left; }
+table.sheet th.band.folded { text-align: center; }
+.band-in { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.band-label { font-size: 11px; font-weight: 700; color: var(--gc); text-transform: uppercase; letter-spacing: .3px; }
+.fold-btn { width: 18px; height: 18px; line-height: 14px; padding: 0; border: 1px solid #9aa0b4; border-radius: 3px; background: #fff; font-size: 13px; font-weight: 700; color: #323338; }
+.fold-btn:hover { background: #323338; color: #fff; }
+table.sheet th.grp-h { text-align: center; font-size: 14px; color: var(--gc); background: #f0f1f6; }
+table.sheet td.grp-c { text-align: center; background: #fafbfd; }
+.grp-sum { font-size: 11.5px; font-weight: 700; color: #d83a52; }
+.grp-sum.full { color: #00a35c; }

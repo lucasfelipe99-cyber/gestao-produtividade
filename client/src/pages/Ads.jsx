@@ -28,6 +28,15 @@ export const CHECKS = [
 export const CLASS = { alta: ['Alta performance', '#a25ddc'], estrategico: ['Estratégico', '#ff7a45'], geral: ['Geral', '#8a90a6'] };
 const LEVELS = [[95, 'Excelente', '#037f4c'], [80, 'Muito bom', '#00c875'], [60, 'Bom', '#9cd326'], [40, 'Precisa melhorar', '#fdab3d'], [0, 'Crítico', '#e2445c']];
 export const levelOf = (s) => (s == null ? null : LEVELS.find(([min]) => s >= min));
+// grupos de colunas que cada pessoa pode recolher (como o agrupar do Excel)
+const GROUPS = {
+  ind: ['Pontuação', '#323338'],
+  estrutura: ['Anúncio e alta performance', PILLARS.estrutura[1]],
+  publicidade: ['Publicidade', PILLARS.publicidade[1]],
+  comercial: ['Estratégias comerciais', PILLARS.comercial[1]],
+  gestao: ['Gestão', '#676879'],
+};
+const groupOf = (k) => (['score', 'prio'].includes(k) ? 'ind' : ['resp', 'estr', 'notes', 'upd'].includes(k) ? 'gestao' : CHECKS.find((c) => c[0] === k)?.[3] || null);
 const PRIO = { 1: ['Urgente', '#e2445c'], 2: ['Alta', '#ff7a45'], 3: ['Média', '#fdab3d'], 4: ['Baixa', '#579bfc'], 5: ['Manutenção', '#00c875'] };
 
 export function weightsFor(data, channelId, cls) {
@@ -70,6 +79,9 @@ export default function Ads() {
   const [sel, setSel] = useState(() => new Set());
   const [hidden, setHidden] = useState(() => LS('ads.hidden', []));
   const [modal, setModal] = useState(null);
+  const [folded, setFolded] = useState(() => LS(`ads.folded.${me.id}`, []));
+  useEffect(() => saveLS(`ads.folded.${me.id}`, folded), [folded, me.id]);
+  const fold = (g) => setFolded(folded.includes(g) ? folded.filter((x) => x !== g) : [...folded, g]);
   useEffect(() => saveLS('ads.biz', biz), [biz]);
   useEffect(() => saveLS('ads.hidden', hidden), [hidden]);
   useEffect(() => { setPage(0); }, [biz, f, sort]);
@@ -166,6 +178,19 @@ export default function Ads() {
     ...CHECKS.map(([k, l, , p]) => [k, l, 62, false, p]),
     ['resp', 'Responsável', 130], ['estr', 'Estratégico', 110], ['notes', 'Observações', 220], ['upd', 'Última atualização', 120],
   ].filter(([k]) => (k !== 'cliente' || showClient) && !hidden.includes(k));
+  // grupos recolhidos viram uma coluna estreita com o resumo
+  const VIEW = [];
+  for (const c of COLS) {
+    const g = groupOf(c[0]);
+    if (g && folded.includes(g)) { if (!VIEW.some((v) => v[0] === `grp:${g}`)) VIEW.push([`grp:${g}`, GROUPS[g][0], 54, false, null, g]); }
+    else VIEW.push([c[0], c[1], c[2], !!c[3], c[4], g]);
+  }
+  const bands = [];
+  for (const v of VIEW) {
+    if (v[3]) continue;
+    const g = v[5]; const last = bands[bands.length - 1];
+    if (last && last.g === g) last.span++; else bands.push({ g, span: 1 });
+  }
   let left = 34;
   const stick = {};
   for (const [k, , w, s] of COLS) if (s) { stick[k] = left; left += w; }
@@ -249,13 +274,26 @@ export default function Ads() {
 
       {!sorted.length ? <Empty>Nenhum anúncio {inBiz.length ? 'com esses filtros' : 'cadastrado ainda — use "+ Anúncio" ou "Importar anúncios"'}.</Empty> : (
         <div className="sheet-wrap">
-          <table className="sheet">
-            <thead><tr>
+          <table className="sheet" style={{ width: 34 + VIEW.reduce((x, v) => x + v[2], 0) }}>
+            <colgroup><col style={{ width: 34 }} />{VIEW.map((v) => <col key={v[0]} style={{ width: v[2] }} />)}</colgroup>
+            <thead><tr className="band-row">
+              <th className="stk sel-c band-blank" style={{ left: 0 }} />
+              {VIEW.filter((v) => v[3]).map(([k]) => <th key={k} className={'stk band-blank' + (k === lastSticky ? ' stk-last' : '')} style={{ left: stick[k] }} />)}
+              {bands.map((b, i) => (
+                <th key={i} colSpan={b.span} className={'band' + (b.g && folded.includes(b.g) ? ' folded' : '')} style={{ '--gc': b.g ? GROUPS[b.g][1] : '#c4c4c4' }}>
+                  {b.g && <span className="band-in">
+                    <button className="fold-btn" title={folded.includes(b.g) ? `Mostrar ${GROUPS[b.g][0]}` : `Recolher ${GROUPS[b.g][0]}`} onClick={() => fold(b.g)}>{folded.includes(b.g) ? '+' : '−'}</button>
+                    {!folded.includes(b.g) && <span className="band-label">{GROUPS[b.g][0]}</span>}
+                  </span>}
+                </th>
+              ))}
+            </tr><tr>
               <th className="stk sel-c" style={{ left: 0, width: 34, minWidth: 34 }}><input type="checkbox" checked={allShownSel} onChange={() => { const s = new Set(sel); shown.forEach((r) => (allShownSel ? s.delete(r.id) : s.add(r.id))); setSel(s); }} /></th>
-              {COLS.map(([k, l, w, , p]) => (k === 'estr' ? <th key={k} style={{ width: w, minWidth: w }} title="Responsável pela parte estratégica deste cliente neste marketplace">{l}</th> : th(k, l, w, p)))}
+              {VIEW.map(([k, l, w, , p, g]) => (k.startsWith('grp:') ? <th key={k} className="grp-h" style={{ width: w, minWidth: w, '--gc': GROUPS[g][1] }} title={`${l} (recolhido) — clique para mostrar`} onClick={() => fold(g)}>+</th>
+                : k === 'estr' ? <th key={k} style={{ width: w, minWidth: w }} title="Responsável pela parte estratégica deste cliente neste marketplace">{l}</th> : th(k, l, w, p)))}
             </tr></thead>
             <tbody>
-              {shown.map((r) => <Row key={r.id} r={r} cols={COLS} stick={stick} lastSticky={lastSticky} ctx={ctx} people={people} me={me} sel={sel.has(r.id)} onSel={() => toggleSel(r.id)} patch={patch} accounts={data.accounts} />)}
+              {shown.map((r) => <Row key={r.id} r={r} cols={VIEW} stick={stick} lastSticky={lastSticky} ctx={ctx} people={people} me={me} sel={sel.has(r.id)} onSel={() => toggleSel(r.id)} patch={patch} accounts={data.accounts} />)}
             </tbody>
           </table>
         </div>
@@ -328,7 +366,14 @@ const Row = React.memo(function Row({ r, cols, stick, lastSticky, ctx, people, m
   return (
     <tr className={(sel ? 'sel ' : '') + (r.pending ? 'has-pend' : 'done')} style={{ '--lv': lv?.[2] || '#c4c4c4' }}>
       <td className="stk sel-c" style={{ left: 0 }}><input type="checkbox" checked={sel} onChange={onSel} /></td>
-      {cols.map(([k, , w]) => {
+      {cols.map(([k, , w, , , g]) => {
+        if (k.startsWith('grp:')) {
+          if (g === 'ind') return cell(k, w, r.score == null ? '—' : <b style={{ color: lv[2] }}>{r.score}</b>, 'grp-c');
+          if (g === 'gestao') return cell(k, w, <span className="small ellip">{(ctx.pname(r.responsible_id || r.adOwner) || '—').split(' ')[0]}</span>, 'grp-c');
+          const keys = CHECKS.filter((c) => c[3] === g).map((c) => c[0]).filter((x) => (Number(r.w[x]) || 0) && r.checks?.[x]?.s !== 'na');
+          const done = keys.filter((x) => r.checks?.[x]?.s === 'ok').length;
+          return cell(k, w, <span className={'grp-sum' + (done === keys.length ? ' full' : '')} title={`${GROUPS[g][0]}: ${done} de ${keys.length} feitos`}>{done}/{keys.length}</span>, 'grp-c');
+        }
         switch (k) {
           case 'cliente': return cell(k, w, <span className="ellip" title={ctx.bizName(r.business_id)}>{ctx.bizName(r.business_id)}</span>);
           case 'mkt': return cell(k, w, <span className="chan" style={{ background: ch.color }}>{ch.name}</span>);
