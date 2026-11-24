@@ -31,6 +31,7 @@ app.set('trust proxy', 1);
 app.use(compression({ filter: (req, res) => (req.path === '/api/stream' ? false : compression.filter(req, res)) }));
 app.use('/api/groups/:id/import', express.json({ limit: '15mb' }));
 app.use('/api/ads/import', express.json({ limit: '30mb' }));
+app.use('/api/sales/', express.json({ limit: '40mb' }));
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 

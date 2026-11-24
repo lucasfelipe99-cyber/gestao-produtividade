@@ -373,9 +373,10 @@ export function registerAds(app, { requireTab }) {
     const ws = wb.worksheets[Math.min(sheetIdx, wb.worksheets.length - 1)];
     if (!ws) throw new HttpError(400, 'O arquivo está vazio');
     const rows = [];
-    ws.eachRow({ includeEmpty: true }, (r, n) => {
+    ws.eachRow({ includeEmpty: false }, (r, n) => {
+      const raw = Array.isArray(r.values) ? r.values : [];
       const vals = [];
-      for (let c = 1; c <= Math.max(r.cellCount, ws.columnCount || 0); c++) { const v = r.getCell(c).value; vals.push({ v: cellVal(v), h: cellLink(v) }); }
+      for (let c = 1; c < raw.length; c++) { const v = raw[c]; vals.push({ v: cellVal(v), h: cellLink(v) }); }
       rows[n - 1] = vals;
     });
     for (let k = 0; k < rows.length; k++) if (!rows[k]) rows[k] = [];
@@ -578,6 +579,216 @@ export function registerAds(app, { requireTab }) {
     });
     broadcast(u.company_id, { type: 'ads' });
     res.json({ created: n });
+  }));
+
+  // ======================= BASE DE VENDAS (formato padrão: relatório consolidado) =======================
+  // colunas: Marketplace | Marketplace venda (conta) | SKU | Id anúncio | Data | Categoria | Sub Categoria | Valor completo | Type | Descrição | Categoria2
+  const METRIC = (cat, sub) => {
+    const c = norm(cat), s = norm(sub);
+    if (c.includes('quantidade')) return 'qty';
+    if (c.includes('faturamento')) return s.includes('cancel') ? 'cancel' : 'gross';
+    if (c.includes('imposto')) return 'tax';
+    if (c.includes('materia prima') || c.includes('custo')) return 'cogs';
+    if (c.includes('despesas')) return s.includes('comiss') ? 'commission' : s.includes('frete') ? 'freight' : s.includes('publicidade') ? 'ads_cost' : s.includes('rebate') ? 'rebate' : s.includes('afiliad') ? 'affiliate_fee' : null;
+    if (c === 'ads f' || c.startsWith('ads')) return 'ads_rev';
+    if (c.includes('clique')) return 'clicks';
+    if (c.includes('visita')) return 'visits';
+    return null;
+  };
+  const MCOLS = ['qty', 'gross', 'cancel', 'tax', 'commission', 'freight', 'ads_cost', 'rebate', 'affiliate_fee', 'cogs', 'ads_rev', 'clicks', 'visits'];
+  const toDay = (v) => {
+    if (!v) return null;
+    if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/.exec(v);
+    if (m) return `${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+    const n = Number(v); if (n > 30000 && n < 80000) return new Date(Math.round((n - 25569) * 864e5)).toISOString().slice(0, 10);
+    return null;
+  };
+  const toNum = (v) => { if (v == null || v === '') return 0; const s = String(v).trim(); const n = Number(/,\d{1,3}$/.test(s) ? s.replace(/\./g, '').replace(',', '.') : s); return Number.isFinite(n) ? n : 0; };
+  async function parseSales(db, u, body) {
+    const businessId = int(body.business_id);
+    await assertBiz(db, u, businessId);
+    const { rows } = await readFile(body.filename, body.data);
+    const hi = rows.findIndex((r) => { const h = r.map((c) => norm(c.v)); return h.includes('marketplace') && h.some((x) => /^id anuncio/.test(x)) && h.some((x) => /^valor/.test(x)); });
+    if (hi < 0) throw new HttpError(400, 'Não reconheci o relatório de vendas. Ele precisa das colunas: Marketplace, Marketplace venda, SKU, Id anúncio, Data, Categoria, Sub Categoria, Valor completo e Type.');
+    const h = rows[hi].map((c) => norm(c.v));
+    const col = (re) => h.findIndex((x) => re.test(x));
+    const C = { mkt: col(/^marketplace$/), acc: col(/^marketplace venda|^conta/), sku: col(/^sku/), ad: col(/^id anuncio/), day: col(/^data$/), cat: col(/^categoria$/), sub: col(/^sub ?categoria/),
+      val: col(/^valor/), type: col(/^type$|^tipo$|^origem/), desc: col(/^descricao/), cat2: col(/^categoria ?2/) };
+    for (const k of ['mkt', 'acc', 'ad', 'day', 'cat', 'val']) if (C[k] < 0) throw new HttpError(400, `Coluna obrigatória não encontrada: ${{ mkt: 'Marketplace', acc: 'Marketplace venda', ad: 'Id anúncio', day: 'Data', cat: 'Categoria', val: 'Valor completo' }[k]}`);
+    const chans = (await db.query('SELECT id, name FROM channels WHERE company_id=$1 AND NOT archived', [u.company_id])).rows;
+    const chanMap = body.channel_map || {};
+    const chanOf = (name) => {
+      if (chanMap[name]) return int(chanMap[name]);
+      const n = norm(name);
+      return (chans.find((c) => norm(c.name) === n) || chans.find((c) => norm(c.name).replace(/\s/g, '').startsWith(n.replace(/\s/g, '')) || n.replace(/\s/g, '').startsWith(norm(c.name).replace(/\s/g, ''))))?.id || null;
+    };
+    const agg = new Map(); const unknownMetric = new Map(); const unknownChan = new Set();
+    let from = null, to = null, lines = 0;
+    for (let k = hi + 1; k < rows.length; k++) {
+      const r = rows[k];
+      const mkt = txt(r[C.mkt]?.v, 80); if (!mkt) continue;
+      const day = toDay(r[C.day]?.v); if (!day) continue;
+      const metric = METRIC(r[C.cat]?.v, C.sub >= 0 ? r[C.sub]?.v : '');
+      if (!metric) { const key = `${r[C.cat]?.v} / ${C.sub >= 0 ? r[C.sub]?.v : ''}`; unknownMetric.set(key, (unknownMetric.get(key) || 0) + 1); continue; }
+      const ch = chanOf(mkt); if (!ch) { unknownChan.add(mkt); continue; }
+      const acc = txt(r[C.acc]?.v, 120) || 'Conta principal';
+      const code = txt(r[C.ad]?.v, 120);
+      const origin = (C.type >= 0 && txt(r[C.type]?.v, 40)) || 'Organico';
+      const key = `${ch}|${acc}|${code}|${day}|${origin}`;
+      let a = agg.get(key);
+      if (!a) { a = { ch, mkt, acc, code, day, origin, sku: C.sku >= 0 ? txt(r[C.sku]?.v, 120) : null, title: C.desc >= 0 ? txt(r[C.desc]?.v, 500) : null, category: C.cat2 >= 0 ? txt(r[C.cat2]?.v, 120) : null }; for (const m of MCOLS) a[m] = 0; agg.set(key, a); }
+      a[metric] += toNum(r[C.val]?.v);
+      if (a.sku === '0' || a.sku === 'X') a.sku = null;
+      if (a.title === 'X') a.title = null;
+      lines++;
+      if (!from || day < from) from = day; if (!to || day > to) to = day;
+    }
+    if (!agg.size) throw new HttpError(400, unknownChan.size ? `Nenhum marketplace do arquivo está cadastrado: ${[...unknownChan].join(', ')}` : 'Não encontrei vendas no arquivo');
+    // contas do relatório → contas do sistema
+    const sources = new Map();
+    for (const a of agg.values()) {
+      const k = `${a.ch}|${a.acc}`;
+      const s = sources.get(k) || { key: k, channel_id: a.ch, mkt: a.mkt, source: a.acc, gross: 0, cancel: 0, qty: 0, codes: new Set() };
+      s.gross += a.gross; s.cancel += a.cancel; s.qty += a.qty; if (a.code && (a.gross || a.qty)) s.codes.add(a.code);
+      sources.set(k, s);
+    }
+    const accounts = (await db.query('SELECT id, channel_id, name FROM mkt_accounts WHERE business_id=$1 ORDER BY position, id', [businessId])).rows;
+    const saved = (await db.query('SELECT channel_id, source_name, account_id FROM sales_account_map WHERE business_id=$1', [businessId])).rows;
+    const bodyMap = body.account_map || {};
+    const byChannel = new Map();
+    for (const s of sources.values()) { const l = byChannel.get(s.channel_id) || []; l.push(s); byChannel.set(s.channel_id, l); }
+    for (const [ch, list] of byChannel) {
+      list.sort((x, y) => y.gross - x.gross);
+      const accs = accounts.filter((a) => a.channel_id === ch);
+      const used = new Set();
+      for (const s of list) {
+        let v = bodyMap[s.key];
+        if (v == null) v = saved.find((m) => m.channel_id === ch && norm(m.source_name) === norm(s.source))?.account_id;
+        if (v == null) v = accs.find((a) => norm(a.name) === norm(s.source))?.id;
+        if (v == null) { const free = accs.find((a) => !used.has(a.id)); v = free && !list.some((o) => o !== s && norm(o.source) === norm(free.name)) ? free.id : 'new'; }
+        s.account = v === 'new' ? 'new' : int(v);
+        if (s.account !== 'new') used.add(s.account);
+        s.options = accs.map((a) => ({ id: a.id, name: a.name }));
+      }
+    }
+    // vínculo com os anúncios cadastrados (cliente + marketplace + ID do anúncio)
+    const ads = (await db.query('SELECT id, channel_id, account_id, upper(ad_code) AS code, lower(sku) AS sku FROM ads WHERE business_id=$1 AND NOT archived', [businessId])).rows;
+    const findAd = (a, accountId) => {
+      const code = (a.code || '').toUpperCase();
+      const hits = ads.filter((x) => x.channel_id === a.ch && x.code && x.code === code);
+      if (hits.length) return (hits.find((x) => x.account_id === accountId) || hits[0]).id;
+      // o mesmo ID num canal parecido do cliente (ex.: "Mercado Livre 2")
+      const other = code ? ads.filter((x) => x.code === code && x.channel_id !== a.ch) : [];
+      if (other.length === 1) return other[0].id;
+      // sem ID igual: tenta pelo SKU (anúncio do mesmo canal sem ID, ou com um "ID" que não aparece no relatório, ex.: o próprio SKU)
+      if (a.sku) {
+        const bySku = ads.filter((x) => x.channel_id === a.ch && x.sku === a.sku.toLowerCase() && (!x.code || !fileCodes.get(a.ch)?.has(x.code)));
+        if (bySku.length === 1) return bySku[0].id;
+        const free = bySku.filter((x) => !x.code);
+        if (free.length === 1) return free[0].id;
+      }
+      return null;
+    };
+    const fileCodes = new Map();
+    for (const a of agg.values()) { if (!a.code) continue; const set = fileCodes.get(a.ch) || new Set(); set.add(a.code.toUpperCase()); fileCodes.set(a.ch, set); }
+    const realAd = (a) => a.code && !/^ajuste/i.test(a.code) && (a.gross || a.qty || a.visits || a.clicks);
+    const unmatched = new Map();
+    for (const a of agg.values()) {
+      const s = sources.get(`${a.ch}|${a.acc}`);
+      a.ad_id = findAd(a, s.account === 'new' ? null : s.account);
+      if (!a.ad_id && realAd(a)) { const k = `${a.ch}|${a.acc}|${a.code}`; const m = unmatched.get(k) || { channel_id: a.ch, mkt: a.mkt, source: a.acc, code: a.code, sku: a.sku, title: a.title, gross: 0, qty: 0 }; m.gross += a.gross + a.cancel; m.qty += a.qty; unmatched.set(k, m); }
+    }
+    const existing = (await db.query(`SELECT count(*)::int AS n, COALESCE(sum(gross+cancel),0)::float AS fat FROM sales_daily WHERE business_id=$1 AND day BETWEEN $2 AND $3`, [businessId, from, to])).rows[0];
+    return { businessId, agg, sources: [...sources.values()], unmatched: [...unmatched.values()].sort((x, y) => y.gross - x.gross), from, to, lines, existing,
+      unknown_metrics: [...unknownMetric].map(([k, n]) => ({ k, n })), unknown_channels: [...unknownChan], channels: chans };
+  }
+  const salesView = (p) => ({
+    from: p.from, to: p.to, lines: p.lines, rows: p.agg.size, existing: p.existing,
+    sources: p.sources.map((s) => ({ key: s.key, channel_id: s.channel_id, mkt: s.mkt, source: s.source, account: s.account, options: s.options, faturamento: +(s.gross + s.cancel).toFixed(2), bruto: +s.gross.toFixed(2), cancelamento: +s.cancel.toFixed(2), unidades: s.qty, anuncios: s.codes.size })),
+    unmatched: p.unmatched.slice(0, 200), unmatched_count: p.unmatched.length, unknown_metrics: p.unknown_metrics, unknown_channels: p.unknown_channels, channels: p.channels,
+  });
+  app.post('/api/sales/preview', T, wrap(async (req, res) => {
+    res.json(salesView(await tx((db) => parseSales(db, req.user, req.body || {}))));
+  }));
+  app.post('/api/sales/apply', T, wrap(async (req, res) => {
+    const u = req.user, b = req.body || {};
+    const out = await tx(async (db) => {
+      const p = await parseSales(db, u, b);
+      // contas: cria as que forem "nova" e guarda o de/para para as próximas importações
+      for (const s of p.sources) {
+        if (s.account === 'new') {
+          const ex = (await db.query('SELECT id FROM mkt_accounts WHERE business_id=$1 AND channel_id=$2 AND lower(name)=lower($3)', [p.businessId, s.channel_id, s.source])).rows[0];
+          s.account = ex ? ex.id : (await db.query('INSERT INTO mkt_accounts (company_id, business_id, channel_id, name, position) VALUES ($1,$2,$3,$4,(SELECT COALESCE(max(position),0)+1 FROM mkt_accounts WHERE business_id=$2 AND channel_id=$3)) RETURNING id', [u.company_id, p.businessId, s.channel_id, txt(s.source, 80)])).rows[0].id;
+        } else {
+          const a = (await db.query('SELECT id FROM mkt_accounts WHERE id=$1 AND business_id=$2 AND channel_id=$3', [s.account, p.businessId, s.channel_id])).rows[0];
+          if (!a) throw new HttpError(400, `Conta inválida para ${s.mkt} / ${s.source}`);
+        }
+        await db.query(`INSERT INTO sales_account_map (business_id, channel_id, source_name, account_id) VALUES ($1,$2,$3,$4)
+          ON CONFLICT (business_id, channel_id, lower(source_name)) DO UPDATE SET account_id=EXCLUDED.account_id`, [p.businessId, s.channel_id, s.source, s.account]);
+      }
+      const accOf = new Map(p.sources.map((s) => [`${s.channel_id}|${s.source}`, s.account]));
+      // anúncios que vendem e ainda não estão na base: cadastra (sem mexer em nada dos existentes)
+      let created = 0;
+      if (b.create_missing !== false) {
+        for (const m of p.unmatched) {
+          const accountId = accOf.get(`${m.channel_id}|${m.source}`);
+          const id = (await db.query(`INSERT INTO ads (company_id, business_id, channel_id, account_id, ad_code, sku, title, created_by, updated_by, legacy, responsible_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,'{"import":true,"from":"vendas"}'::jsonb,(SELECT ad_user_id FROM client_channel_owners WHERE business_id=$2 AND channel_id=$3)) RETURNING id`,
+            [u.company_id, p.businessId, m.channel_id, accountId, normCode(m.code), m.sku, m.title, u.id])).rows[0].id;
+          for (const a of p.agg.values()) if (a.ch === m.channel_id && a.acc === m.source && a.code === m.code) a.ad_id = id;
+          created++;
+        }
+      }
+      const imp = (await db.query(`INSERT INTO ad_imports (company_id, kind, business_id, filename, counts, user_id) VALUES ($1,'vendas',$2,$3,'{}',$4) RETURNING id`, [u.company_id, p.businessId, txt(b.filename, 200), u.id])).rows[0].id;
+      // substitui o período do arquivo nas contas do arquivo (reimportar o mesmo mês não duplica)
+      const accIds = [...new Set(p.sources.map((s) => s.account))];
+      const del = await db.query('DELETE FROM sales_daily WHERE business_id=$1 AND account_id = ANY($2::int[]) AND day BETWEEN $3 AND $4', [p.businessId, accIds, p.from, p.to]);
+      const list = [...p.agg.values()];
+      const A = (f) => list.map(f);
+      await db.query(`INSERT INTO sales_daily (company_id, business_id, channel_id, account_id, ad_id, ad_code, sku, title, category, day, origin, ${MCOLS.join(', ')}, import_id)
+        SELECT $1, $2, x.ch, x.acc, x.ad, x.code, x.sku, x.title, x.cat, x.day, x.origin, ${MCOLS.map((m) => `x.${m}`).join(', ')}, $3
+        FROM unnest($4::int[], $5::int[], $6::int[], $7::text[], $8::text[], $9::text[], $10::text[], $11::date[], $12::text[], ${MCOLS.map((_, k) => `$${13 + k}::numeric[]`).join(', ')})
+          AS x(ch, acc, ad, code, sku, title, cat, day, origin, ${MCOLS.join(', ')})`,
+        [u.company_id, p.businessId, imp, A((a) => a.ch), A((a) => accOf.get(`${a.ch}|${a.acc}`)), A((a) => a.ad_id || null), A((a) => a.code), A((a) => a.sku), A((a) => a.title), A((a) => a.category),
+          A((a) => a.day), A((a) => a.origin), ...MCOLS.map((m) => A((a) => +Number(a[m] || 0).toFixed(3)))]);
+      const linked = list.filter((a) => a.ad_id).length;
+      const fat = list.reduce((s, a) => s + a.gross + a.cancel, 0);
+      const counts = { periodo: `${p.from} a ${p.to}`, linhas: list.length, vinculadas: linked, anuncios_criados: created, substituidas: del.rowCount, faturamento: +fat.toFixed(2) };
+      await db.query('UPDATE ad_imports SET counts=$2 WHERE id=$1', [imp, JSON.stringify(counts)]);
+      return counts;
+    });
+    broadcast(u.company_id, { type: 'ads' });
+    res.json(out);
+  }));
+  // vendas do mês por anúncio (até a última data importada)
+  app.get('/api/sales/summary', T, wrap(async (req, res) => {
+    const u = req.user;
+    const months = (await many(`SELECT DISTINCT to_char(day,'YYYY-MM') AS m FROM sales_daily WHERE company_id=$1 ORDER BY 1 DESC`, [u.company_id])).map((r) => r.m);
+    const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : months[0] || null;
+    const settings = (await one('SELECT abc FROM company_settings WHERE company_id=$1', [u.company_id]))?.abc || { a: 80, b: 95 };
+    if (!month) return res.json({ month: null, months, ref: {}, ads: {}, unlinked: [], settings });
+    const p = [u.company_id, `${month}-01`];
+    const [ads, ref, unlinked] = await Promise.all([
+      many(`SELECT ad_id, sum(gross+cancel)::float AS fat, sum(gross)::float AS bruto, sum(qty)::float AS qty, sum(visits)::float AS visits, sum(clicks)::float AS clicks,
+          sum(ads_cost)::float AS ads_cost, sum(ads_rev)::float AS ads_rev,
+          sum(gross+cancel+tax+commission+freight+ads_cost+rebate+affiliate_fee+cogs)::float AS margem
+        FROM sales_daily WHERE company_id=$1 AND ad_id IS NOT NULL AND day >= $2::date AND day < ($2::date + interval '1 month') GROUP BY ad_id`, p),
+      many(`SELECT business_id, max(day) AS ref, sum(gross+cancel)::float AS fat FROM sales_daily WHERE company_id=$1 AND day >= $2::date AND day < ($2::date + interval '1 month') GROUP BY business_id`, p),
+      many(`SELECT business_id, count(DISTINCT ad_code)::int AS n, sum(gross+cancel)::float AS fat FROM sales_daily WHERE company_id=$1 AND ad_id IS NULL AND (gross<>0 OR qty<>0)
+        AND day >= $2::date AND day < ($2::date + interval '1 month') GROUP BY business_id`, p),
+    ]);
+    res.json({ month, months, settings, ref: Object.fromEntries(ref.map((r) => [r.business_id, { ref: r.ref, fat: r.fat }])),
+      ads: Object.fromEntries(ads.map((r) => [r.ad_id, r])), unlinked });
+  }));
+  app.put('/api/company-settings', T, wrap(async (req, res) => {
+    const u = req.user;
+    if (!isAdmin(u)) throw new HttpError(403, 'Só administradores');
+    const a = Number(req.body?.abc?.a), b = Number(req.body?.abc?.b);
+    if (!(a > 0 && b > a && b < 100)) throw new HttpError(400, 'Use percentuais com A < B < 100 (ex.: A 80, B 95)');
+    await q(`INSERT INTO company_settings (company_id, abc) VALUES ($1,$2) ON CONFLICT (company_id) DO UPDATE SET abc=EXCLUDED.abc`, [u.company_id, JSON.stringify({ a, b })]);
+    broadcast(u.company_id, { type: 'ads' });
+    res.json({ ok: true });
   }));
 
   // ---------------- volume de trabalho por pessoa (quem clicou / preencheu) ----------------

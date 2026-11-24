@@ -30,14 +30,32 @@ const LEVELS = [[95, 'Excelente', '#037f4c'], [80, 'Muito bom', '#00c875'], [60,
 export const levelOf = (s) => (s == null ? null : LEVELS.find(([min]) => s >= min));
 // grupos de colunas que cada pessoa pode recolher (como o agrupar do Excel)
 const GROUPS = {
+  vendas: ['Vendas do mês', '#037f4c'],
   ind: ['Pontuação', '#323338'],
   estrutura: ['Anúncio e alta performance', PILLARS.estrutura[1]],
   publicidade: ['Publicidade', PILLARS.publicidade[1]],
   comercial: ['Estratégias comerciais', PILLARS.comercial[1]],
   gestao: ['Gestão', '#676879'],
 };
-const groupOf = (k) => (['score', 'prio'].includes(k) ? 'ind' : ['resp', 'estr', 'notes', 'upd'].includes(k) ? 'gestao' : CHECKS.find((c) => c[0] === k)?.[3] || null);
-const PRIO = { 1: ['Urgente', '#e2445c'], 2: ['Alta', '#ff7a45'], 3: ['Média', '#fdab3d'], 5: ['Manutenção', '#00c875'] };
+const groupOf = (k) => (['curva', 'fat', 'qty', 'visits', 'conv', 'margem'].includes(k) ? 'vendas' : ['score', 'prio'].includes(k) ? 'ind' : ['resp', 'estr', 'notes', 'upd'].includes(k) ? 'gestao' : CHECKS.find((c) => c[0] === k)?.[3] || null);
+const PRIO = { 1: ['Urgente', '#e2445c'], 2: ['Alta', '#ff7a45'], 3: ['Média', '#fdab3d'], 4: ['Baixa', '#579bfc'], 5: ['Manutenção', '#00c875'] };
+export const CURVE = { A: ['A', '#00a35c'], B: ['B', '#fdab3d'], C: ['C', '#e2445c'], S: ['Sem venda', '#9aa0b4'] };
+const brl = (v) => (v == null ? '—' : v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: v >= 1000 ? 0 : 2 }));
+const intf = (v) => (v == null ? '—' : Math.round(v).toLocaleString('pt-BR'));
+// curva ABC: ordena por faturamento; quem passa do limite fica na classe que estava sendo preenchida
+export function curveOf(rows, keyFn, abc) {
+  const groups = new Map();
+  for (const r of rows) { const k = keyFn(r); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }
+  const out = new Map();
+  for (const list of groups.values()) {
+    const sold = list.filter((r) => r.fat > 0).sort((x, y) => y.fat - x.fat);
+    const total = sold.reduce((a, r) => a + r.fat, 0);
+    let cum = 0;
+    for (const r of sold) { const before = (cum / total) * 100; out.set(r.id, before < abc.a ? 'A' : before < abc.b ? 'B' : 'C'); cum += r.fat; }
+    for (const r of list) if (!out.has(r.id)) out.set(r.id, 'S');
+  }
+  return out;
+}
 
 export function weightsFor(data, channelId, cls) {
   const cfg = data.config || [];
@@ -56,7 +74,15 @@ export function scoreOf(ad, w) {
   return { score: max ? Math.round((got / max) * 100) : null, pending, pillars: pil };
 }
 // prioridade (por enquanto só pela pontuação; depois entra a curva de vendas): nada feito = urgente
-const prioOf = (cls, score) => (score == null || score >= 80 ? 5 : score === 0 ? 1 : score < 40 ? 2 : 3);
+// prioridade: cruza a curva de vendas com a pontuação (sem vendas importadas, usa só a pontuação)
+const prioOf = (curve, score) => {
+  if (score == null || score >= 80) return 5;
+  if (!curve) return score === 0 ? 1 : score < 40 ? 2 : 3;
+  if (curve === 'A') return score < 60 ? 1 : 2;
+  if (curve === 'B') return score < 40 ? 2 : 3;
+  if (curve === 'C') return score < 40 ? 3 : 4;
+  return score === 0 ? 3 : 4;
+};
 const ago = (iso) => { if (!iso) return '—'; const m = (Date.now() - new Date(iso)) / 6e4; return m < 1 ? 'agora' : m < 60 ? `${Math.round(m)} min` : m < 1440 ? `${Math.round(m / 60)} h` : fmtDateTime(iso); };
 const LS = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
 const saveLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* sem armazenamento */ } };
@@ -73,8 +99,12 @@ export default function Ads() {
   const { me, isAdmin, businesses, channels } = useApp();
   const people = usePeople();
   const { data, setData, reload } = useData('/ads');
+  const [month, setMonth] = useState('');
+  const [scope, setScope] = useState(() => LS(`ads.scope.${me.id}`, 'client'));
+  useEffect(() => saveLS(`ads.scope.${me.id}`, scope), [scope, me.id]);
+  const sales = useData(`/sales/summary${month ? `?month=${month}` : ''}`);
   const [biz, setBiz] = useState(() => LS('ads.biz', 'all'));
-  const [f, setF] = useState({ channel: '', account: '', resp: '', cls: '', level: '', prio: '', q: '', pending: false, missing: '' });
+  const [f, setF] = useState({ channel: '', account: '', resp: '', cls: '', level: '', prio: '', q: '', pending: false, missing: '', curva: '' });
   const [sort, setSort] = useState({ k: 'prio', dir: 1 });
   const [page, setPage] = useState(0);
   const [sel, setSel] = useState(() => new Set());
@@ -96,13 +126,20 @@ export default function Ads() {
     const adOwner = (b, c) => data.owners.find((o) => o.business_id === b && o.channel_id === c)?.ad_user_id || null;
     const pname = (id) => people.find((p) => p.id === id)?.name || '';
     const drive = new Map((data.skus || []).map((s) => [`${s.business_id}:${(s.sku || '').toLowerCase()}`, s]));
+    const sd = sales.data || { ads: {}, ref: {}, settings: { a: 80, b: 95 } };
     const rows = data.ads.map((a) => {
       const w = weightsFor(data, a.channel_id, a.classification);
       const sc = scoreOf(a, w);
-      return { ...a, w, ...sc, prio: prioOf(a.classification, sc.score), owner: owner(a.business_id, a.channel_id), adOwner: adOwner(a.business_id, a.channel_id), sku_info: drive.get(`${a.business_id}:${(a.sku || '').toLowerCase()}`) };
+      const v = sd.ads[a.id];
+      const hasSales = !!sd.ref[a.business_id];
+      return { ...a, w, ...sc, hasSales, fat: v?.fat || 0, qty: v?.qty || 0, visits: v?.visits || 0, margem: v?.margem ?? null, conv: v?.visits ? (v.qty / v.visits) * 100 : null,
+        owner: owner(a.business_id, a.channel_id), adOwner: adOwner(a.business_id, a.channel_id), sku_info: drive.get(`${a.business_id}:${(a.sku || '').toLowerCase()}`) };
     });
-    return { rows, bizName, ch, acc, owner, pname };
-  }, [data, businesses, channels, people]);
+    const key = scope === 'acc' ? (r) => `a${r.account_id}` : scope === 'mkt' ? (r) => `${r.business_id}:${r.channel_id}` : (r) => `b${r.business_id}`;
+    const cv = curveOf(rows.filter((r) => r.hasSales), key, sd.settings || { a: 80, b: 95 });
+    for (const r of rows) { r.curva = r.hasSales ? cv.get(r.id) : null; r.prio = prioOf(r.curva, r.score); }
+    return { rows, bizName, ch, acc, owner, pname, sd };
+  }, [data, businesses, channels, people, sales.data, scope]);
 
   if (!data || !ctx) return <Loading />;
   if (!data.ready) return <Empty>A base de anúncios ainda está sendo preparada. Atualize a página em alguns instantes.</Empty>;
@@ -116,11 +153,13 @@ export default function Ads() {
     && (!f.cls || r.classification === f.cls)
     && (!f.level || levelOf(r.score)?.[1] === f.level)
     && (!f.prio || r.prio === Number(f.prio))
+    && (!f.curva || r.curva === f.curva || (f.curva === 'Apend' && r.curva === 'A' && r.pending > 0))
     && (!f.pending || r.pending > 0)
     && (!f.missing || (f.missing === 'noid' ? !r.ad_code : !r.checks?.[f.missing]))
     && (!qn || [r.sku, r.ad_code, r.title, r.link, r.notes].some((v) => (v || '').toLowerCase().includes(qn))));
   const val = {
-    prio: (r) => r.prio * 1000 + (r.score ?? 101), score: (r) => r.score ?? -1, cliente: (r) => ctx.bizName(r.business_id), mkt: (r) => ctx.ch(r.channel_id).name,
+    prio: (r) => r.prio * 1e12 - (r.fat || 0) * 100 + (r.score ?? 101),
+    curva: (r) => ({ A: 0, B: 1, C: 2, S: 3 }[r.curva] ?? 4) * 1e12 - (r.fat || 0), fat: (r) => r.fat, qty: (r) => r.qty, visits: (r) => r.visits, conv: (r) => r.conv ?? -1, margem: (r) => r.margem ?? -1e12, score: (r) => r.score ?? -1, cliente: (r) => ctx.bizName(r.business_id), mkt: (r) => ctx.ch(r.channel_id).name,
     conta: (r) => ctx.acc.get(r.account_id)?.name || '', sku: (r) => (r.sku || '').toLowerCase(), ad: (r) => r.ad_code || '', cls: (r) => ({ alta: 0, estrategico: 1, geral: 2 }[r.classification]),
     resp: (r) => ctx.pname(r.responsible_id), upd: (r) => r.updated_at, notes: (r) => r.notes || '',
     ...Object.fromEntries(CHECKS.map(([k]) => [k, (r) => ({ ok: 0, na: 2 }[r.checks?.[k]?.s] ?? 1)])),
@@ -165,6 +204,8 @@ export default function Ads() {
     urgentes: filtered.filter((r) => r.prio <= 2).length,
   };
   const pct = (n) => (ind.total ? Math.round((n / ind.total) * 100) : 0);
+  const refs = Object.entries(ctx.sd.ref || {}).filter(([b]) => biz === 'all' || Number(b) === Number(biz)).map(([, v]) => v.ref).sort();
+  const refTxt = refs.length ? `até ${refs[0].slice(8, 10)}/${refs[0].slice(5, 7)}${refs.length > 1 && refs[refs.length - 1] !== refs[0] ? ` (alguns até ${refs[refs.length - 1].slice(8, 10)}/${refs[refs.length - 1].slice(5, 7)})` : ''}` : 'sem vendas importadas';
 
   // marketplaces/contas existentes no recorte
   const chansHere = [...new Set(inBiz.map((r) => r.channel_id))].map((id) => ctx.ch(id) && { ...ctx.ch(id), id, n: inBiz.filter((r) => r.channel_id === id).length }).sort((a, b) => b.n - a.n);
@@ -175,6 +216,7 @@ export default function Ads() {
   const showClient = biz === 'all';
   const COLS = [
     ['cliente', 'Cliente', 120, true], ['mkt', 'Marketplace', 104, true], ['conta', 'Conta', 104, true], ['sku', 'SKU', 120, true], ['ad', 'Anúncio', 150, true],
+    ['curva', 'Curva', 60], ['fat', 'Faturamento', 104], ['qty', 'Unid.', 60], ['visits', 'Visitas', 70], ['conv', 'Conv.', 62], ['margem', 'Margem', 96],
     ['score', 'Pontuação', 92], ['prio', 'Prioridade', 92],
     ...CHECKS.map(([k, l, , p]) => [k, l, 62, false, p]),
     ['resp', 'Responsável', 130], ['estr', 'Estratégico', 110], ['notes', 'Observações', 220], ['upd', 'Última atualização', 120],
@@ -211,7 +253,7 @@ export default function Ads() {
         <div className="ads-actions">
           <button className="btn primary" onClick={() => setModal({ t: 'new' })}><Icon name="plus" size={15} /> Anúncio</button>
           <button className="btn" onClick={() => setModal({ t: 'import' })}><Icon name="download" size={15} /> Importar anúncios</button>
-          <button className="btn" disabled title="Parte 2: importação da base de vendas (curva atual e faturamento)">Importar vendas <small className="soon">em breve</small></button>
+          <button className="btn" onClick={() => setModal({ t: 'sales' })}><Icon name="chart" size={15} /> Importar vendas</button>
           <button className="btn" disabled title="Parte 2: importação do planejamento comercial (Forecast)">Importar Forecast <small className="soon">em breve</small></button>
           <MoreMenu isAdmin={isAdmin} onPick={(t) => setModal({ t })} />
         </div>
@@ -223,6 +265,8 @@ export default function Ads() {
 
       <div className="ads-kpis">
         <Kp l="Anúncios" v={ind.total} />
+        {ctx.sd.month && <Kp l={`Faturamento ${ctx.sd.month.slice(5)}/${ctx.sd.month.slice(0, 4)}`} v={brl(filtered.reduce((a, r) => a + r.fat, 0))} c="#037f4c" s={refTxt} />}
+        {ctx.sd.month && <Kp l="Curva A com pendência" v={filtered.filter((r) => r.curva === 'A' && r.pending > 0).length} s={`de ${filtered.filter((r) => r.curva === 'A').length} curva A`} c="#00a35c" onClick={() => setFilter('curva', f.curva === 'Apend' ? '' : 'Apend')} on={f.curva === 'Apend'} />}
         <Kp l="No ar" v={ind.noar} s={`${pct(ind.noar)}%`} />
         <Kp l="Pontuação média" v={ind.media ?? '—'} c={levelOf(ind.media)?.[2]} s={levelOf(ind.media)?.[1]} />
         <Kp l="Críticos" v={ind.criticos} c="#e2445c" onClick={() => setFilter('level', f.level === 'Crítico' ? '' : 'Crítico')} on={f.level === 'Crítico'} />
@@ -243,12 +287,26 @@ export default function Ads() {
         </div>
       )}
 
+      {ctx.sd.month && (
+        <div className="sales-bar">
+          <span>Vendas de</span>
+          <select className="sm" value={ctx.sd.month} onChange={(e) => setMonth(e.target.value)}>{ctx.sd.months.map((m) => <option key={m} value={m}>{m.slice(5)}/{m.slice(0, 4)}</option>)}</select>
+          <span className="muted">{refTxt}</span>
+          <span className="sep" />
+          <span>Curva ABC calculada por</span>
+          <div className="mini-seg">{[['client', 'Cliente'], ['mkt', 'Marketplace'], ['acc', 'Conta']].map(([k, l]) => <button key={k} className={scope === k ? 'on' : ''} onClick={() => setScope(k)}>{l}</button>)}</div>
+          <span className="muted small">A até {ctx.sd.settings?.a ?? 80}% do faturamento · B até {ctx.sd.settings?.b ?? 95}% · C o resto</span>
+        </div>
+      )}
       <div className="ads-filters">
         <input className="search" placeholder="Buscar SKU, anúncio, produto ou observação…" value={f.q} onChange={(e) => setFilter('q', e.target.value)} />
         <select value={f.resp} onChange={(e) => setFilter('resp', e.target.value)}>
           <option value="">Todos os responsáveis</option><option value="me">Meus anúncios</option><option value="none">Sem responsável</option>
           {people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+        {ctx.sd.month && <select value={f.curva} onChange={(e) => setFilter('curva', e.target.value)}>
+          <option value="">Todas as curvas</option>{Object.entries(CURVE).map(([k, [l]]) => <option key={k} value={k}>Curva {l}</option>)}<option value="Apend">Curva A com pendência</option>
+        </select>}
         <select value={f.level} onChange={(e) => setFilter('level', e.target.value)}>
           <option value="">Todas as pontuações</option>{[...LEVELS].reverse().map(([min, l]) => <option key={l} value={l}>{l} ({min}+)</option>)}
         </select>
@@ -260,7 +318,7 @@ export default function Ads() {
           {CHECKS.map(([k, , l]) => <option key={k} value={k}>Falta: {l}</option>)}
         </select>
         <label className="check"><input type="checkbox" checked={f.pending} onChange={(e) => setFilter('pending', e.target.checked)} /> Só com pendências</label>
-        {Object.values(f).some(Boolean) && <button className="link small" onClick={() => setF({ channel: '', account: '', resp: '', cls: '', level: '', prio: '', q: '', pending: false, missing: '' })}>Limpar filtros</button>}
+        {Object.values(f).some(Boolean) && <button className="link small" onClick={() => setF({ channel: '', account: '', resp: '', cls: '', level: '', prio: '', q: '', pending: false, missing: '', curva: '' })}>Limpar filtros</button>}
         <span className="grow" />
         <ColumnsMenu hidden={hidden} setHidden={setHidden} />
       </div>
@@ -303,6 +361,7 @@ export default function Ads() {
       <p className="muted small legend">Clique no quadradinho do checklist para alternar: <span className="ck ok">✓</span> feito → <span className="ck na">N/A</span> não se aplica (não conta na pontuação) → <span className="ck">&nbsp;</span> pendente. Passe o mouse para ver quem marcou.</p>
 
       {modal?.t === 'new' && <NewAd onClose={() => setModal(null)} biz={biz} accounts={data.accounts} people={people} />}
+      {modal?.t === 'sales' && <ImportSales onClose={() => setModal(null)} biz={biz} />}
       {modal?.t === 'import' && <ImportAds onClose={() => setModal(null)} biz={biz} accounts={data.accounts} />}
       {modal?.t === 'accounts' && <Accounts onClose={() => setModal(null)} biz={biz} data={data} people={people} />}
       {modal?.t === 'weights' && <Weights onClose={() => setModal(null)} data={data} />}
@@ -336,7 +395,7 @@ function MoreMenu({ isAdmin, onPick }) {
 
 function ColumnsMenu({ hidden, setHidden }) {
   const [open, setOpen] = useState(false);
-  const opts = [['cliente', 'Cliente'], ['conta', 'Conta'], ['score', 'Pontuação'], ['prio', 'Prioridade'], ...CHECKS.map(([k, , l]) => [k, l]), ['resp', 'Responsável'], ['estr', 'Estratégico'], ['notes', 'Observações'], ['upd', 'Última atualização']];
+  const opts = [['cliente', 'Cliente'], ['conta', 'Conta'], ['curva', 'Curva'], ['fat', 'Faturamento'], ['qty', 'Unidades'], ['visits', 'Visitas'], ['conv', 'Conversão'], ['margem', 'Margem'], ['score', 'Pontuação'], ['prio', 'Prioridade'], ...CHECKS.map(([k, , l]) => [k, l]), ['resp', 'Responsável'], ['estr', 'Estratégico'], ['notes', 'Observações'], ['upd', 'Última atualização']];
   return (
     <span className="menu-wrap">
       <button className="btn sm" onClick={() => setOpen(!open)}><Icon name="list" size={14} /> Colunas{hidden.length ? ` (${hidden.length} ocultas)` : ''}</button>
@@ -363,6 +422,7 @@ const Row = React.memo(function Row({ r, cols, stick, lastSticky, ctx, people, m
       <td className="stk sel-c" style={{ left: 0 }}><input type="checkbox" checked={sel} onChange={onSel} /></td>
       {cols.map(([k, , w, , , g]) => {
         if (k.startsWith('grp:')) {
+          if (g === 'vendas') return cell(k, w, r.curva ? <span className="curve" style={{ '--cc': CURVE[r.curva][1] }}>{r.curva === 'S' ? '—' : r.curva}</span> : '—', 'grp-c');
           if (g === 'ind') return cell(k, w, r.score == null ? '—' : <b style={{ color: lv[2] }}>{r.score}</b>, 'grp-c');
           if (g === 'gestao') return cell(k, w, <span className="small ellip">{(ctx.pname(r.responsible_id || r.adOwner) || '—').split(' ')[0]}</span>, 'grp-c');
           const keys = CHECKS.filter((c) => c[3] === g).map((c) => c[0]).filter((x) => (Number(r.w[x]) || 0) && r.checks?.[x]?.s !== 'na');
@@ -383,6 +443,12 @@ const Row = React.memo(function Row({ r, cols, stick, lastSticky, ctx, people, m
             {Object.entries(CLASS).map(([v, [l]]) => <option key={v} value={v}>{l}</option>)}</select>);
           case 'score': return cell(k, w, r.score == null ? <span className="muted">—</span>
             : <span className="score" style={{ '--sc': lv[2] }} title={`${lv[1]}\n` + Object.entries(r.pillars).map(([p, [g, m]]) => `${PILLARS[p][0]}: ${g}/${m}`).join('\n') + `\n${r.pending} pendência(s)`}><b>{r.score}</b><i style={{ width: `${r.score}%` }} /></span>);
+          case 'curva': return cell(k, w, r.curva ? <span className="curve" style={{ '--cc': CURVE[r.curva][1] }} title={CURVE[r.curva][0] === 'Sem venda' ? 'Sem venda no mês' : `Curva ${r.curva}`}>{r.curva === 'S' ? '—' : r.curva}</span> : <span className="muted small">—</span>, 'num');
+          case 'fat': return cell(k, w, r.hasSales ? <b className={r.fat ? '' : 'muted'}>{brl(r.fat)}</b> : <span className="muted">—</span>, 'num');
+          case 'qty': return cell(k, w, r.hasSales ? intf(r.qty) : '—', 'num');
+          case 'visits': return cell(k, w, r.hasSales ? intf(r.visits) : '—', 'num');
+          case 'conv': return cell(k, w, r.conv == null ? <span className="muted">—</span> : `${r.conv.toFixed(1).replace('.', ',')}%`, 'num');
+          case 'margem': return cell(k, w, r.margem == null ? <span className="muted">—</span> : <span style={{ color: r.margem < 0 ? '#d83a52' : '#037f4c' }} title={r.fat ? `${((r.margem / r.fat) * 100).toFixed(1).replace('.', ',')}% do faturamento` : ''}>{brl(r.margem)}</span>, 'num');
           case 'prio': return cell(k, w, <span className="prio" style={{ '--pc': PRIO[r.prio][1] }}>{PRIO[r.prio][0]}</span>);
           case 'resp': return cell(k, w, <select className={'cell-sel' + (r.responsible_id === me.id ? ' mine' : '')} value={r.responsible_id || ''} onChange={(e) => patch(r, { responsible_id: e.target.value ? Number(e.target.value) : null })}>
             <option value="">{r.adOwner ? `— ${(ctx.pname(r.adOwner) || '').split(' ')[0]} (do canal) —` : '— ninguém —'}</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>, !r.responsible_id && !r.adOwner ? 'miss' : '');
@@ -647,6 +713,7 @@ export function WeightsPanel({ data }) {
       </div>
       <p className="small">Total: <b>{sum}</b> pontos {sum !== 100 && <span className="muted">(não precisa somar 100 — a nota é sempre convertida para 0–100)</span>}</p>
       <p className="muted small">Níveis: {[...LEVELS].reverse().map(([m, l, c]) => <span key={l} className="lvl" style={{ '--lc': c }}>{l} {m}+</span>)}</p>
+      <AbcSettings />
       {isAdmin && <div className="row gap-s">{own && (scope.channel_id || scope.classification) && <button className="btn" onClick={() => save(true)}>Remover este ajuste</button>}<span className="grow" /><button className="btn primary" onClick={() => save(false)}>Salvar pesos</button></div>}
     </div>
   );
@@ -750,5 +817,102 @@ function ImportAds({ onClose, biz, accounts }) {
         )}
       </>)}
     </Modal>
+  );
+}
+
+function ImportSales({ onClose, biz }) {
+  const { businesses, channels } = useApp();
+  const [b, setB] = useState(biz !== 'all' ? String(biz) : '');
+  const [file, setFile] = useState(null);
+  const [pv, setPv] = useState(null);
+  const [map, setMap] = useState({});
+  const [chMap, setChMap] = useState({});
+  const [create, setCreate] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const body = (extra = {}) => ({ business_id: b, filename: file.name, data: file.data, account_map: map, channel_map: chMap, ...extra });
+  const preview = async (m = map, cm = chMap) => {
+    if (!file || !b) return;
+    setBusy(true);
+    try { const r = await api('/sales/preview', { method: 'POST', body: { ...body(), account_map: m, channel_map: cm } }); setPv(r); setMap(Object.fromEntries(r.sources.map((x) => [x.key, x.account]))); }
+    catch (e) { toast(e.message, 'error'); setPv(null); } finally { setBusy(false); }
+  };
+  useEffect(() => { setPv(null); if (file && b) preview({}, chMap); }, [file, b]); // eslint-disable-line
+  const pick = async (e) => { const x = e.target.files[0]; if (!x) return; setFile({ name: x.name, data: await fileToData(x) }); };
+  const apply = async () => {
+    setBusy(true);
+    try {
+      const r = await api('/sales/apply', { method: 'POST', body: body({ create_missing: create }) });
+      toast(`Vendas importadas (${r.periodo}): ${brl(r.faturamento)} · ${r.anuncios_criados} anúncio(s) novo(s)${r.substituidas ? ' · período anterior substituído' : ''}`, 'success');
+      emitLocal(); onClose();
+    } catch (e) { toast(e.message, 'error'); } finally { setBusy(false); }
+  };
+  const fmtD = (d) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
+  return (
+    <Modal title="Importar base de vendas" onClose={onClose} wide
+      footer={<><button className="btn" onClick={onClose}>Cancelar</button><button className="btn primary" disabled={busy || !pv} onClick={apply}>{pv ? `Confirmar importação de ${fmtD(pv.from)} a ${fmtD(pv.to)}` : 'Confirmar importação'}</button></>}>
+      <p className="muted small" style={{ marginTop: 0 }}>Formato padrão: <b>relatório consolidado</b> (colunas Marketplace, Marketplace venda, SKU, Id anúncio, Data, Categoria, Sub Categoria, Valor completo, Type). Um arquivo pode ter vários marketplaces e contas. Reimportar um período <b>substitui</b> as vendas daquele período (não duplica) e nunca mexe no checklist, responsáveis ou observações.</p>
+      <div className="grid2">
+        <Field label="Cliente"><select value={b} onChange={(e) => setB(e.target.value)}><option value="">Escolha…</option>{businesses.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></Field>
+        <Field label="Arquivo (.xlsx ou .csv)"><input type="file" accept=".xlsx,.csv,.txt" disabled={!b} onChange={pick} /></Field>
+      </div>
+      {busy && !pv && <Loading />}
+      {pv && (<>
+        <div className="imp-counts">
+          <span className="up">Período: {fmtD(pv.from)} a {fmtD(pv.to)}</span><span>{pv.lines.toLocaleString('pt-BR')} linhas lidas</span>
+          <span className="ok">Faturamento: {brl(pv.sources.reduce((a, x) => a + x.faturamento, 0))}</span>
+          {pv.existing.n > 0 && <span className="warn">Já existem vendas neste período ({brl(pv.existing.fat)}) — serão substituídas</span>}
+          {pv.unknown_metrics.length > 0 && <span className="warn" title={pv.unknown_metrics.map((x) => x.k).join('\n')}>{pv.unknown_metrics.length} tipo(s) de linha não reconhecido(s) — ignorados</span>}
+        </div>
+        {pv.unknown_channels.length > 0 && (
+          <div className="imp-block"><b>Marketplaces não encontrados no cadastro</b>
+            {pv.unknown_channels.map((n) => <label key={n} className="row gap-s" style={{ marginTop: 6 }}><span style={{ minWidth: 160 }}>{n}</span>
+              <select value={chMap[n] || ''} onChange={(e) => { const cm = { ...chMap, [n]: e.target.value }; setChMap(cm); preview(map, cm); }}><option value="">— ignorar —</option>{channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>)}
+          </div>
+        )}
+        <div className="imp-block">
+          <b>Contas do relatório → contas do sistema</b> <small className="muted">(fica salvo para os próximos meses)</small>
+          <table className="plain-table small" style={{ marginTop: 6 }}>
+            <thead><tr><th>Marketplace</th><th>Conta no relatório</th><th>Conta no sistema</th><th>Faturamento</th><th>Unid.</th><th>Anúncios</th></tr></thead>
+            <tbody>{pv.sources.map((x) => (
+              <tr key={x.key}><td>{x.mkt}</td><td>{x.source}</td>
+                <td><select value={map[x.key] ?? ''} onChange={(e) => { const m = { ...map, [x.key]: e.target.value === 'new' ? 'new' : Number(e.target.value) }; setMap(m); preview(m); }}>
+                  {x.options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}<option value="new">+ Criar conta "{x.source}"</option></select></td>
+                <td>{brl(x.faturamento)}</td><td>{intf(x.unidades)}</td><td>{x.anuncios}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <div className="imp-block">
+          <b>Vínculo com os anúncios</b>
+          {pv.unmatched_count ? (<>
+            <p className="small" style={{ margin: '6px 0' }}><b>{pv.unmatched_count}</b> anúncio(s) com venda ainda não estão na planilha de Anúncios.</p>
+            <label className="check"><input type="checkbox" checked={create} onChange={(e) => setCreate(e.target.checked)} /> Cadastrar esses anúncios na planilha (com ID, SKU e descrição do relatório)</label>
+            <details style={{ marginTop: 6 }}><summary className="small">Ver lista</summary>
+              <table className="plain-table small"><thead><tr><th>Marketplace</th><th>Conta</th><th>ID</th><th>SKU</th><th>Produto</th><th>Faturamento</th></tr></thead>
+                <tbody>{pv.unmatched.map((m) => <tr key={m.mkt + m.source + m.code}><td>{m.mkt}</td><td>{m.source}</td><td className="mono">{m.code}</td><td>{m.sku}</td><td className="ellip" style={{ maxWidth: 260 }}>{m.title}</td><td>{brl(m.gross)}</td></tr>)}</tbody></table>
+            </details>
+          </>) : <p className="small ok-txt" style={{ margin: '6px 0' }}>Todos os anúncios com venda já estão na planilha.</p>}
+        </div>
+      </>)}
+    </Modal>
+  );
+}
+
+function AbcSettings() {
+  const { isAdmin } = useApp();
+  const { data } = useData('/sales/summary');
+  const cur = data?.settings || { a: 80, b: 95 };
+  const [v, setV] = useState(null);
+  const val = v || cur;
+  const save = async () => { try { await api('/company-settings', { method: 'PUT', body: { abc: { a: Number(val.a), b: Number(val.b) } } }); toast('Percentuais da curva salvos', 'success'); setV(null); emitLocal(); } catch (e) { toast(e.message, 'error'); } };
+  return (
+    <div className="imp-block">
+      <b>Curva ABC</b> <small className="muted">— participação acumulada no faturamento (do maior para o menor)</small>
+      <div className="row gap wrap" style={{ marginTop: 8 }}>
+        <label className="w-row">Curva A até <input type="number" min="1" max="99" disabled={!isAdmin} value={val.a} onChange={(e) => setV({ ...val, a: e.target.value })} /> %</label>
+        <label className="w-row">Curva B até <input type="number" min="2" max="99" disabled={!isAdmin} value={val.b} onChange={(e) => setV({ ...val, b: e.target.value })} /> %</label>
+        <span className="muted small">C = o restante · anúncios sem venda no mês ficam como "Sem venda"</span>
+        {isAdmin && v && <button className="btn primary sm" onClick={save}>Salvar curva</button>}
+      </div>
+    </div>
   );
 }

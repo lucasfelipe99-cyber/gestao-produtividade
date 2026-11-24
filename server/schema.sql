@@ -581,3 +581,39 @@ END $$;
 ALTER TABLE businesses ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE channels ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE sku_info ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- v33: base de vendas realizadas (diária por anúncio) — formato padrão: relatório consolidado
+CREATE TABLE IF NOT EXISTS sales_daily (
+  id BIGSERIAL PRIMARY KEY,
+  company_id INT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  business_id INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  channel_id INT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  account_id INT NOT NULL REFERENCES mkt_accounts(id) ON DELETE CASCADE,
+  ad_id INT REFERENCES ads(id) ON DELETE SET NULL,
+  ad_code TEXT, sku TEXT, title TEXT, category TEXT,
+  day DATE NOT NULL,
+  origin TEXT NOT NULL DEFAULT 'Organico',
+  qty NUMERIC(14,3) NOT NULL DEFAULT 0, gross NUMERIC(14,2) NOT NULL DEFAULT 0, cancel NUMERIC(14,2) NOT NULL DEFAULT 0,
+  tax NUMERIC(14,2) NOT NULL DEFAULT 0, commission NUMERIC(14,2) NOT NULL DEFAULT 0, freight NUMERIC(14,2) NOT NULL DEFAULT 0,
+  ads_cost NUMERIC(14,2) NOT NULL DEFAULT 0, rebate NUMERIC(14,2) NOT NULL DEFAULT 0, affiliate_fee NUMERIC(14,2) NOT NULL DEFAULT 0,
+  cogs NUMERIC(14,2) NOT NULL DEFAULT 0, ads_rev NUMERIC(14,2) NOT NULL DEFAULT 0,
+  clicks NUMERIC(14,2) NOT NULL DEFAULT 0, visits NUMERIC(14,2) NOT NULL DEFAULT 0,
+  other JSONB,
+  import_id INT REFERENCES ad_imports(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS sales_daily_biz_day ON sales_daily (business_id, day);
+CREATE INDEX IF NOT EXISTS sales_daily_ad_day ON sales_daily (ad_id, day);
+CREATE INDEX IF NOT EXISTS sales_daily_acc_day ON sales_daily (account_id, day);
+-- de/para da conta do relatório (ex.: "Gigantes das Baterias 1") para a conta do sistema
+CREATE TABLE IF NOT EXISTS sales_account_map (
+  business_id INT NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  channel_id INT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  source_name TEXT NOT NULL,
+  account_id INT NOT NULL REFERENCES mkt_accounts(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS sales_account_map_uniq ON sales_account_map (business_id, channel_id, lower(source_name));
+-- configurações gerais (percentuais da curva ABC)
+CREATE TABLE IF NOT EXISTS company_settings (
+  company_id INT PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+  abc JSONB NOT NULL DEFAULT '{"a":80,"b":95}'::jsonb
+);
