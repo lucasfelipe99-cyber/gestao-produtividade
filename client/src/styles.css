@@ -967,3 +967,9 @@ table.sample tr.skip td { color: #b3b7c5; }
 .switch input:checked + span { background: #00c875; }
 .switch input:checked + span::before { transform: translateX(15px); }
 .acc-table tr.ch-off td { opacity: .55; }
+
+.client-ch-list { display: flex; flex-direction: column; gap: 12px; }
+.client-ch { border: 1px solid var(--border); border-left: 4px solid var(--c); border-radius: 8px; padding: 10px 12px; }
+.client-ch-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.client-ch-head i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); }
+.client-ch-head b { font-size: 15px; }

@@ -79,12 +79,13 @@ export default function Ads() {
     const ch = (id) => channels.find((c) => c.id === id) || { name: '—', color: '#c4c4c4' };
     const acc = new Map((data.accounts || []).map((a) => [a.id, a]));
     const owner = (b, c) => data.owners.find((o) => o.business_id === b && o.channel_id === c)?.user_id || null;
+    const adOwner = (b, c) => data.owners.find((o) => o.business_id === b && o.channel_id === c)?.ad_user_id || null;
     const pname = (id) => people.find((p) => p.id === id)?.name || '';
     const drive = new Map((data.skus || []).map((s) => [`${s.business_id}:${(s.sku || '').toLowerCase()}`, s]));
     const rows = data.ads.map((a) => {
       const w = weightsFor(data, a.channel_id, a.classification);
       const sc = scoreOf(a, w);
-      return { ...a, w, ...sc, prio: prioOf(a.classification, sc.score), owner: owner(a.business_id, a.channel_id), sku_info: drive.get(`${a.business_id}:${(a.sku || '').toLowerCase()}`) };
+      return { ...a, w, ...sc, prio: prioOf(a.classification, sc.score), owner: owner(a.business_id, a.channel_id), adOwner: adOwner(a.business_id, a.channel_id), sku_info: drive.get(`${a.business_id}:${(a.sku || '').toLowerCase()}`) };
     });
     return { rows, bizName, ch, acc, owner, pname };
   }, [data, businesses, channels, people]);
@@ -97,7 +98,7 @@ export default function Ads() {
   const filtered = inBiz.filter((r) =>
     (!f.channel || r.channel_id === Number(f.channel))
     && (!f.account || r.account_id === Number(f.account))
-    && (!f.resp || (f.resp === 'me' ? r.responsible_id === me.id || r.owner === me.id : f.resp === 'none' ? !r.responsible_id : r.responsible_id === Number(f.resp) || r.owner === Number(f.resp)))
+    && (!f.resp || (f.resp === 'me' ? (r.responsible_id || r.adOwner) === me.id || r.owner === me.id : f.resp === 'none' ? !(r.responsible_id || r.adOwner) : (r.responsible_id || r.adOwner) === Number(f.resp) || r.owner === Number(f.resp)))
     && (!f.cls || r.classification === f.cls)
     && (!f.level || levelOf(r.score)?.[1] === f.level)
     && (!f.prio || r.prio === Number(f.prio))
@@ -289,7 +290,7 @@ function MoreMenu({ isAdmin, onPick }) {
       <button className="btn" onClick={() => setOpen(!open)}><Icon name="menu" size={15} /> Mais</button>
       {open && (
         <div className="pop-menu" onMouseLeave={() => setOpen(false)}>
-          <button onClick={() => { onPick('accounts'); setOpen(false); }}>Canais, contas e responsáveis estratégicos</button>
+          <button onClick={() => { onPick('accounts'); setOpen(false); }}>Canais e responsáveis dos clientes</button>
           <button onClick={() => { onPick('weights'); setOpen(false); }}>Pesos da pontuação</button>
           <button onClick={() => { onPick('imports'); setOpen(false); }}>Histórico de importações</button>
           {isAdmin && <a href="/api/admin/backup" onClick={() => setOpen(false)}>Baixar cópia completa dos dados</a>}
@@ -342,7 +343,7 @@ const Row = React.memo(function Row({ r, cols, stick, lastSticky, ctx, people, m
             : <span className="score" style={{ '--sc': lv[2] }} title={`${lv[1]}\n` + Object.entries(r.pillars).map(([p, [g, m]]) => `${PILLARS[p][0]}: ${g}/${m}`).join('\n') + `\n${r.pending} pendência(s)`}><b>{r.score}</b><i style={{ width: `${r.score}%` }} /></span>);
           case 'prio': return cell(k, w, <span className="prio" style={{ '--pc': PRIO[r.prio][1] }}>{PRIO[r.prio][0]}</span>);
           case 'resp': return cell(k, w, <select className={'cell-sel' + (r.responsible_id === me.id ? ' mine' : '')} value={r.responsible_id || ''} onChange={(e) => patch(r, { responsible_id: e.target.value ? Number(e.target.value) : null })}>
-            <option value="">— ninguém —</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>, !r.responsible_id ? 'miss' : '');
+            <option value="">{r.adOwner ? `— ${(ctx.pname(r.adOwner) || '').split(' ')[0]} (do canal) —` : '— ninguém —'}</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>, !r.responsible_id && !r.adOwner ? 'miss' : '');
           case 'estr': return cell(k, w, r.owner ? <span className={'ellip small' + (r.owner === me.id ? ' mine' : '')}>{r.owner === me.id ? 'Você' : (ctx.pname(r.owner) || '').split(' ')[0]}</span> : <span className="muted small">—</span>);
           case 'notes': return cell(k, w, <TextCell value={r.notes} onSave={(v) => patch(r, { notes: v })} placeholder="Observações…" />);
           case 'upd': return cell(k, w, <span className="small muted" title={r.updated_at ? new Date(r.updated_at).toLocaleString('pt-BR') : ''}>{ago(r.updated_at)}</span>);
@@ -457,64 +458,104 @@ function NewAd({ onClose, biz, accounts, people }) {
 }
 
 function Accounts({ onClose, biz, data, people }) {
-  return <Modal title="Canais, contas e responsáveis estratégicos" onClose={onClose} wide><AccountsPanel biz={biz} data={data} people={people} /></Modal>;
+  return <Modal title="Canais e responsáveis dos clientes" onClose={onClose} wide><AccountsPanel biz={biz} data={data} people={people} /></Modal>;
 }
 export function AccountsPanel({ biz, data, people }) {
   const { businesses, channels, isAdmin } = useApp();
-  const [b, setB] = useState(biz && biz !== 'all' ? String(biz) : String(businesses[0]?.id || ''));
+  const [only, setOnly] = useState(biz && biz !== 'all' ? String(biz) : '');
   const [adding, setAdding] = useState({});
-  const call = async (path, method, body) => { try { await api(path, { method, body }); emitLocal(); } catch (e) { toast(e.message, 'error'); } };
-  const accs = (chId) => data.accounts.filter((a) => a.business_id === Number(b) && a.channel_id === chId);
-  const owner = (chId) => data.owners.find((o) => o.business_id === Number(b) && o.channel_id === chId)?.user_id || '';
+  const call = async (path, method, body) => { try { const r = await api(path, { method, body }); emitLocal(); return r; } catch (e) { toast(e.message, 'error'); return null; } };
+  const accs = (bId, chId) => data.accounts.filter((a) => a.business_id === bId && a.channel_id === chId);
+  const own = (bId, chId) => data.owners.find((o) => o.business_id === bId && o.channel_id === chId) || {};
+  const adsOf = (bId, chId) => data.ads.filter((a) => a.business_id === bId && a.channel_id === chId);
   const count = (accId) => data.ads.filter((a) => a.account_id === accId).length;
-  const active = (chId) => accs(chId).some((a) => a.active);
-  const toggle = async (chId) => {
-    const list = accs(chId);
-    if (active(chId)) {
-      const n = list.reduce((x, a) => x + count(a.id), 0);
-      if (!confirm(n ? `Desativar este canal para o cliente? Os ${n} anúncio(s) continuam guardados na planilha; só a conta deixa de aparecer para novos cadastros.` : 'Desativar este canal para o cliente?')) return;
-      for (const a of list.filter((x) => x.active)) await call(`/mkt-accounts/${a.id}`, 'PATCH', { active: false });
-    } else if (list.length) { for (const a of list) await call(`/mkt-accounts/${a.id}`, 'PATCH', { active: true }); }
-    else await call('/mkt-accounts', 'POST', { business_id: b, channel_id: chId, name: 'Conta principal' });
+  const active = (bId, chId) => accs(bId, chId).some((a) => a.active);
+  const pname = (id) => people.find((p) => p.id === id)?.name || '—';
+  const enable = async (bId, chId) => {
+    const list = accs(bId, chId);
+    if (list.length) { for (const a of list) await call(`/mkt-accounts/${a.id}`, 'PATCH', { active: true }); }
+    else await call('/mkt-accounts', 'POST', { business_id: bId, channel_id: chId, name: 'Conta principal' });
   };
-  const sortedCh = [...channels].sort((x, y) => active(y.id) - active(x.id));
+  const disable = async (bId, chId) => {
+    const n = adsOf(bId, chId).length;
+    if (!confirm(n ? `Tirar este canal do cliente? Os ${n} anúncio(s) continuam guardados na planilha; a conta só deixa de aparecer para novos cadastros.` : 'Tirar este canal do cliente?')) return;
+    for (const a of accs(bId, chId).filter((x) => x.active)) await call(`/mkt-accounts/${a.id}`, 'PATCH', { active: false });
+  };
+  const setOwner = async (bId, chId, kind, userId) => {
+    let apply = null;
+    if (kind === 'anuncio' && userId) {
+      const list = adsOf(bId, chId);
+      const other = list.filter((a) => a.responsible_id !== Number(userId)).length;
+      const empty = list.filter((a) => !a.responsible_id).length;
+      if (other) {
+        apply = confirm(`Passar os ${other} anúncio(s) deste canal para ${pname(Number(userId))}?\n\nOK = todos os anúncios do canal\nCancelar = só os que estão sem responsável (${empty})`) ? 'all' : 'empty';
+      }
+    }
+    const r = await call('/client-channel-owner', 'PUT', { business_id: bId, channel_id: chId, user_id: userId || null, kind, apply });
+    if (r?.applied) toast(`${r.applied} anúncio(s) passaram para ${pname(Number(userId))}`, 'success');
+  };
+  const list = businesses.filter((x) => !only || String(x.id) === only);
   return (
     <div>
-      <div className="biz-chips" style={{ marginBottom: 10 }}>
-        {businesses.map((x) => <button key={x.id} className={String(b) === String(x.id) ? 'on' : ''} style={{ '--c': x.color }} onClick={() => setB(String(x.id))}><i />{x.name} <small>{channels.filter((c) => data.accounts.some((a) => a.business_id === x.id && a.channel_id === c.id && a.active)).length} canal(is)</small></button>)}
+      <div className="row gap wrap" style={{ marginBottom: 10 }}>
+        <select value={only} onChange={(e) => setOnly(e.target.value)}><option value="">Todos os clientes</option>{businesses.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
+        <span className="muted small grow">Cada cliente tem seus próprios canais. Em cada canal: o <b>responsável pelo anúncio</b> (cadastro, anúncio no ar, fotos e vídeo) e o <b>responsável estratégico</b> (ADS, afiliados, promoção, cupom e oferta relâmpago). Um canal pode ter várias contas (ex.: conta principal e secundária).</span>
       </div>
-      <p className="muted small">Marque em quais canais o cliente vende. Cada canal pode ter várias contas (ex.: conta principal e secundária), e cada conta tem sua própria base de anúncios. O <b>responsável estratégico</b> cuida de ADS, afiliados, promoção, cupom e oferta relâmpago de todos os anúncios do cliente naquele canal.</p>
-      <table className="acc-table">
-        <thead><tr><th style={{ width: 70 }}>Atende</th><th>Canal</th><th>Contas</th><th>Responsável estratégico</th></tr></thead>
-        <tbody>
-          {sortedCh.map((c) => (
-            <tr key={c.id} className={active(c.id) ? '' : 'ch-off'}>
-              <td><label className="switch"><input type="checkbox" checked={active(c.id)} disabled={!isAdmin} onChange={() => toggle(c.id)} /><span /></label></td>
-              <td><span className="chan" style={{ background: c.color }}>{c.name}</span></td>
-              <td>
-                <div className="acc-list">
-                  {accs(c.id).map((a) => (
-                    <span key={a.id} className={'acc-pill' + (a.active ? '' : ' off')}>
-                      {isAdmin ? <input defaultValue={a.name} onBlur={(e) => e.target.value.trim() && e.target.value !== a.name && call(`/mkt-accounts/${a.id}`, 'PATCH', { name: e.target.value })} /> : a.name}
-                      <small>{count(a.id)}</small>
-                      {isAdmin && <button className="icon-mini" title={a.active ? 'Desativar conta' : 'Reativar conta'} onClick={() => call(`/mkt-accounts/${a.id}`, 'PATCH', { active: !a.active })}>{a.active ? '⏸' : '▶'}</button>}
-                    </span>
-                  ))}
-                  {isAdmin && (adding[c.id] != null
-                    ? <input className="sm" autoFocus placeholder="Nome da conta" value={adding[c.id]} onChange={(e) => setAdding({ ...adding, [c.id]: e.target.value })}
-                      onKeyDown={async (e) => { if (e.key === 'Enter' && adding[c.id].trim()) { await call('/mkt-accounts', 'POST', { business_id: b, channel_id: c.id, name: adding[c.id] }); setAdding({ ...adding, [c.id]: undefined }); } if (e.key === 'Escape') setAdding({ ...adding, [c.id]: undefined }); }}
-                      onBlur={() => setAdding({ ...adding, [c.id]: undefined })} />
-                    : active(c.id) && <button className="link small" onClick={() => setAdding({ ...adding, [c.id]: '' })}>+ conta</button>)}
-                </div>
-              </td>
-              <td>{!active(c.id) ? <span className="muted small">—</span> : isAdmin
-                ? <select value={owner(c.id)} onChange={(e) => call('/client-channel-owner', 'PUT', { business_id: b, channel_id: c.id, user_id: e.target.value || null })}>
-                    <option value="">— ninguém —</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
-                : <span>{people.find((p) => p.id === owner(c.id))?.name || '—'}</span>}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="client-ch-list">
+        {list.map((x) => {
+          const on = channels.filter((c) => active(x.id, c.id));
+          const off = channels.filter((c) => !active(x.id, c.id));
+          return (
+            <div key={x.id} className="client-ch" style={{ '--c': x.color }}>
+              <div className="client-ch-head"><i /><b>{x.name}</b><small className="muted">{on.length} canal(is) · {data.ads.filter((a) => a.business_id === x.id).length} anúncio(s)</small>
+                <span className="grow" />
+                {isAdmin && off.length > 0 && (
+                  <select className="sm" value="" onChange={(e) => e.target.value && enable(x.id, Number(e.target.value))}>
+                    <option value="">+ Adicionar canal…</option>{off.map((c) => <option key={c.id} value={c.id}>{c.name}{accs(x.id, c.id).length ? ' (reativar)' : ''}</option>)}
+                  </select>
+                )}
+              </div>
+              {!on.length ? <p className="muted small" style={{ margin: '6px 0 2px' }}>Nenhum canal ainda — use "+ Adicionar canal".</p> : (
+                <table className="acc-table">
+                  <thead><tr><th style={{ width: 150 }}>Canal</th><th>Contas</th><th style={{ width: 200 }}>Responsável anúncio</th><th style={{ width: 200 }}>Responsável estratégico</th><th style={{ width: 30 }} /></tr></thead>
+                  <tbody>
+                    {on.map((c) => {
+                      const o = own(x.id, c.id);
+                      const k = `${x.id}:${c.id}`;
+                      return (
+                        <tr key={c.id}>
+                          <td><span className="chan" style={{ background: c.color }}>{c.name}</span> <small className="muted">{adsOf(x.id, c.id).length}</small></td>
+                          <td><div className="acc-list">
+                            {accs(x.id, c.id).map((a) => (
+                              <span key={a.id} className={'acc-pill' + (a.active ? '' : ' off')}>
+                                {isAdmin ? <input defaultValue={a.name} onBlur={(e) => e.target.value.trim() && e.target.value !== a.name && call(`/mkt-accounts/${a.id}`, 'PATCH', { name: e.target.value })} /> : a.name}
+                                <small>{count(a.id)}</small>
+                                {isAdmin && accs(x.id, c.id).length > 1 && <button className="icon-mini" title={a.active ? 'Desativar conta' : 'Reativar conta'} onClick={() => call(`/mkt-accounts/${a.id}`, 'PATCH', { active: !a.active })}>{a.active ? '⏸' : '▶'}</button>}
+                              </span>
+                            ))}
+                            {isAdmin && (adding[k] != null
+                              ? <input className="sm" autoFocus placeholder="Nome da conta (Enter)" value={adding[k]} onChange={(e) => setAdding({ ...adding, [k]: e.target.value })}
+                                onKeyDown={async (e) => { if (e.key === 'Enter' && adding[k].trim()) { await call('/mkt-accounts', 'POST', { business_id: x.id, channel_id: c.id, name: adding[k] }); setAdding({ ...adding, [k]: undefined }); } if (e.key === 'Escape') setAdding({ ...adding, [k]: undefined }); }}
+                                onBlur={() => setAdding({ ...adding, [k]: undefined })} />
+                              : <button className="link small" onClick={() => setAdding({ ...adding, [k]: '' })}>+ conta</button>)}
+                          </div></td>
+                          {['anuncio', 'estrategico'].map((kind) => {
+                            const v = kind === 'anuncio' ? o.ad_user_id : o.user_id;
+                            return <td key={kind}>{isAdmin
+                              ? <select className="sm" value={v || ''} onChange={(e) => setOwner(x.id, c.id, kind, e.target.value)}><option value="">— ninguém —</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+                              : pname(v)}</td>;
+                          })}
+                          <td>{isAdmin && <button className="icon-mini" title="Tirar este canal do cliente" onClick={() => disable(x.id, c.id)}>✕</button>}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

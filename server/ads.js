@@ -163,7 +163,7 @@ export function registerAds(app, { requireTab }) {
     const [ads, accounts, owners, config, skus] = await Promise.all([
       many(`SELECT ${AD_COLS} FROM ads a WHERE a.company_id=$1 AND NOT a.archived${w} ORDER BY a.business_id, a.channel_id, a.sku NULLS LAST, a.id`, p),
       many(`SELECT id, business_id, channel_id, name, active, position FROM mkt_accounts WHERE company_id=$1 ORDER BY business_id, channel_id, position, id`, [u.company_id]),
-      many(`SELECT business_id, channel_id, user_id FROM client_channel_owners WHERE company_id=$1`, [u.company_id]),
+      many(`SELECT business_id, channel_id, user_id, ad_user_id FROM client_channel_owners WHERE company_id=$1`, [u.company_id]),
       many(`SELECT channel_id, classification, weights FROM score_config WHERE company_id=$1`, [u.company_id]),
       many(`SELECT business_id, sku, drive_link, checks FROM sku_info WHERE company_id=$1${biz ? ' AND business_id=$2' : ''}`, p),
     ]);
@@ -182,7 +182,8 @@ export function registerAds(app, { requireTab }) {
       const code = adCodeFrom(raw), link = isUrl(raw) ? raw : null;
       if (code && (await db.query('SELECT 1 FROM ads WHERE account_id=$1 AND upper(ad_code)=upper($2) AND NOT archived', [a.id, code])).rowCount) throw new HttpError(400, `O anúncio ${code} já está cadastrado nesta conta`);
       const cls = CLASSES.includes(b.classification) ? b.classification : 'geral';
-      const resp = int(b.responsible_id); await assertUser(db, u, resp);
+      let resp = int(b.responsible_id); await assertUser(db, u, resp);
+      if (!resp) resp = (await db.query('SELECT ad_user_id FROM client_channel_owners WHERE business_id=$1 AND channel_id=$2', [businessId, channelId])).rows[0]?.ad_user_id || null;
       return (await db.query(`INSERT INTO ads (company_id, business_id, channel_id, account_id, ad_code, link, sku, title, classification, responsible_id, notes, created_by, link_by, link_at, updated_by)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$12) RETURNING id`,
         [u.company_id, businessId, channelId, a.id, code, link, txt(b.sku, 120), txt(b.title, 500), cls, resp, txt(b.notes, 2000), u.id, raw ? u.id : null, raw ? new Date() : null])).rows[0];
@@ -280,14 +281,22 @@ export function registerAds(app, { requireTab }) {
   }));
   app.put('/api/client-channel-owner', T, wrap(async (req, res) => {
     const u = req.user, b = req.body || {};
-    if (!isAdmin(u)) throw new HttpError(403, 'Só administradores definem o responsável estratégico');
-    await tx(async (db) => {
+    if (!isAdmin(u)) throw new HttpError(403, 'Só administradores definem os responsáveis dos canais');
+    const col = b.kind === 'anuncio' ? 'ad_user_id' : 'user_id';
+    const r = await tx(async (db) => {
       await assertBiz(db, u, int(b.business_id)); await assertChannel(db, u, int(b.channel_id)); await assertUser(db, u, int(b.user_id));
-      await db.query(`INSERT INTO client_channel_owners (business_id, channel_id, company_id, user_id, updated_at) VALUES ($1,$2,$3,$4,now())
-        ON CONFLICT (business_id, channel_id) DO UPDATE SET user_id=EXCLUDED.user_id, updated_at=now()`, [int(b.business_id), int(b.channel_id), u.company_id, int(b.user_id)]);
+      await db.query(`INSERT INTO client_channel_owners (business_id, channel_id, company_id, ${col}, updated_at) VALUES ($1,$2,$3,$4,now())
+        ON CONFLICT (business_id, channel_id) DO UPDATE SET ${col}=EXCLUDED.${col}, updated_at=now()`, [int(b.business_id), int(b.channel_id), u.company_id, int(b.user_id)]);
+      // responsável de anúncio: aplica nos anúncios do cliente/canal (todos, ou só os que estão sem responsável)
+      let applied = 0;
+      if (col === 'ad_user_id' && b.apply && int(b.user_id)) {
+        applied = (await db.query(`UPDATE ads SET responsible_id=$3, updated_at=now(), updated_by=$4 WHERE business_id=$1 AND channel_id=$2 AND NOT archived
+          ${b.apply === 'empty' ? 'AND responsible_id IS NULL' : 'AND responsible_id IS DISTINCT FROM $3'}`, [int(b.business_id), int(b.channel_id), int(b.user_id), u.id])).rowCount;
+      }
+      return { applied };
     });
     broadcast(u.company_id, { type: 'ads' });
-    res.json({ ok: true });
+    res.json({ ok: true, ...r });
   }));
 
   // pesos da pontuação
@@ -443,8 +452,9 @@ export function registerAds(app, { requireTab }) {
       const a = r.account;
       for (const x of r.recs) {
         if (x.action === 'novo') {
-          await db.query(`INSERT INTO ads (company_id, business_id, channel_id, account_id, ad_code, link, sku, title, extra, created_by, updated_by, legacy)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,'{"import":true}'::jsonb)`, [u.company_id, a.business_id, a.channel_id, a.id, x.code, x.link, x.sku, x.title, JSON.stringify(x.extra), u.id]);
+          await db.query(`INSERT INTO ads (company_id, business_id, channel_id, account_id, ad_code, link, sku, title, extra, created_by, updated_by, legacy, responsible_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,'{"import":true}'::jsonb,
+              (SELECT ad_user_id FROM client_channel_owners WHERE business_id=$2 AND channel_id=$3))`, [u.company_id, a.business_id, a.channel_id, a.id, x.code, x.link, x.sku, x.title, JSON.stringify(x.extra), u.id]);
         } else if (x.action === 'atualizar') {
           // só completa/atualiza dados do arquivo; checklist, classificação, responsável e observações nunca são tocados
           await db.query(`UPDATE ads SET sku=COALESCE($2, sku), title=COALESCE($3, title), link=COALESCE($4, link), extra = extra || $5::jsonb, updated_at=now(), updated_by=$6 WHERE id=$1`,

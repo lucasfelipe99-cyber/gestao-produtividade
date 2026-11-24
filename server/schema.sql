@@ -561,3 +561,18 @@ DO $$ BEGIN
     INSERT INTO app_meta (key) VALUES ('v30_abas_anuncios');
   END IF;
 END $$;
+
+-- v31: responsável pela parte de anúncio (e alta performance) por cliente/canal, além do estratégico
+ALTER TABLE client_channel_owners ADD COLUMN IF NOT EXISTS ad_user_id INT REFERENCES users(id) ON DELETE SET NULL;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'v31_resp_anuncio_canal') THEN
+    -- começa com quem já é responsável pela maioria dos anúncios daquele cliente/canal
+    INSERT INTO client_channel_owners (business_id, channel_id, company_id, ad_user_id)
+      SELECT DISTINCT ON (business_id, channel_id) business_id, channel_id, company_id, responsible_id
+      FROM (SELECT business_id, channel_id, company_id, responsible_id, count(*) AS c FROM ads
+            WHERE responsible_id IS NOT NULL AND NOT archived GROUP BY 1,2,3,4) x
+      ORDER BY business_id, channel_id, c DESC
+    ON CONFLICT (business_id, channel_id) DO UPDATE SET ad_user_id = COALESCE(client_channel_owners.ad_user_id, EXCLUDED.ad_user_id);
+    INSERT INTO app_meta (key) VALUES ('v31_resp_anuncio_canal');
+  END IF;
+END $$;
