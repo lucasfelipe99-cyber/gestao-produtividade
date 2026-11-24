@@ -161,7 +161,7 @@ export default function Ads() {
   const showClient = biz === 'all';
   const COLS = [
     ['cliente', 'Cliente', 120, true], ['mkt', 'Marketplace', 104, true], ['conta', 'Conta', 104, true], ['sku', 'SKU', 120, true], ['ad', 'Anúncio', 150, true],
-    ['cls', 'Classificação', 128], ['score', 'Pontuação', 92], ['prio', 'Prioridade', 92],
+    ['score', 'Pontuação', 92], ['prio', 'Prioridade', 92],
     ...CHECKS.map(([k, l, , p]) => [k, l, 62, false, p]),
     ['resp', 'Responsável', 130], ['estr', 'Estratégico', 110], ['notes', 'Observações', 220], ['upd', 'Última atualização', 120],
   ].filter(([k]) => (k !== 'cliente' || showClient) && !hidden.includes(k));
@@ -302,7 +302,7 @@ function MoreMenu({ isAdmin, onPick }) {
 
 function ColumnsMenu({ hidden, setHidden }) {
   const [open, setOpen] = useState(false);
-  const opts = [['cliente', 'Cliente'], ['conta', 'Conta'], ['cls', 'Classificação'], ['score', 'Pontuação'], ['prio', 'Prioridade'], ...CHECKS.map(([k, , l]) => [k, l]), ['resp', 'Responsável'], ['estr', 'Estratégico'], ['notes', 'Observações'], ['upd', 'Última atualização']];
+  const opts = [['cliente', 'Cliente'], ['conta', 'Conta'], ['score', 'Pontuação'], ['prio', 'Prioridade'], ...CHECKS.map(([k, , l]) => [k, l]), ['resp', 'Responsável'], ['estr', 'Estratégico'], ['notes', 'Observações'], ['upd', 'Última atualização']];
   return (
     <span className="menu-wrap">
       <button className="btn sm" onClick={() => setOpen(!open)}><Icon name="list" size={14} /> Colunas{hidden.length ? ` (${hidden.length} ocultas)` : ''}</button>
